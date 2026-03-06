@@ -1,0 +1,4 @@
+# Ignore local Codex workspace metadata and agent instructions copied into the repo root.
+/.codex/
+/Agents.md
+/AGENTS.md
