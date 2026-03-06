@@ -69,26 +69,49 @@ jobs:
     name: Deploy To Debian
     needs: build-and-push
     runs-on: ubuntu-latest
-    if: >-
-      github.event_name == 'workflow_dispatch' &&
-      inputs.deploy_to_debian &&
-      secrets.DEPLOY_HOST != '' &&
-      secrets.DEPLOY_USER != '' &&
-      secrets.DEPLOY_SSH_PRIVATE_KEY != '' &&
-      secrets.DEPLOY_ENV_FILE != '' &&
-      secrets.DEPLOY_GHCR_USERNAME != '' &&
-      secrets.DEPLOY_GHCR_TOKEN != ''
+    # GitHub Actions does not allow secrets.* in job-level if expressions.
+    # We only gate on the manual input here, then validate the required secrets
+    # inside the job so the workflow file stays syntactically valid.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy_to_debian }}
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+      DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+      DEPLOY_ENV_FILE: ${{ secrets.DEPLOY_ENV_FILE }}
+      DEPLOY_GHCR_USERNAME: ${{ secrets.DEPLOY_GHCR_USERNAME }}
+      DEPLOY_GHCR_TOKEN: ${{ secrets.DEPLOY_GHCR_TOKEN }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
+      - name: Validate deployment secrets
+        shell: bash
+        run: |
+          missing=0
+
+          for secret_name in \
+            DEPLOY_HOST \
+            DEPLOY_USER \
+            DEPLOY_SSH_PRIVATE_KEY \
+            DEPLOY_ENV_FILE \
+            DEPLOY_GHCR_USERNAME \
+            DEPLOY_GHCR_TOKEN
+          do
+            if [ -z "${!secret_name}" ]; then
+              echo "::error::Missing required secret: ${secret_name}"
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
       - name: Prepare SSH key
         shell: bash
-        env:
-          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
         run: |
           DEPLOY_PORT="${DEPLOY_PORT:-22}"
           install -m 700 -d ~/.ssh
@@ -98,18 +121,11 @@ jobs:
 
       - name: Prepare deployment env file
         shell: bash
-        env:
-          DEPLOY_ENV_FILE: ${{ secrets.DEPLOY_ENV_FILE }}
         run: |
           printf '%s\n' "$DEPLOY_ENV_FILE" > deploy/.env
 
       - name: Upload compose bundle to Debian server
         shell: bash
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
         run: |
           DEPLOY_PORT="${DEPLOY_PORT:-22}"
           DEPLOY_PATH="${DEPLOY_PATH:-/opt/linuxdospace}"
@@ -119,13 +135,6 @@ jobs:
 
       - name: Pull image and restart compose stack
         shell: bash
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-          DEPLOY_GHCR_USERNAME: ${{ secrets.DEPLOY_GHCR_USERNAME }}
-          DEPLOY_GHCR_TOKEN: ${{ secrets.DEPLOY_GHCR_TOKEN }}
         run: |
           DEPLOY_PORT="${DEPLOY_PORT:-22}"
           DEPLOY_PATH="${DEPLOY_PATH:-/opt/linuxdospace}"

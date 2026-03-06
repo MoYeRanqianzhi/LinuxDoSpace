@@ -1,5 +1,11 @@
 # LinuxDoSpace 更新日志
 
+## 0.5.1-alpha.1
+
+- 修复 GitHub Actions 工作流语法错误。
+- 避免在 job 级 `if` 条件中直接引用 `secrets.*`，改为仅判断手动部署输入。
+- 增加部署 job 内部的 secret 校验步骤，确保缺失配置时明确失败。
+
 ## 0.5.0-alpha.1
 
 - 增加单镜像 Docker 部署方案，前端构建产物会嵌入 Go 二进制。
