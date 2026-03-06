@@ -79,6 +79,14 @@ type Allocation struct {
 	CloudflareZoneID string    `json:"cloudflare_zone_id,omitempty"`
 }
 
+// PublicAllocationOwnership 表示公开监督页使用的脱敏归属信息。
+// 该结构只返回“哪个子域名由谁持有”，绝不包含具体解析值、IP、CNAME 目标等隐私数据。
+type PublicAllocationOwnership struct {
+	FQDN             string `json:"fqdn"`
+	OwnerUsername    string `json:"owner_username"`
+	OwnerDisplayName string `json:"owner_display_name"`
+}
+
 // AuditLog 表示关键动作的审计事件。
 type AuditLog struct {
 	ID           int64     `json:"id"`

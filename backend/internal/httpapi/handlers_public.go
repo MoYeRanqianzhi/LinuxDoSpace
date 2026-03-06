@@ -28,6 +28,16 @@ func (a *API) handlePublicDomains(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
+// handlePublicSupervision 返回公开监督页使用的脱敏子域归属列表。
+func (a *API) handlePublicSupervision(w http.ResponseWriter, r *http.Request) {
+	items, err := a.domainService.ListPublicAllocationOwnerships(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
 // handleAllocationAvailability 检查某个前缀在指定根域名下是否可用。
 func (a *API) handleAllocationAvailability(w http.ResponseWriter, r *http.Request) {
 	rootDomain := r.URL.Query().Get("root_domain")

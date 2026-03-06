@@ -1,10 +1,10 @@
-import { Moon, Sun, Cloud, Settings, Home, LogIn, Github } from 'lucide-react';
+import { Moon, Sun, Cloud, Settings, Home, LogIn, Github, Eye } from 'lucide-react';
 import { motion } from 'motion/react';
 
 // NavbarProps 描述导航栏和外层应用状态之间的交互契约。
 interface NavbarProps {
   activeTab: string;
-  setActiveTab: (tab: 'home' | 'domains' | 'settings' | 'login') => void;
+  setActiveTab: (tab: 'home' | 'domains' | 'supervision' | 'settings' | 'login') => void;
   isDark: boolean;
   toggleTheme: () => void;
   authenticated: boolean;
@@ -23,10 +23,11 @@ export function Navbar({
   displayName,
   onAuthAction,
 }: NavbarProps) {
-  // navItems 是当前前端已实现的三块主内容导航。
+  // navItems 是当前前端已实现的四块主内容导航。
   const navItems = [
     { id: 'home' as const, label: '首页', icon: Home },
     { id: 'domains' as const, label: '域名分发', icon: Cloud },
+    { id: 'supervision' as const, label: '共同监督', icon: Eye },
     { id: 'settings' as const, label: '配置中心', icon: Settings },
   ];
 

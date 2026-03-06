@@ -49,6 +49,16 @@
 用途：
 列出当前启用中的可分发根域名。
 
+### `GET /v1/public/supervision`
+
+用途：
+返回公开监督页所需的脱敏子域归属列表。
+
+隐私说明：
+
+- 只返回子域名和拥有者信息。
+- 不返回任何 DNS 解析值、IP 地址、CNAME 目标或其他敏感解析数据。
+
 ### `GET /v1/public/allocations/check?root_domain=linuxdo.space&prefix=alice`
 
 用途：

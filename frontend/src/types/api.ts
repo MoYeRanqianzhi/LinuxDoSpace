@@ -70,6 +70,14 @@ export interface AvailabilityResult {
   reasons: string[];
 }
 
+// SupervisionEntry 表示公开监督页中的一条脱敏归属记录。
+// 这里只展示子域名和拥有者，不包含任何解析值。
+export interface SupervisionEntry {
+  fqdn: string;
+  owner_username: string;
+  owner_display_name: string;
+}
+
 // MeResponse 表示 `/v1/me` 返回的数据结构。
 export interface MeResponse {
   authenticated: boolean;

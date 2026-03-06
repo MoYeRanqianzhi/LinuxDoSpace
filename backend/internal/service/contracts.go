@@ -31,6 +31,7 @@ type Store interface {
 	FindAllocationByNormalizedPrefix(ctx context.Context, managedDomainID int64, normalizedPrefix string) (model.Allocation, error)
 	CreateAllocation(ctx context.Context, input sqlite.CreateAllocationInput) (model.Allocation, error)
 	ListAllocationsByUser(ctx context.Context, userID int64) ([]model.Allocation, error)
+	ListPublicAllocationOwnerships(ctx context.Context) ([]model.PublicAllocationOwnership, error)
 	GetAllocationByID(ctx context.Context, allocationID int64) (model.Allocation, error)
 	GetAllocationByIDForUser(ctx context.Context, allocationID int64, userID int64) (model.Allocation, error)
 	WriteAuditLog(ctx context.Context, input sqlite.AuditLogInput) error

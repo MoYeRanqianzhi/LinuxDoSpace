@@ -13,6 +13,7 @@
 
 - `GET /healthz`
 - `GET /v1/public/domains`
+- `GET /v1/public/supervision`
 - `GET /v1/public/allocations/check`
 - `GET /v1/auth/login`
 - `GET /v1/auth/callback`

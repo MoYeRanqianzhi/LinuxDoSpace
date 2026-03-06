@@ -3,6 +3,7 @@ import { Navbar } from './components/Navbar';
 import { Footer } from './components/Footer';
 import { Home } from './pages/Home';
 import { Domains } from './pages/Domains';
+import { Supervision } from './pages/Supervision';
 import { Settings } from './pages/Settings';
 import { Login } from './pages/Login';
 import {
@@ -14,9 +15,9 @@ import {
 } from './lib/api';
 import type { Allocation, ManagedDomain, MeResponse, User } from './types/api';
 
-// TabKey 定义了前端当前支持的四个主视图。
+// TabKey 定义了前端当前支持的五个主视图。
 // 由于本项目暂时没有接入 React Router，所以我们手工维护 tab 与 URL 的双向映射。
-type TabKey = 'home' | 'domains' | 'settings' | 'login';
+type TabKey = 'home' | 'domains' | 'supervision' | 'settings' | 'login';
 
 // SessionState 表示前端缓存的当前登录态。
 // 该状态来自后端 `/v1/me`，并被多个页面共同消费。
@@ -34,6 +35,7 @@ interface SessionState {
 const tabPathMap: Record<TabKey, string> = {
   home: '/',
   domains: '/domains',
+  supervision: '/supervision',
   settings: '/settings',
   login: '/login',
 };
@@ -43,6 +45,8 @@ function pathToTab(pathname: string): TabKey {
   switch (pathname.toLowerCase()) {
     case '/domains':
       return 'domains';
+    case '/supervision':
+      return 'supervision';
     case '/settings':
       return 'settings';
     case '/login':
@@ -227,6 +231,8 @@ export default function App() {
             onAllocationCreated={handleAllocationCreated}
           />
         );
+      case 'supervision':
+        return <Supervision />;
       case 'settings':
         return (
           <Settings

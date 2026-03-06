@@ -7,6 +7,7 @@ import type {
   DNSRecord,
   ManagedDomain,
   MeResponse,
+  SupervisionEntry,
   UpsertDNSRecordInput,
 } from '../types/api';
 
@@ -76,6 +77,11 @@ export function getCurrentSession(): Promise<MeResponse> {
 // listPublicDomains 获取当前开放分发的根域名列表。
 export function listPublicDomains(): Promise<ManagedDomain[]> {
   return request<ManagedDomain[]>('/v1/public/domains');
+}
+
+// listPublicSupervisionEntries 获取公开监督页需要的脱敏子域归属数据。
+export function listPublicSupervisionEntries(): Promise<SupervisionEntry[]> {
+  return request<SupervisionEntry[]>('/v1/public/supervision');
 }
 
 // checkAllocationAvailability 调用后端检查某个前缀是否可用。

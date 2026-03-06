@@ -33,6 +33,7 @@ func NewRouter(deps RouterDependencies) http.Handler {
 
 	mux.HandleFunc("GET /healthz", api.handleHealth)
 	mux.HandleFunc("GET /v1/public/domains", api.handlePublicDomains)
+	mux.HandleFunc("GET /v1/public/supervision", api.handlePublicSupervision)
 	mux.HandleFunc("GET /v1/public/allocations/check", api.handleAllocationAvailability)
 	mux.HandleFunc("GET /v1/auth/login", api.handleAuthLogin)
 	mux.HandleFunc("GET /v1/auth/callback", api.handleAuthCallback)

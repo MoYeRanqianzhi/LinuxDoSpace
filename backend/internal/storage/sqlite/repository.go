@@ -682,6 +682,36 @@ ORDER BY a.is_primary DESC, a.created_at ASC
 	return items, rows.Err()
 }
 
+// ListPublicAllocationOwnerships 返回公开监督页所需的脱敏子域归属列表。
+// 该查询只暴露分配的 FQDN 与拥有者身份，不会返回任何 DNS 记录值。
+func (s *Store) ListPublicAllocationOwnerships(ctx context.Context) ([]model.PublicAllocationOwnership, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT
+    a.fqdn,
+    u.username,
+    u.display_name
+FROM allocations a
+JOIN users u ON u.id = a.user_id
+WHERE a.status = 'active'
+ORDER BY a.fqdn ASC, u.username ASC
+`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []model.PublicAllocationOwnership
+	for rows.Next() {
+		item, err := scanPublicAllocationOwnership(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+
+	return items, rows.Err()
+}
+
 // GetAllocationByID 通过分配主键读取一个分配详情。
 func (s *Store) GetAllocationByID(ctx context.Context, allocationID int64) (model.Allocation, error) {
 	row := s.db.QueryRowContext(ctx, `
@@ -1024,6 +1054,19 @@ func scanAllocation(scanner interface{ Scan(dest ...any) error }) (model.Allocat
 		return model.Allocation{}, err
 	}
 
+	return item, nil
+}
+
+// scanPublicAllocationOwnership 负责把一条公开监督结果扫描为脱敏归属结构。
+func scanPublicAllocationOwnership(scanner interface{ Scan(dest ...any) error }) (model.PublicAllocationOwnership, error) {
+	var item model.PublicAllocationOwnership
+	if err := scanner.Scan(
+		&item.FQDN,
+		&item.OwnerUsername,
+		&item.OwnerDisplayName,
+	); err != nil {
+		return model.PublicAllocationOwnership{}, err
+	}
 	return item, nil
 }
 

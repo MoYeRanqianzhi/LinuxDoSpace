@@ -130,6 +130,16 @@ func (s *DomainService) ListAdminDomains(ctx context.Context) ([]model.ManagedDo
 	return items, nil
 }
 
+// ListPublicAllocationOwnerships 返回监督页需要的公开归属数据。
+// 这里刻意只返回子域名和拥有者信息，不拼接任何 DNS 记录内容。
+func (s *DomainService) ListPublicAllocationOwnerships(ctx context.Context) ([]model.PublicAllocationOwnership, error) {
+	items, err := s.db.ListPublicAllocationOwnerships(ctx)
+	if err != nil {
+		return nil, InternalError("failed to load public allocation ownerships", err)
+	}
+	return items, nil
+}
+
 // CheckAvailability 检查某个前缀是否能在指定根域名下被分配。
 func (s *DomainService) CheckAvailability(ctx context.Context, rootDomain string, prefix string) (AvailabilityResult, error) {
 	managedDomain, normalizedPrefix, fqdn, err := s.prepareAllocation(ctx, rootDomain, prefix)
