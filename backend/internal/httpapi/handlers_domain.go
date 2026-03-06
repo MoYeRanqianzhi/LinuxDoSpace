@@ -13,7 +13,7 @@ func (a *API) handleMyAllocations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items, err := a.domainService.ListAllocationsForUser(r.Context(), user.ID)
+	items, err := a.domainService.ListVisibleAllocationsForUser(r.Context(), *user)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -63,7 +63,7 @@ func (a *API) handleAllocationRecords(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items, err := a.domainService.ListRecordsForAllocation(r.Context(), user.ID, allocationID)
+	items, err := a.domainService.ListRecordsForAllocation(r.Context(), *user, allocationID)
 	if err != nil {
 		writeError(w, err)
 		return

@@ -57,6 +57,7 @@ export interface DNSRecord {
   proxied: boolean;
   comment: string;
   priority?: number;
+  is_placeholder?: boolean;
 }
 
 // AvailabilityResult 表示某个前缀在指定根域名下的可分配检查结果。

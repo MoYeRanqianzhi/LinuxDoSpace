@@ -1,6 +1,10 @@
 package service
 
-import "testing"
+import (
+	"testing"
+
+	"linuxdospace/backend/internal/model"
+)
 
 // TestNormalizePrefix 验证用户输入前缀会被正确清洗成 DNS label。
 func TestNormalizePrefix(t *testing.T) {
@@ -117,5 +121,29 @@ func TestValidateAndNormalizeRecordPayload(t *testing.T) {
 
 	if _, _, _, err := validateAndNormalizeRecordPayload("A", "not-an-ip", nil, false); err == nil {
 		t.Fatalf("expected invalid A record to fail")
+	}
+}
+
+// TestEnsureTemporaryUsernameMatch 验证当前临时策略只放行“用户名同名”的子域名前缀。
+func TestEnsureTemporaryUsernameMatch(t *testing.T) {
+	user := model.User{
+		Username: "Alice",
+	}
+
+	if err := ensureTemporaryUsernameMatch(user, "alice"); err != nil {
+		t.Fatalf("expected alice to be allowed, got %v", err)
+	}
+	if err := ensureTemporaryUsernameMatch(user, "other-name"); err == nil {
+		t.Fatalf("expected mismatched prefix to be rejected")
+	}
+}
+
+// TestEnsureTemporaryRootRecordOnly 验证当前临时策略只允许根记录 `@`。
+func TestEnsureTemporaryRootRecordOnly(t *testing.T) {
+	if err := ensureTemporaryRootRecordOnly("@"); err != nil {
+		t.Fatalf("expected root record to be allowed, got %v", err)
+	}
+	if err := ensureTemporaryRootRecordOnly("www"); err == nil {
+		t.Fatalf("expected child record to be rejected")
 	}
 }

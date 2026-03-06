@@ -1,5 +1,11 @@
 ﻿# LinuxDoSpace 更新日志
 
+## 0.5.3-alpha.3
+
+- 临时收紧分发策略，仅允许登录用户申请、查看和管理与自己 Linux Do 用户名同名的子域名。
+- 临时收紧 DNS 管理策略，仅允许编辑 `<username>.<root_domain>` 这条根记录，拒绝 `www`、`api` 等额外子记录。
+- 登录后若当前同名子域还没有真实解析记录，前端会先展示一条未填写内容的占位记录，方便用户直接补全。
+
 ## 0.5.3-alpha.2
 
 - 修复部署环境使用错误 DNS 解析 `connect.linux.do` 的问题，为 Docker Compose 明确指定公共 DNS。

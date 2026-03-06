@@ -81,7 +81,7 @@ func (a *API) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	allocations, err := a.domainService.ListAllocationsForUser(r.Context(), user.ID)
+	allocations, err := a.domainService.ListVisibleAllocationsForUser(r.Context(), *user)
 	if err != nil {
 		writeError(w, err)
 		return

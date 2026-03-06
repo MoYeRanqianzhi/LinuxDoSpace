@@ -220,6 +220,7 @@ export default function App() {
             domainsLoading={domainsLoading}
             domainsError={domainsError}
             authenticated={session.authenticated}
+            user={session.user}
             allocations={session.allocations}
             csrfToken={session.csrfToken}
             onLogin={() => beginLogin('domains')}

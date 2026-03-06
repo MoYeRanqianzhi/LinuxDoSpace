@@ -1,9 +1,9 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { motion } from 'motion/react';
 import { GlassCard } from '../components/GlassCard';
-import { Search, CheckCircle, XCircle, LoaderCircle, Sparkles } from 'lucide-react';
+import { Search, CheckCircle, XCircle, LoaderCircle, Sparkles, ArrowRight } from 'lucide-react';
 import { APIError, checkAllocationAvailability, createAllocation } from '../lib/api';
-import type { Allocation, AvailabilityResult, ManagedDomain } from '../types/api';
+import type { Allocation, AvailabilityResult, ManagedDomain, User } from '../types/api';
 
 // DomainsProps 描述域名分发页所需的后端状态与交互函数。
 interface DomainsProps {
@@ -11,6 +11,7 @@ interface DomainsProps {
   domainsLoading: boolean;
   domainsError: string;
   authenticated: boolean;
+  user?: User;
   allocations: Allocation[];
   csrfToken?: string;
   onLogin: () => void;
@@ -26,6 +27,7 @@ export function Domains({
   domainsLoading,
   domainsError,
   authenticated,
+  user,
   allocations,
   csrfToken,
   onLogin,
@@ -56,9 +58,25 @@ export function Domains({
     setSelectedRootDomain(defaultDomain.root_domain);
   }, [publicDomains, selectedRootDomain]);
 
+  // 当前临时阶段只允许申请与 Linux Do 用户名同名的子域，因此登录后自动锁定输入框。
+  useEffect(() => {
+    if (!authenticated || !user?.username) {
+      return;
+    }
+
+    setDomain(user.username);
+    setStatus('idle');
+    setAvailability(null);
+    setMessage('');
+  }, [authenticated, user?.username]);
+
   // handleSearch 调用后端检查某个前缀是否可用。
   async function handleSearch(event: FormEvent): Promise<void> {
     event.preventDefault();
+    if (!authenticated) {
+      onLogin();
+      return;
+    }
     if (!domain.trim() || !selectedRootDomain) {
       return;
     }
@@ -124,6 +142,7 @@ export function Domains({
 
   // selectedSuffix 用于展示当前输入框右侧动态变化的域名后缀。
   const selectedSuffix = selectedRootDomain || 'linuxdo.space';
+  const reservedPrefix = user?.username?.trim() || '你的用户名';
 
   return (
     <div className="max-w-4xl mx-auto pt-32 pb-24 px-6">
@@ -145,6 +164,12 @@ export function Domains({
       </motion.div>
 
       <GlassCard className="mb-8">
+        {!authenticated && (
+          <div className="mb-5 rounded-2xl border border-amber-300/40 bg-amber-100/60 dark:bg-amber-950/25 dark:border-amber-700/40 px-4 py-4 text-sm text-amber-900 dark:text-amber-200">
+            当前临时阶段仅允许领取与你的 Linux Do 用户名完全同名的子域名。请先登录后继续。
+          </div>
+        )}
+
         <div className="mb-5 flex flex-wrap gap-3">
           {domainsLoading ? (
             <div className="text-sm text-gray-600 dark:text-gray-300">正在加载可分发域名列表...</div>
@@ -181,13 +206,17 @@ export function Domains({
               type="text"
               value={domain}
               onChange={(event) => {
+                if (authenticated) {
+                  return;
+                }
                 setDomain(event.target.value);
                 setStatus('idle');
                 setAvailability(null);
                 setMessage('');
               }}
-              placeholder="输入你想要的域名前缀"
-              className="w-full pl-4 pr-32 py-4 rounded-2xl bg-white/50 dark:bg-black/50 border border-white/40 dark:border-white/20 focus:outline-none focus:ring-2 focus:ring-teal-500 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 transition-all"
+              readOnly={authenticated}
+              placeholder={authenticated ? reservedPrefix : '输入你想要的域名前缀'}
+              className="w-full pl-4 pr-32 py-4 rounded-2xl bg-white/50 dark:bg-black/50 border border-white/40 dark:border-white/20 focus:outline-none focus:ring-2 focus:ring-teal-500 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 transition-all read-only:cursor-not-allowed read-only:opacity-80"
             />
             <div className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 font-medium">
               .{selectedSuffix}
@@ -199,9 +228,15 @@ export function Domains({
             className="flex items-center justify-center gap-2 px-8 py-4 rounded-2xl bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-600 hover:to-emerald-600 disabled:opacity-60 disabled:cursor-not-allowed text-white font-bold shadow-lg transition-all transform hover:scale-105"
           >
             {status === 'checking' ? <LoaderCircle size={20} className="animate-spin" /> : <Search size={20} />}
-            查询
+            {authenticated ? '检查我的同名子域' : '登录后继续'}
           </button>
         </form>
+
+        {authenticated && (
+          <div className="mt-4 text-sm text-gray-600 dark:text-gray-300">
+            当前只允许申请 <span className="font-semibold text-teal-600 dark:text-teal-300">{reservedPrefix}.{selectedSuffix}</span>
+          </div>
+        )}
 
         {(status !== 'idle' || message) && (
           <motion.div
@@ -242,6 +277,19 @@ export function Domains({
           </motion.div>
         )}
       </GlassCard>
+
+      {!authenticated && (
+        <div className="mb-8 flex justify-center">
+          <button
+            type="button"
+            onClick={onLogin}
+            className="inline-flex items-center gap-2 px-6 py-3 rounded-2xl bg-[#1a1a1a] dark:bg-white hover:bg-black dark:hover:bg-gray-100 text-white dark:text-black font-bold shadow-lg transition-all"
+          >
+            <ArrowRight size={18} />
+            使用 Linux Do 登录
+          </button>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {[1, 2, 3].map((item) => (

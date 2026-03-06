@@ -135,6 +135,11 @@ export function Settings({
 
     try {
       const nextRecords = await listAllocationRecords(allocationID);
+      const selected = allocations.find((item) => item.id === allocationID);
+      if (nextRecords.length === 0 && selected && user) {
+        setRecords([buildPlaceholderRecord(selected, user)]);
+        return;
+      }
       setRecords(nextRecords);
     } catch (error) {
       setRecords([]);
@@ -175,7 +180,7 @@ export function Settings({
 
   // openModal 打开记录弹窗，并根据是否传入 record 决定是编辑还是新建。
   function openModal(record?: DNSRecord): void {
-    if (record) {
+    if (record && !isPlaceholderRecord(record)) {
       setEditingRecord(record);
       setFormData({
         type: record.type,
@@ -188,7 +193,10 @@ export function Settings({
       });
     } else {
       setEditingRecord(null);
-      setFormData(emptyForm);
+      setFormData({
+        ...emptyForm,
+        name: '@',
+      });
     }
 
     setNotice('');
@@ -241,6 +249,10 @@ export function Settings({
   async function handleDelete(recordID: string): Promise<void> {
     if (!selectedAllocation || !csrfToken) {
       setNotice('当前会话不可用，请刷新页面后重试。');
+      return;
+    }
+    if (recordID.startsWith('placeholder:')) {
+      setNotice('占位记录尚未创建到 Cloudflare，无需删除。');
       return;
     }
 
@@ -433,7 +445,7 @@ export function Settings({
                     </td>
                     <td className="p-4 font-medium text-gray-800 dark:text-gray-200">{record.relative_name}</td>
                     <td className="p-4 text-gray-600 dark:text-gray-400 font-mono text-sm">
-                      <div>{record.content}</div>
+                      <div>{record.content || (record.is_placeholder ? '尚未填写解析值' : '-')}</div>
                       {(record.comment || record.ttl || record.priority != null) && (
                         <div className="mt-1 text-xs text-gray-500 dark:text-gray-500">
                           TTL: {record.ttl === 1 ? 'Auto' : record.ttl}s
@@ -464,7 +476,7 @@ export function Settings({
                         </button>
                         <button
                           onClick={() => void handleDelete(record.id)}
-                          disabled={deletingRecordID === record.id}
+                          disabled={deletingRecordID === record.id || isPlaceholderRecord(record)}
                           className="p-2 rounded-lg hover:bg-white/50 dark:hover:bg-white/10 disabled:opacity-60 text-red-600 dark:text-red-400 transition-colors"
                         >
                           {deletingRecordID === record.id ? <LoaderCircle size={16} className="animate-spin" /> : <Trash2 size={16} />}
@@ -674,6 +686,26 @@ function buildRecordPayload(formData: RecordFormState): UpsertDNSRecordInput {
 // supportsProxy 判断当前记录类型是否允许开启 Cloudflare 代理。
 function supportsProxy(recordType: string): boolean {
   return ['A', 'AAAA', 'CNAME'].includes(recordType.toUpperCase());
+}
+
+// isPlaceholderRecord 判断某一行是否只是前端占位，不代表 Cloudflare 中已经存在真实记录。
+function isPlaceholderRecord(record: DNSRecord): boolean {
+  return record.is_placeholder === true;
+}
+
+// buildPlaceholderRecord 在真实记录为空时，为 `<username>.<root_domain>` 生成一条前端占位行。
+function buildPlaceholderRecord(allocation: Allocation, user: User): DNSRecord {
+  return {
+    id: `placeholder:${allocation.id}`,
+    type: 'CNAME',
+    name: allocation.fqdn,
+    relative_name: '@',
+    content: '',
+    ttl: 1,
+    proxied: true,
+    comment: `${user.username} 的默认同名子域占位记录`,
+    is_placeholder: true,
+  };
 }
 
 // readableErrorMessage 统一提取接口错误文本。

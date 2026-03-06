@@ -30,10 +30,15 @@ func (a *API) handlePublicDomains(w http.ResponseWriter, r *http.Request) {
 
 // handleAllocationAvailability 检查某个前缀在指定根域名下是否可用。
 func (a *API) handleAllocationAvailability(w http.ResponseWriter, r *http.Request) {
+	_, user, ok := a.requireActor(w, r)
+	if !ok {
+		return
+	}
+
 	rootDomain := r.URL.Query().Get("root_domain")
 	prefix := r.URL.Query().Get("prefix")
 
-	result, err := a.domainService.CheckAvailability(r.Context(), rootDomain, prefix)
+	result, err := a.domainService.CheckAvailabilityForUser(r.Context(), *user, rootDomain, prefix)
 	if err != nil {
 		writeError(w, err)
 		return
