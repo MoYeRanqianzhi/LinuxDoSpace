@@ -9,6 +9,28 @@
 - 通过本地 SQLite 保存用户、会话、配额、分配记录和审计日志
 - 保持“从不信任，始终验证”的零信任风格
 
+当前已实现的后端能力：
+
+- `GET /healthz`
+- `GET /v1/public/domains`
+- `GET /v1/public/allocations/check`
+- `GET /v1/auth/login`
+- `GET /v1/auth/callback`
+- `POST /v1/auth/logout`
+- `GET /v1/me`
+- `GET/POST /v1/my/allocations`
+- `GET/POST/PATCH/DELETE /v1/my/allocations/{allocationID}/records`
+- `GET /v1/admin/domains`
+- `POST /v1/admin/domains`
+- `POST /v1/admin/quotas`
+
+本地运行：
+
+```powershell
+cd backend
+go run ./cmd/linuxdospace
+```
+
 建议阅读顺序：
 
 1. [docs/development/README.md](/G:/ClaudeProjects/LinuxDoSpace/docs/development/README.md)

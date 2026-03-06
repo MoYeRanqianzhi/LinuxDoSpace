@@ -94,7 +94,7 @@ func Load() (Config, error) {
 			ClientSecret: strings.TrimSpace(os.Getenv("LINUXDO_OAUTH_CLIENT_SECRET")),
 			RedirectURL:  getEnv("LINUXDO_OAUTH_REDIRECT_URL", "http://localhost:8080/v1/auth/callback"),
 			AuthorizeURL: getEnv("LINUXDO_OAUTH_AUTHORIZE_URL", "https://connect.linux.do/oauth2/authorize"),
-			TokenURL:     getEnv("LINUXDO_OAUTH_TOKEN_URL", "https://connect.linux.do/oauth2/access_token"),
+			TokenURL:     getEnv("LINUXDO_OAUTH_TOKEN_URL", "https://connect.linux.do/oauth2/token"),
 			UserInfoURL:  getEnv("LINUXDO_OAUTH_USERINFO_URL", "https://connect.linux.do/api/user"),
 			Scope:        strings.TrimSpace(os.Getenv("LINUXDO_OAUTH_SCOPE")),
 			EnablePKCE:   mustParseBool(getEnv("LINUXDO_OAUTH_ENABLE_PKCE", "false")),
