@@ -39,3 +39,9 @@ func NormalizePathOnly(raw string) string {
 	}
 	return raw
 }
+
+// CodeChallengeS256 根据 PKCE 规范把 code verifier 转换为 S256 challenge。
+func CodeChallengeS256(verifier string) string {
+	sum := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}

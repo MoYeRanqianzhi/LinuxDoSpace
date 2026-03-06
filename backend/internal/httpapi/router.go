@@ -1,36 +1,48 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
-	"time"
 
 	"linuxdospace/backend/internal/config"
+	"linuxdospace/backend/internal/service"
 )
 
 // RouterDependencies 汇总构造 HTTP 路由所需的基础依赖。
 type RouterDependencies struct {
-	Config  config.Config
-	Version string
+	Config        config.Config
+	Version       string
+	AuthService   *service.AuthService
+	DomainService *service.DomainService
 }
 
-// NewRouter 创建当前阶段的基础路由。
-// 这里先提供健康检查和基础 CORS 支持，后续功能路由会逐步接入。
+// NewRouter 创建 LinuxDoSpace 后端的完整 HTTP 路由。
 func NewRouter(deps RouterDependencies) http.Handler {
+	api := &API{
+		config:        deps.Config,
+		version:       deps.Version,
+		authService:   deps.AuthService,
+		domainService: deps.DomainService,
+	}
+
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status":      "ok",
-			"app":         deps.Config.App.Name,
-			"version":     deps.Version,
-			"env":         deps.Config.App.Env,
-			"oauth_ready": deps.Config.OAuthConfigured(),
-			"cf_ready":    deps.Config.CloudflareConfigured(),
-			"time":        time.Now().UTC(),
-		})
-	})
+	mux.HandleFunc("GET /healthz", api.handleHealth)
+	mux.HandleFunc("GET /v1/public/domains", api.handlePublicDomains)
+	mux.HandleFunc("GET /v1/public/allocations/check", api.handleAllocationAvailability)
+	mux.HandleFunc("GET /v1/auth/login", api.handleAuthLogin)
+	mux.HandleFunc("GET /v1/auth/callback", api.handleAuthCallback)
+	mux.HandleFunc("POST /v1/auth/logout", api.handleAuthLogout)
+	mux.HandleFunc("GET /v1/me", api.handleMe)
+	mux.HandleFunc("GET /v1/my/allocations", api.handleMyAllocations)
+	mux.HandleFunc("POST /v1/my/allocations", api.handleCreateAllocation)
+	mux.HandleFunc("GET /v1/my/allocations/{allocationID}/records", api.handleAllocationRecords)
+	mux.HandleFunc("POST /v1/my/allocations/{allocationID}/records", api.handleCreateRecord)
+	mux.HandleFunc("PATCH /v1/my/allocations/{allocationID}/records/{recordID}", api.handleUpdateRecord)
+	mux.HandleFunc("DELETE /v1/my/allocations/{allocationID}/records/{recordID}", api.handleDeleteRecord)
+	mux.HandleFunc("GET /v1/admin/domains", api.handleAdminDomains)
+	mux.HandleFunc("POST /v1/admin/domains", api.handleAdminUpsertDomain)
+	mux.HandleFunc("POST /v1/admin/quotas", api.handleAdminSetQuota)
 
 	return withCORS(deps.Config.App.AllowedOrigins, mux)
 }
@@ -66,11 +78,4 @@ func withCORS(allowedOrigins []string, next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
-}
-
-// writeJSON 统一输出 JSON 响应。
-func writeJSON(w http.ResponseWriter, statusCode int, payload any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(statusCode)
-	_ = json.NewEncoder(w).Encode(payload)
 }
