@@ -69,10 +69,9 @@ jobs:
     name: Deploy To Debian
     needs: build-and-push
     runs-on: ubuntu-latest
-    # GitHub Actions does not allow secrets.* in job-level if expressions.
-    # We only gate on the manual input here, then validate the required secrets
-    # inside the job so the workflow file stays syntactically valid.
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy_to_debian }}
+    # Deploy automatically on tag pushes. Keep workflow_dispatch as a manual fallback
+    # so the operator can still force a deployment without creating a new tag.
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'workflow_dispatch' && inputs.deploy_to_debian) }}
     env:
       DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
       DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
@@ -109,7 +108,7 @@ jobs:
       - name: Deploy to Debian with full retries
         shell: bash
         env:
-          TARGET_IMAGE: ghcr.io/moyeranqianzhi/linuxdospace:latest
+          TARGET_IMAGE: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) && format('ghcr.io/moyeranqianzhi/linuxdospace:{0}', github.ref_name) || 'ghcr.io/moyeranqianzhi/linuxdospace:latest' }}
           TARGET_REVISION: ${{ github.sha }}
           MAX_DEPLOY_ATTEMPTS: '10'
           MAX_OUTER_DEPLOY_ATTEMPTS: '10'

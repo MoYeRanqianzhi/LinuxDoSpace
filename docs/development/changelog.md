@@ -1,5 +1,11 @@
 # LinuxDoSpace 更新日志
 
+## 0.5.3-alpha.19
+
+- 将 Debian 自动部署条件改为 tag push 触发；发布新版本 tag 后，镜像构建完成会自动进入 Debian 部署阶段。
+- 保留 `workflow_dispatch + deploy_to_debian=true` 作为兜底手动入口，但默认发布路径改为 tag 驱动。
+- 让部署阶段在 tag push 时优先使用当前 tag 对应的现有镜像，而不是固定拉取 `latest`，避免版本漂移。
+
 ## 0.5.3-alpha.18
 
 - 为服务器端 `remote-deploy.sh` 的 `docker pull` 和 `docker compose up -d` 增加显式超时，避免网络异常时卡死在单次内层尝试、导致外层重试无法接管。
