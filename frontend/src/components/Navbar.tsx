@@ -78,8 +78,12 @@ export function Navbar({
       >
         <div className="max-w-[85rem] mx-auto backdrop-blur-xl bg-white/30 dark:bg-black/30 border border-white/20 dark:border-white/10 shadow-lg rounded-full px-4 sm:px-6 py-3 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 cursor-pointer min-w-0" onClick={handleBrandClick}>
-            <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-teal-400 to-emerald-500 flex items-center justify-center text-white font-bold text-xl shadow-lg shrink-0">
-              L
+            <div className="w-10 h-10 rounded-full overflow-hidden bg-white/80 dark:bg-white/10 shadow-lg shrink-0 ring-1 ring-white/40 dark:ring-white/10">
+              <img
+                src="/ICON.png"
+                alt="LinuxDoSpace 图标"
+                className="w-full h-full object-cover"
+              />
             </div>
             <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-teal-500 to-emerald-600 dark:from-teal-400 dark:to-emerald-400 truncate">
               LinuxDoSpace
