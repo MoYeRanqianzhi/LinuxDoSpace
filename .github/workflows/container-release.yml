@@ -120,62 +120,39 @@ jobs:
         run: |
           printf '%s\n' "$DEPLOY_ENV_FILE" > deploy/.env
 
-      - name: Check remote deployment prerequisites
+      - name: Prepare remote deployment script
         shell: bash
         run: |
-          DEPLOY_PORT="${DEPLOY_PORT:-22}"
-          DEPLOY_PATH="${DEPLOY_PATH:-/opt/linuxdospace}"
-          ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "\
-            set -euo pipefail && \
-            command -v docker >/dev/null && \
-            docker compose version >/dev/null && \
-            mkdir -p '$DEPLOY_PATH'"
-
-      - name: Upload compose bundle to Debian server
-        shell: bash
-        run: |
-          DEPLOY_PORT="${DEPLOY_PORT:-22}"
-          DEPLOY_PATH="${DEPLOY_PATH:-/opt/linuxdospace}"
-          ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$DEPLOY_PATH'"
-          scp -P "$DEPLOY_PORT" deploy/docker-compose.yml "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/docker-compose.yml"
-          scp -P "$DEPLOY_PORT" deploy/.env "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/.env"
-
-      - name: Deploy with retry and health checks
-        shell: bash
-        env:
-          TARGET_IMAGE: ghcr.io/moyeranqianzhi/linuxdospace:latest
-          TARGET_REVISION: ${{ github.sha }}
-          MAX_DEPLOY_ATTEMPTS: '10'
-        run: |
-          DEPLOY_PORT="${DEPLOY_PORT:-22}"
-          DEPLOY_PATH="${DEPLOY_PATH:-/opt/linuxdospace}"
-          ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "\
-            DEPLOY_PATH='$DEPLOY_PATH' \
-            TARGET_IMAGE='$TARGET_IMAGE' \
-            TARGET_REVISION='$TARGET_REVISION' \
-            MAX_DEPLOY_ATTEMPTS='$MAX_DEPLOY_ATTEMPTS' \
-            bash -s" <<'REMOTE_SCRIPT'
+          cat > deploy/remote-deploy.sh <<'REMOTE_SCRIPT'
+          #!/usr/bin/env bash
           set -euo pipefail
+
+          # 当前脚本在远程服务器本地执行，避免长时间占用单个 SSH 会话。
+          # 所有关键输入都通过环境变量注入，缺失时立即失败并回写状态文件。
+          : "${DEPLOY_PATH:?DEPLOY_PATH is required}"
+          : "${TARGET_IMAGE:?TARGET_IMAGE is required}"
+          : "${TARGET_REVISION:?TARGET_REVISION is required}"
+          : "${MAX_DEPLOY_ATTEMPTS:?MAX_DEPLOY_ATTEMPTS is required}"
+          : "${STATUS_FILE:?STATUS_FILE is required}"
 
           cd "$DEPLOY_PATH"
 
-          # container_health_status 读取当前容器的健康检查状态。
-          # 若镜像未定义 Healthcheck，则返回 no-healthcheck，随后退化为检查运行态。
+          # 容器健康检查状态；没有 Healthcheck 时返回 no-healthcheck。
           container_health_status() {
             docker inspect linuxdospace --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' 2>/dev/null || true
           }
 
-          # container_runtime_status 读取当前容器的运行状态，例如 running / exited。
+          # 容器运行状态，例如 running / exited。
           container_runtime_status() {
             docker inspect linuxdospace --format '{{.State.Status}}' 2>/dev/null || true
           }
 
-          # container_revision 读取当前容器内记录的镜像 revision 标签。
+          # 当前容器对应镜像的 revision 标签，用于判断是否切到目标版本。
           container_revision() {
             docker inspect linuxdospace --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' 2>/dev/null || true
           }
 
-          # deployment_is_healthy 判断当前部署是否已经达到目标 revision 且容器可用。
+          # deployment_is_healthy 判断当前服务是否已经切换到目标 revision 且健康可用。
           deployment_is_healthy() {
             local current_revision
             local current_health
@@ -204,12 +181,16 @@ jobs:
             return 1
           }
 
-          # show_diagnostics 输出本轮失败时最重要的运行信息，便于直接在 Actions 日志里定位。
+          # show_diagnostics 在某轮失败后输出关键信息，便于后续轮询时查看日志。
           show_diagnostics() {
             docker ps --filter name=linuxdospace --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' || true
             docker compose ps || true
             docker logs --tail 80 linuxdospace || true
           }
+
+          # 无论何种异常退出，都先把状态写成 failure；只有明确成功时才覆盖为 success。
+          echo 'running' > "$STATUS_FILE"
+          trap 'echo failure > "$STATUS_FILE"' EXIT
 
           for attempt in $(seq 1 "$MAX_DEPLOY_ATTEMPTS"); do
             echo "Deploy attempt ${attempt}/${MAX_DEPLOY_ATTEMPTS}"
@@ -221,6 +202,8 @@ jobs:
 
                 if deployment_is_healthy; then
                   echo 'Deployment finished successfully.'
+                  echo 'success' > "$STATUS_FILE"
+                  trap - EXIT
                   exit 0
                 fi
               done
@@ -237,5 +220,104 @@ jobs:
           done
 
           echo "Deployment failed after ${MAX_DEPLOY_ATTEMPTS} attempts."
+          echo 'failure' > "$STATUS_FILE"
+          trap - EXIT
           exit 1
           REMOTE_SCRIPT
+
+          chmod +x deploy/remote-deploy.sh
+
+      - name: Check remote deployment prerequisites
+        shell: bash
+        run: |
+          DEPLOY_PORT="${DEPLOY_PORT:-22}"
+          DEPLOY_PATH="${DEPLOY_PATH:-/opt/linuxdospace}"
+          SSH_OPTS="-o ServerAliveInterval=15 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20"
+          ssh $SSH_OPTS -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "\
+            set -euo pipefail && \
+            command -v docker >/dev/null && \
+            docker compose version >/dev/null && \
+            mkdir -p '$DEPLOY_PATH'"
+
+      - name: Upload compose bundle to Debian server
+        shell: bash
+        run: |
+          DEPLOY_PORT="${DEPLOY_PORT:-22}"
+          DEPLOY_PATH="${DEPLOY_PATH:-/opt/linuxdospace}"
+          SSH_OPTS="-o ServerAliveInterval=15 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20"
+          ssh $SSH_OPTS -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$DEPLOY_PATH'"
+          scp $SSH_OPTS -P "$DEPLOY_PORT" deploy/docker-compose.yml "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/docker-compose.yml"
+          scp $SSH_OPTS -P "$DEPLOY_PORT" deploy/.env "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/.env"
+          scp $SSH_OPTS -P "$DEPLOY_PORT" deploy/remote-deploy.sh "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/remote-deploy.sh"
+
+      - name: Start remote deployment job
+        shell: bash
+        env:
+          TARGET_IMAGE: ghcr.io/moyeranqianzhi/linuxdospace:latest
+          TARGET_REVISION: ${{ github.sha }}
+          MAX_DEPLOY_ATTEMPTS: '10'
+          REMOTE_DEPLOY_BASENAME: github-actions-deploy-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          DEPLOY_PORT="${DEPLOY_PORT:-22}"
+          DEPLOY_PATH="${DEPLOY_PATH:-/opt/linuxdospace}"
+          REMOTE_LOG_FILE="${REMOTE_DEPLOY_BASENAME}.log"
+          REMOTE_STATUS_FILE="${REMOTE_DEPLOY_BASENAME}.status"
+          REMOTE_PID_FILE="${REMOTE_DEPLOY_BASENAME}.pid"
+          SSH_OPTS="-o ServerAliveInterval=15 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20"
+          ssh $SSH_OPTS -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "\
+            cd '$DEPLOY_PATH' && \
+            rm -f '$REMOTE_LOG_FILE' '$REMOTE_STATUS_FILE' '$REMOTE_PID_FILE' && \
+            chmod +x ./remote-deploy.sh && \
+            DEPLOY_PATH='$DEPLOY_PATH' \
+            TARGET_IMAGE='$TARGET_IMAGE' \
+            TARGET_REVISION='$TARGET_REVISION' \
+            MAX_DEPLOY_ATTEMPTS='$MAX_DEPLOY_ATTEMPTS' \
+            STATUS_FILE='$REMOTE_STATUS_FILE' \
+            nohup ./remote-deploy.sh > '$REMOTE_LOG_FILE' 2>&1 < /dev/null & \
+            echo \$! > '$REMOTE_PID_FILE' && \
+            cat '$REMOTE_PID_FILE'"
+
+      - name: Wait for remote deployment result
+        shell: bash
+        env:
+          REMOTE_DEPLOY_BASENAME: github-actions-deploy-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          DEPLOY_PORT="${DEPLOY_PORT:-22}"
+          DEPLOY_PATH="${DEPLOY_PATH:-/opt/linuxdospace}"
+          REMOTE_LOG_FILE="${REMOTE_DEPLOY_BASENAME}.log"
+          REMOTE_STATUS_FILE="${REMOTE_DEPLOY_BASENAME}.status"
+          SSH_OPTS="-o ServerAliveInterval=15 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20"
+
+          for poll_round in $(seq 1 120); do
+            echo "Poll round ${poll_round}/120"
+
+            remote_status="$({
+              ssh $SSH_OPTS -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "\
+                cd '$DEPLOY_PATH' && \
+                if [ -f '$REMOTE_STATUS_FILE' ]; then cat '$REMOTE_STATUS_FILE'; else echo running; fi"
+            } | tr -d '\r')"
+
+            echo "Remote deployment status: ${remote_status}"
+
+            ssh $SSH_OPTS -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "\
+              cd '$DEPLOY_PATH' && \
+              if [ -f '$REMOTE_LOG_FILE' ]; then tail -n 20 '$REMOTE_LOG_FILE'; fi" || true
+
+            if [ "$remote_status" = 'success' ]; then
+              echo 'Remote deployment reported success.'
+              exit 0
+            fi
+
+            if [ "$remote_status" = 'failure' ]; then
+              echo 'Remote deployment reported failure.'
+              exit 1
+            fi
+
+            sleep 15
+          done
+
+          echo 'Timed out while waiting for remote deployment result.'
+          ssh $SSH_OPTS -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "\
+            cd '$DEPLOY_PATH' && \
+            if [ -f '$REMOTE_LOG_FILE' ]; then tail -n 120 '$REMOTE_LOG_FILE'; fi" || true
+          exit 1
