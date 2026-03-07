@@ -108,7 +108,9 @@ jobs:
       - name: Deploy to Debian with full retries
         shell: bash
         env:
-          TARGET_IMAGE: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) && format('ghcr.io/moyeranqianzhi/linuxdospace:{0}', github.ref_name) || 'ghcr.io/moyeranqianzhi/linuxdospace:latest' }}
+          TARGET_IMAGE_NAME: ghcr.io/moyeranqianzhi/linuxdospace
+          TARGET_IMAGE_TAG: latest
+          TARGET_IMAGE: ghcr.io/moyeranqianzhi/linuxdospace:latest
           TARGET_REVISION: ${{ github.sha }}
           MAX_DEPLOY_ATTEMPTS: '10'
           MAX_OUTER_DEPLOY_ATTEMPTS: '10'
@@ -163,13 +165,49 @@ jobs:
           }
 
           # prepare_deployment_env_file rewrites the runtime env file from the current secret payload.
-          # This avoids stale local artifacts when the outer retry loop starts a fresh attempt.
+          # It also pins the runtime image reference to the image tag that this workflow just published.
           prepare_deployment_env_file() {
-            printf '%s\n' "$DEPLOY_ENV_FILE" > deploy/.env
+            tmp_env_file="$(mktemp)"
+
+            printf '%s\n' "$DEPLOY_ENV_FILE" > "$tmp_env_file"
+
+            awk \
+              -v target_image_name="$TARGET_IMAGE_NAME" \
+              -v target_image_tag="$TARGET_IMAGE_TAG" \
+              'BEGIN { seen_name = 0; seen_tag = 0 }
+              /^IMAGE_NAME=/ {
+                if (!seen_name) {
+                  print "IMAGE_NAME=" target_image_name
+                  seen_name = 1
+                }
+                next
+              }
+              /^IMAGE_TAG=/ {
+                if (!seen_tag) {
+                  print "IMAGE_TAG=" target_image_tag
+                  seen_tag = 1
+                }
+                next
+              }
+              {
+                print
+              }
+              END {
+                if (!seen_name) {
+                  print "IMAGE_NAME=" target_image_name
+                }
+                if (!seen_tag) {
+                  print "IMAGE_TAG=" target_image_tag
+                }
+              }' \
+              "$tmp_env_file" > deploy/.env
+
+            rm -f "$tmp_env_file"
           }
 
           # prepare_remote_deployment_script builds the server-side deploy script for this attempt.
           # The remote script keeps the inner 10 pull and health retries.
+          # It always pulls the freshly published latest image before compose recreates the service.
           prepare_remote_deployment_script() {
             cat > deploy/remote-deploy.sh <<'REMOTE_SCRIPT'
           #!/usr/bin/env bash
@@ -241,7 +279,7 @@ jobs:
           for attempt in $(seq 1 "$MAX_DEPLOY_ATTEMPTS"); do
             echo "Deploy attempt ${attempt}/${MAX_DEPLOY_ATTEMPTS}"
 
-            if timeout "$DOCKER_PULL_TIMEOUT_SECONDS" docker pull "$TARGET_IMAGE" && timeout "$COMPOSE_UP_TIMEOUT_SECONDS" docker compose up -d; then
+            if timeout "$DOCKER_PULL_TIMEOUT_SECONDS" docker pull "$TARGET_IMAGE" && timeout "$DOCKER_PULL_TIMEOUT_SECONDS" docker compose pull linuxdospace && timeout "$COMPOSE_UP_TIMEOUT_SECONDS" docker compose up -d; then
               for health_check_round in $(seq 1 12); do
                 echo "Health check round ${health_check_round}/12"
                 sleep 10
