@@ -106,186 +106,17 @@ jobs:
             exit 1
           fi
 
-      - name: Prepare SSH key
-        shell: bash
-        run: |
-          DEPLOY_PORT="${DEPLOY_PORT:-22}"
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-
-          keyscan_success=0
-          for attempt in $(seq 1 10); do
-            keyscan_file="$(mktemp)"
-
-            if ssh-keyscan -T 10 -t rsa,ecdsa,ed25519 -p "$DEPLOY_PORT" "$DEPLOY_HOST" > "$keyscan_file" 2>/dev/null && [ -s "$keyscan_file" ]; then
-              cat "$keyscan_file" >> ~/.ssh/known_hosts
-              rm -f "$keyscan_file"
-              keyscan_success=1
-              break
-            fi
-
-            if [ -s "$keyscan_file" ]; then
-              cat "$keyscan_file" >> ~/.ssh/known_hosts
-              rm -f "$keyscan_file"
-              keyscan_success=1
-              break
-            fi
-
-            rm -f "$keyscan_file"
-            echo "ssh-keyscan attempt ${attempt}/10 did not return a host key."
-            sleep 3
-          done
-
-          if [ "$keyscan_success" -ne 1 ]; then
-            echo '::error::Failed to collect the SSH host key after 10 attempts.'
-            exit 1
-          fi
-
-      - name: Prepare deployment env file
-        shell: bash
-        run: |
-          printf '%s\n' "$DEPLOY_ENV_FILE" > deploy/.env
-
-      - name: Prepare remote deployment script
-        shell: bash
-        run: |
-          cat > deploy/remote-deploy.sh <<'REMOTE_SCRIPT'
-          #!/usr/bin/env bash
-          set -euo pipefail
-
-          # 当前脚本在远程服务器本地执行，避免长时间占用单个 SSH 会话。
-          # 所有关键输入都通过环境变量注入，缺失时立即失败并回写状态文件。
-          : "${DEPLOY_PATH:?DEPLOY_PATH is required}"
-          : "${TARGET_IMAGE:?TARGET_IMAGE is required}"
-          : "${TARGET_REVISION:?TARGET_REVISION is required}"
-          : "${MAX_DEPLOY_ATTEMPTS:?MAX_DEPLOY_ATTEMPTS is required}"
-          : "${STATUS_FILE:?STATUS_FILE is required}"
-
-          cd "$DEPLOY_PATH"
-
-          # 容器健康检查状态；没有 Healthcheck 时返回 no-healthcheck。
-          container_health_status() {
-            docker inspect linuxdospace --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' 2>/dev/null || true
-          }
-
-          # 容器运行状态，例如 running / exited。
-          container_runtime_status() {
-            docker inspect linuxdospace --format '{{.State.Status}}' 2>/dev/null || true
-          }
-
-          # 当前容器对应镜像的 revision 标签，用于判断是否切到目标版本。
-          container_revision() {
-            docker inspect linuxdospace --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' 2>/dev/null || true
-          }
-
-          # deployment_is_healthy 判断当前服务是否已经切换到目标 revision 且健康可用。
-          deployment_is_healthy() {
-            local current_revision
-            local current_health
-            local current_status
-
-            current_revision="$(container_revision)"
-            current_health="$(container_health_status)"
-            current_status="$(container_runtime_status)"
-
-            echo "Current revision: ${current_revision:-<none>}"
-            echo "Current health: ${current_health:-<none>}"
-            echo "Current status: ${current_status:-<none>}"
-
-            if [ "$current_revision" != "$TARGET_REVISION" ]; then
-              return 1
-            fi
-
-            if [ "$current_health" = 'healthy' ]; then
-              return 0
-            fi
-
-            if [ "$current_health" = 'no-healthcheck' ] && [ "$current_status" = 'running' ]; then
-              return 0
-            fi
-
-            return 1
-          }
-
-          # show_diagnostics 在某轮失败后输出关键信息，便于后续轮询时查看日志。
-          show_diagnostics() {
-            docker ps --filter name=linuxdospace --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' || true
-            docker compose ps || true
-            docker logs --tail 80 linuxdospace || true
-          }
-
-          # 无论何种异常退出，都先把状态写成 failure；只有明确成功时才覆盖为 success。
-          echo 'running' > "$STATUS_FILE"
-          trap 'echo failure > "$STATUS_FILE"' EXIT
-
-          for attempt in $(seq 1 "$MAX_DEPLOY_ATTEMPTS"); do
-            echo "Deploy attempt ${attempt}/${MAX_DEPLOY_ATTEMPTS}"
-
-            if docker pull "$TARGET_IMAGE" && docker compose up -d; then
-              for health_check_round in $(seq 1 12); do
-                echo "Health check round ${health_check_round}/12"
-                sleep 10
-
-                if deployment_is_healthy; then
-                  echo 'Deployment finished successfully.'
-                  echo 'success' > "$STATUS_FILE"
-                  trap - EXIT
-                  exit 0
-                fi
-              done
-            else
-              echo 'Pull or compose update failed in this attempt.'
-            fi
-
-            show_diagnostics
-
-            if [ "$attempt" -lt "$MAX_DEPLOY_ATTEMPTS" ]; then
-              echo 'Retrying after 20 seconds...'
-              sleep 20
-            fi
-          done
-
-          echo "Deployment failed after ${MAX_DEPLOY_ATTEMPTS} attempts."
-          echo 'failure' > "$STATUS_FILE"
-          trap - EXIT
-          exit 1
-          REMOTE_SCRIPT
-
-          chmod +x deploy/remote-deploy.sh
-
-      - name: Check remote deployment prerequisites
-        shell: bash
-        run: |
-          DEPLOY_PORT="${DEPLOY_PORT:-22}"
-          DEPLOY_PATH="${DEPLOY_PATH:-/opt/linuxdospace}"
-          SSH_OPTS="-o ServerAliveInterval=15 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20"
-          ssh $SSH_OPTS -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "\
-            set -euo pipefail && \
-            command -v docker >/dev/null && \
-            docker compose version >/dev/null && \
-            command -v setsid >/dev/null && \
-            mkdir -p '$DEPLOY_PATH'"
-
-      - name: Upload compose bundle to Debian server
-        shell: bash
-        run: |
-          DEPLOY_PORT="${DEPLOY_PORT:-22}"
-          DEPLOY_PATH="${DEPLOY_PATH:-/opt/linuxdospace}"
-          SSH_OPTS="-o ServerAliveInterval=15 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20"
-          ssh $SSH_OPTS -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$DEPLOY_PATH'"
-          scp $SSH_OPTS -P "$DEPLOY_PORT" deploy/docker-compose.yml "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/docker-compose.yml"
-          scp $SSH_OPTS -P "$DEPLOY_PORT" deploy/.env "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/.env"
-          scp $SSH_OPTS -P "$DEPLOY_PORT" deploy/remote-deploy.sh "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/remote-deploy.sh"
-
-      - name: Start remote deployment job
+      - name: Deploy to Debian with full retries
         shell: bash
         env:
           TARGET_IMAGE: ghcr.io/moyeranqianzhi/linuxdospace:latest
           TARGET_REVISION: ${{ github.sha }}
           MAX_DEPLOY_ATTEMPTS: '10'
+          MAX_OUTER_DEPLOY_ATTEMPTS: '10'
           REMOTE_DEPLOY_BASENAME: github-actions-deploy-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
+          set -euo pipefail
+
           DEPLOY_PORT="${DEPLOY_PORT:-22}"
           DEPLOY_PATH="${DEPLOY_PATH:-/opt/linuxdospace}"
           REMOTE_LOG_FILE="${REMOTE_DEPLOY_BASENAME}.log"
@@ -293,74 +124,267 @@ jobs:
           REMOTE_PID_FILE="${REMOTE_DEPLOY_BASENAME}.pid"
           SSH_OPTS="-o ServerAliveInterval=15 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20"
 
-          remote_pid="$(
-            ssh $SSH_OPTS -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "\
-              cd '$DEPLOY_PATH' && \
-              rm -f '$REMOTE_LOG_FILE' '$REMOTE_STATUS_FILE' '$REMOTE_PID_FILE' && \
-              chmod +x ./remote-deploy.sh && \
-              setsid -f env \
-                DEPLOY_PATH='$DEPLOY_PATH' \
-                TARGET_IMAGE='$TARGET_IMAGE' \
-                TARGET_REVISION='$TARGET_REVISION' \
-                MAX_DEPLOY_ATTEMPTS='$MAX_DEPLOY_ATTEMPTS' \
-                STATUS_FILE='$REMOTE_STATUS_FILE' \
-                bash -lc 'echo \$\$ > '$REMOTE_PID_FILE'; exec ./remote-deploy.sh' \
-                > '$REMOTE_LOG_FILE' 2>&1 < /dev/null && \
-              sleep 1 && \
-              cat '$REMOTE_PID_FILE' && \
-              kill -0 \$(cat '$REMOTE_PID_FILE') 2>/dev/null"
-          )"
+          # prepare_ssh_key refreshes the private key and host keys before each outer retry.
+          # Keeping SSH bootstrap inside the retry loop makes the whole deploy pipeline self-healing.
+          prepare_ssh_key() {
+            install -m 700 -d ~/.ssh
+            printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+            chmod 600 ~/.ssh/id_ed25519
+            : > ~/.ssh/known_hosts
 
-          remote_pid="$(printf '%s' "$remote_pid" | tr -d '\r\n[:space:]')"
+            keyscan_success=0
+            for attempt in $(seq 1 10); do
+              keyscan_file="$(mktemp)"
 
-          if ! printf '%s' "$remote_pid" | grep -Eq '^[0-9]+$'; then
-            echo '::error::Failed to start detached remote deployment job.'
+              if ssh-keyscan -T 10 -t rsa,ecdsa,ed25519 -p "$DEPLOY_PORT" "$DEPLOY_HOST" > "$keyscan_file" 2>/dev/null && [ -s "$keyscan_file" ]; then
+                cat "$keyscan_file" >> ~/.ssh/known_hosts
+                rm -f "$keyscan_file"
+                keyscan_success=1
+                break
+              fi
+
+              if [ -s "$keyscan_file" ]; then
+                cat "$keyscan_file" >> ~/.ssh/known_hosts
+                rm -f "$keyscan_file"
+                keyscan_success=1
+                break
+              fi
+
+              rm -f "$keyscan_file"
+              echo "ssh-keyscan attempt ${attempt}/10 did not return a host key."
+              sleep 3
+            done
+
+            if [ "$keyscan_success" -ne 1 ]; then
+              echo '::error::Failed to collect the SSH host key after 10 attempts.'
+              return 1
+            fi
+          }
+
+          # prepare_deployment_env_file rewrites the runtime env file from the current secret payload.
+          # This avoids stale local artifacts when the outer retry loop starts a fresh attempt.
+          prepare_deployment_env_file() {
+            printf '%s\n' "$DEPLOY_ENV_FILE" > deploy/.env
+          }
+
+          # prepare_remote_deployment_script builds the server-side deploy script for this attempt.
+          # The remote script keeps the inner 10 pull and health retries.
+          prepare_remote_deployment_script() {
+            cat > deploy/remote-deploy.sh <<'REMOTE_SCRIPT'
+            #!/usr/bin/env bash
+            set -euo pipefail
+
+            # This script runs on the Debian server. It trusts only explicit environment
+            # variables passed by the GitHub Actions runner at launch time.
+            : "${DEPLOY_PATH:?DEPLOY_PATH is required}"
+            : "${TARGET_IMAGE:?TARGET_IMAGE is required}"
+            : "${TARGET_REVISION:?TARGET_REVISION is required}"
+            : "${MAX_DEPLOY_ATTEMPTS:?MAX_DEPLOY_ATTEMPTS is required}"
+            : "${STATUS_FILE:?STATUS_FILE is required}"
+
+            cd "$DEPLOY_PATH"
+
+            # Report the current health state. Containers without a healthcheck return no-healthcheck.
+            container_health_status() {
+              docker inspect linuxdospace --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' 2>/dev/null || true
+            }
+
+            # Report the runtime state so a no-healthcheck container can still be validated as running.
+            container_runtime_status() {
+              docker inspect linuxdospace --format '{{.State.Status}}' 2>/dev/null || true
+            }
+
+            # Read the revision label from the running container to confirm the target image is live.
+            container_revision() {
+              docker inspect linuxdospace --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' 2>/dev/null || true
+            }
+
+            # deployment_is_healthy succeeds only when the expected revision is running and healthy.
+            deployment_is_healthy() {
+              current_revision="$(container_revision)"
+              current_health="$(container_health_status)"
+              current_status="$(container_runtime_status)"
+
+              echo "Current revision: ${current_revision}"
+              echo "Current health: ${current_health}"
+              echo "Current status: ${current_status}"
+
+              if [ "$current_revision" != "$TARGET_REVISION" ]; then
+                return 1
+              fi
+
+              if [ "$current_health" = 'healthy' ]; then
+                return 0
+              fi
+
+              if [ "$current_health" = 'no-healthcheck' ] && [ "$current_status" = 'running' ]; then
+                return 0
+              fi
+
+              return 1
+            }
+
+            # show_diagnostics prints enough context for the Actions runner to debug a failed attempt.
+            show_diagnostics() {
+              docker ps --filter name=linuxdospace --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' || true
+              docker compose ps || true
+              docker logs --tail 80 linuxdospace || true
+            }
+
+            # Default to failure unless the script explicitly reaches a verified success state.
+            echo 'running' > "$STATUS_FILE"
+            trap 'echo failure > "$STATUS_FILE"' EXIT
+
+            for attempt in $(seq 1 "$MAX_DEPLOY_ATTEMPTS"); do
+              echo "Deploy attempt ${attempt}/${MAX_DEPLOY_ATTEMPTS}"
+
+              if docker pull "$TARGET_IMAGE" && docker compose up -d; then
+                for health_check_round in $(seq 1 12); do
+                  echo "Health check round ${health_check_round}/12"
+                  sleep 10
+
+                  if deployment_is_healthy; then
+                    echo 'Deployment finished successfully.'
+                    echo 'success' > "$STATUS_FILE"
+                    trap - EXIT
+                    exit 0
+                  fi
+                done
+              else
+                echo 'Pull or compose update failed in this attempt.'
+              fi
+
+              show_diagnostics
+
+              if [ "$attempt" -lt "$MAX_DEPLOY_ATTEMPTS" ]; then
+                echo 'Retrying after 20 seconds...'
+                sleep 20
+              fi
+            done
+
+            echo "Deployment failed after ${MAX_DEPLOY_ATTEMPTS} attempts."
+            echo 'failure' > "$STATUS_FILE"
+            trap - EXIT
             exit 1
-          fi
+            REMOTE_SCRIPT
 
-          echo "Remote deployment PID: ${remote_pid}"
+            chmod +x deploy/remote-deploy.sh
+          }
 
-      - name: Wait for remote deployment result
-        shell: bash
-        env:
-          REMOTE_DEPLOY_BASENAME: github-actions-deploy-${{ github.run_id }}-${{ github.run_attempt }}
-        run: |
-          DEPLOY_PORT="${DEPLOY_PORT:-22}"
-          DEPLOY_PATH="${DEPLOY_PATH:-/opt/linuxdospace}"
-          REMOTE_LOG_FILE="${REMOTE_DEPLOY_BASENAME}.log"
-          REMOTE_STATUS_FILE="${REMOTE_DEPLOY_BASENAME}.status"
-          SSH_OPTS="-o ServerAliveInterval=15 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes -o ConnectTimeout=20"
+          # check_remote_deployment_prerequisites verifies SSH connectivity and required binaries.
+          # A failure here should be retried just like an upload failure or start failure.
+          check_remote_deployment_prerequisites() {
+            ssh $SSH_OPTS -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "\
+              set -euo pipefail && \
+              command -v docker >/dev/null && \
+              docker compose version >/dev/null && \
+              command -v setsid >/dev/null && \
+              mkdir -p '$DEPLOY_PATH'"
+          }
 
-          for poll_round in $(seq 1 120); do
-            echo "Poll round ${poll_round}/120"
+          # upload_compose_bundle transfers every file needed by the remote script.
+          # This is one of the main flaky network points, so it sits inside the outer retry loop.
+          upload_compose_bundle() {
+            ssh $SSH_OPTS -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$DEPLOY_PATH'"
+            scp $SSH_OPTS -P "$DEPLOY_PORT" deploy/docker-compose.yml "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/docker-compose.yml"
+            scp $SSH_OPTS -P "$DEPLOY_PORT" deploy/.env "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/.env"
+            scp $SSH_OPTS -P "$DEPLOY_PORT" deploy/remote-deploy.sh "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/remote-deploy.sh"
+          }
 
-            remote_status="$({
+          # start_remote_deployment_job launches the remote script in a detached session and validates its PID.
+          # Returning a failure here lets the outer retry start the whole deploy pipeline again.
+          start_remote_deployment_job() {
+            remote_pid="$({
               ssh $SSH_OPTS -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "\
                 cd '$DEPLOY_PATH' && \
-                if [ -f '$REMOTE_STATUS_FILE' ]; then cat '$REMOTE_STATUS_FILE'; else echo running; fi"
-            } | tr -d '\r')"
+                rm -f '$REMOTE_LOG_FILE' '$REMOTE_STATUS_FILE' '$REMOTE_PID_FILE' && \
+                chmod +x ./remote-deploy.sh && \
+                setsid -f env \
+                  DEPLOY_PATH='$DEPLOY_PATH' \
+                  TARGET_IMAGE='$TARGET_IMAGE' \
+                  TARGET_REVISION='$TARGET_REVISION' \
+                  MAX_DEPLOY_ATTEMPTS='$MAX_DEPLOY_ATTEMPTS' \
+                  STATUS_FILE='$REMOTE_STATUS_FILE' \
+                  bash -lc 'echo \$\$ > '$REMOTE_PID_FILE'; exec ./remote-deploy.sh' \
+                  > '$REMOTE_LOG_FILE' 2>&1 < /dev/null && \
+                sleep 1 && \
+                cat '$REMOTE_PID_FILE' && \
+                kill -0 \$(cat '$REMOTE_PID_FILE') 2>/dev/null"
+            } | tr -d '\r\n[:space:]')" || return 1
 
-            echo "Remote deployment status: ${remote_status}"
+            if ! printf '%s' "$remote_pid" | grep -Eq '^[0-9]+$'; then
+              echo '::error::Failed to start detached remote deployment job.'
+              return 1
+            fi
 
+            echo "Remote deployment PID: ${remote_pid}"
+          }
+
+          # wait_for_remote_deployment_result polls the remote status file and streams recent logs.
+          # SSH timeouts, explicit failure, or polling timeouts all bubble up to the outer retry loop.
+          wait_for_remote_deployment_result() {
+            for poll_round in $(seq 1 120); do
+              echo "Poll round ${poll_round}/120"
+
+              remote_status="$({
+                ssh $SSH_OPTS -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "\
+                  cd '$DEPLOY_PATH' && \
+                  if [ -f '$REMOTE_STATUS_FILE' ]; then cat '$REMOTE_STATUS_FILE'; else echo running; fi"
+              } | tr -d '\r')" || return 1
+
+              echo "Remote deployment status: ${remote_status}"
+
+              ssh $SSH_OPTS -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "\
+                cd '$DEPLOY_PATH' && \
+                if [ -f '$REMOTE_LOG_FILE' ]; then tail -n 20 '$REMOTE_LOG_FILE'; fi" || true
+
+              if [ "$remote_status" = 'success' ]; then
+                echo 'Remote deployment reported success.'
+                return 0
+              fi
+
+              if [ "$remote_status" = 'failure' ]; then
+                echo 'Remote deployment reported failure.'
+                return 1
+              fi
+
+              sleep 15
+            done
+
+            echo 'Timed out while waiting for remote deployment result.'
             ssh $SSH_OPTS -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "\
               cd '$DEPLOY_PATH' && \
-              if [ -f '$REMOTE_LOG_FILE' ]; then tail -n 20 '$REMOTE_LOG_FILE'; fi" || true
+              if [ -f '$REMOTE_LOG_FILE' ]; then tail -n 120 '$REMOTE_LOG_FILE'; fi" || true
+            return 1
+          }
 
-            if [ "$remote_status" = 'success' ]; then
-              echo 'Remote deployment reported success.'
+          # run_single_deploy_attempt executes one complete outer attempt from SSH bootstrap to final poll.
+          # Together with the inner pull retry loop, the theoretical maximum reaches 10 x 10 attempts.
+          run_single_deploy_attempt() {
+            prepare_ssh_key
+            prepare_deployment_env_file
+            prepare_remote_deployment_script
+            check_remote_deployment_prerequisites
+            upload_compose_bundle
+            start_remote_deployment_job
+            wait_for_remote_deployment_result
+          }
+
+          for outer_attempt in $(seq 1 "$MAX_OUTER_DEPLOY_ATTEMPTS"); do
+            echo "Outer deploy attempt ${outer_attempt}/${MAX_OUTER_DEPLOY_ATTEMPTS}"
+
+            if run_single_deploy_attempt; then
+              echo "Deployment finished successfully in outer attempt ${outer_attempt}/${MAX_OUTER_DEPLOY_ATTEMPTS}."
               exit 0
             fi
 
-            if [ "$remote_status" = 'failure' ]; then
-              echo 'Remote deployment reported failure.'
-              exit 1
-            fi
+            echo "Outer deploy attempt ${outer_attempt}/${MAX_OUTER_DEPLOY_ATTEMPTS} failed."
 
-            sleep 15
+            if [ "$outer_attempt" -lt "$MAX_OUTER_DEPLOY_ATTEMPTS" ]; then
+              echo 'Retrying the full deployment pipeline after 20 seconds...'
+              sleep 20
+            fi
           done
 
-          echo 'Timed out while waiting for remote deployment result.'
-          ssh $SSH_OPTS -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "\
-            cd '$DEPLOY_PATH' && \
-            if [ -f '$REMOTE_LOG_FILE' ]; then tail -n 120 '$REMOTE_LOG_FILE'; fi" || true
+          echo "::error::Deployment failed after ${MAX_OUTER_DEPLOY_ATTEMPTS} outer attempts. Each outer attempt can still perform up to ${MAX_DEPLOY_ATTEMPTS} remote pull retries."
           exit 1
