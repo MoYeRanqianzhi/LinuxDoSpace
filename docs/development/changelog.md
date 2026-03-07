@@ -1,5 +1,10 @@
 # LinuxDoSpace 更新日志
 
+## 0.5.3-alpha.11
+
+- 修复自动部署工作流在远程执行 `docker pull` 时错误使用带大写字母的仓库名，导致 Docker 拒绝镜像引用格式的问题。
+- 将远程部署阶段的目标镜像名显式固定为全小写 `ghcr.io/moyeranqianzhi/linuxdospace:latest`，确保重试逻辑真正作用于有效镜像地址。
+
 ## 0.5.3-alpha.10
 
 - 将 Debian 自动部署工作流收敛回服务器端 `docker pull ghcr.io/moyeranqianzhi/linuxdospace:latest && docker compose up -d` 的更新路径。

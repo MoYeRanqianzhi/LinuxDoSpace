@@ -143,7 +143,7 @@ jobs:
       - name: Deploy with retry and health checks
         shell: bash
         env:
-          TARGET_IMAGE: ghcr.io/${{ github.repository }}:latest
+          TARGET_IMAGE: ghcr.io/moyeranqianzhi/linuxdospace:latest
           TARGET_REVISION: ${{ github.sha }}
           MAX_DEPLOY_ATTEMPTS: '10'
         run: |
