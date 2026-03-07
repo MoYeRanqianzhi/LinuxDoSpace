@@ -1,5 +1,10 @@
 # LinuxDoSpace 更新日志
 
+## 0.5.3-alpha.18
+
+- 为服务器端 `remote-deploy.sh` 的 `docker pull` 和 `docker compose up -d` 增加显式超时，避免网络异常时卡死在单次内层尝试、导致外层重试无法接管。
+- 在远端前置检查中补充 `timeout` 命令可用性校验，并把超时参数一并注入到远端部署脚本，使“外层 10 次 + 内层 10 次”重试逻辑真正闭环。
+
 ## 0.5.3-alpha.17
 
 - 修复 `0.5.3-alpha.16` 中部署脚本生成逻辑的 here-doc 缩进错误，避免 GitHub Runner 在进入外层重试之前就因 shell 解析失败而直接终止。

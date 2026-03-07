@@ -113,6 +113,8 @@ jobs:
           TARGET_REVISION: ${{ github.sha }}
           MAX_DEPLOY_ATTEMPTS: '10'
           MAX_OUTER_DEPLOY_ATTEMPTS: '10'
+          DOCKER_PULL_TIMEOUT_SECONDS: '600'
+          COMPOSE_UP_TIMEOUT_SECONDS: '300'
           REMOTE_DEPLOY_BASENAME: github-actions-deploy-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
@@ -181,6 +183,8 @@ jobs:
           : "${TARGET_REVISION:?TARGET_REVISION is required}"
           : "${MAX_DEPLOY_ATTEMPTS:?MAX_DEPLOY_ATTEMPTS is required}"
           : "${STATUS_FILE:?STATUS_FILE is required}"
+          : "${DOCKER_PULL_TIMEOUT_SECONDS:=600}"
+          : "${COMPOSE_UP_TIMEOUT_SECONDS:=300}"
 
           cd "$DEPLOY_PATH"
 
@@ -238,7 +242,7 @@ jobs:
           for attempt in $(seq 1 "$MAX_DEPLOY_ATTEMPTS"); do
             echo "Deploy attempt ${attempt}/${MAX_DEPLOY_ATTEMPTS}"
 
-            if docker pull "$TARGET_IMAGE" && docker compose up -d; then
+            if timeout "$DOCKER_PULL_TIMEOUT_SECONDS" docker pull "$TARGET_IMAGE" && timeout "$COMPOSE_UP_TIMEOUT_SECONDS" docker compose up -d; then
               for health_check_round in $(seq 1 12); do
                 echo "Health check round ${health_check_round}/12"
                 sleep 10
@@ -279,6 +283,7 @@ jobs:
               command -v docker >/dev/null && \
               docker compose version >/dev/null && \
               command -v setsid >/dev/null && \
+              command -v timeout >/dev/null && \
               mkdir -p '$DEPLOY_PATH'"
           }
 
@@ -305,6 +310,8 @@ jobs:
                   TARGET_REVISION='$TARGET_REVISION' \
                   MAX_DEPLOY_ATTEMPTS='$MAX_DEPLOY_ATTEMPTS' \
                   STATUS_FILE='$REMOTE_STATUS_FILE' \
+                  DOCKER_PULL_TIMEOUT_SECONDS='$DOCKER_PULL_TIMEOUT_SECONDS' \
+                  COMPOSE_UP_TIMEOUT_SECONDS='$COMPOSE_UP_TIMEOUT_SECONDS' \
                   bash -lc 'echo \$\$ > '$REMOTE_PID_FILE'; exec ./remote-deploy.sh' \
                   > '$REMOTE_LOG_FILE' 2>&1 < /dev/null && \
                 sleep 1 && \
