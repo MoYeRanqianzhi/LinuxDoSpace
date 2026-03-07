@@ -1,5 +1,11 @@
 # LinuxDoSpace 更新日志
 
+## 0.5.3-alpha.9
+
+- 将 GitHub Actions 的 Debian 自动部署流程改为在 runner 上拉取镜像、导出为压缩镜像包并上传到服务器，再由服务器 `docker load` 后执行 `docker compose up -d`。
+- 避免部署阶段依赖服务器直连 `ghcr.io`，修复服务器侧访问 GHCR 超时导致自动部署失败的问题。
+- 简化部署工作流对 Secrets 的要求，部署阶段不再强依赖服务器端 GHCR 登录凭据。
+
 ## 0.5.3-alpha.8
 
 - 将前端主导航与应用壳切换到新的多页面 UI 结构，补回首页、域名分发、邮箱分发、配置中心、权限申请、共同监督等入口。

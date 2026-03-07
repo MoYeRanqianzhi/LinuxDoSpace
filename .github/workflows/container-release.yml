@@ -69,6 +69,9 @@ jobs:
     name: Deploy To Debian
     needs: build-and-push
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     # GitHub Actions does not allow secrets.* in job-level if expressions.
     # We only gate on the manual input here, then validate the required secrets
     # inside the job so the workflow file stays syntactically valid.
@@ -80,8 +83,6 @@ jobs:
       DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
       DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
       DEPLOY_ENV_FILE: ${{ secrets.DEPLOY_ENV_FILE }}
-      DEPLOY_GHCR_USERNAME: ${{ secrets.DEPLOY_GHCR_USERNAME }}
-      DEPLOY_GHCR_TOKEN: ${{ secrets.DEPLOY_GHCR_TOKEN }}
 
     steps:
       - name: Checkout repository
@@ -96,9 +97,7 @@ jobs:
             DEPLOY_HOST \
             DEPLOY_USER \
             DEPLOY_SSH_PRIVATE_KEY \
-            DEPLOY_ENV_FILE \
-            DEPLOY_GHCR_USERNAME \
-            DEPLOY_GHCR_TOKEN
+            DEPLOY_ENV_FILE
           do
             if [ -z "${!secret_name}" ]; then
               echo "::error::Missing required secret: ${secret_name}"
@@ -124,6 +123,20 @@ jobs:
         run: |
           printf '%s\n' "$DEPLOY_ENV_FILE" > deploy/.env
 
+      - name: Log in to GHCR on runner
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull deployment image and export bundle
+        shell: bash
+        run: |
+          DEPLOY_IMAGE_REF="ghcr.io/${GITHUB_REPOSITORY,,}:latest"
+          docker pull "$DEPLOY_IMAGE_REF"
+          docker save "$DEPLOY_IMAGE_REF" | gzip > deploy/linuxdospace-image.tar.gz
+
       - name: Upload compose bundle to Debian server
         shell: bash
         run: |
@@ -132,15 +145,16 @@ jobs:
           ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$DEPLOY_PATH'"
           scp -P "$DEPLOY_PORT" deploy/docker-compose.yml "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/docker-compose.yml"
           scp -P "$DEPLOY_PORT" deploy/.env "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/.env"
+          scp -P "$DEPLOY_PORT" deploy/linuxdospace-image.tar.gz "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/linuxdospace-image.tar.gz"
 
-      - name: Pull image and restart compose stack
+      - name: Load image and restart compose stack
         shell: bash
         run: |
           DEPLOY_PORT="${DEPLOY_PORT:-22}"
           DEPLOY_PATH="${DEPLOY_PATH:-/opt/linuxdospace}"
           ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "\
             cd '$DEPLOY_PATH' && \
-            echo '$DEPLOY_GHCR_TOKEN' | docker login ghcr.io -u '$DEPLOY_GHCR_USERNAME' --password-stdin && \
-            docker compose pull && \
+            gunzip -c linuxdospace-image.tar.gz | docker load && \
             docker compose up -d && \
-            docker image prune -f"
+            docker image prune -f && \
+            rm -f linuxdospace-image.tar.gz"
