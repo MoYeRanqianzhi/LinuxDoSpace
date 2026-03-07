@@ -22,10 +22,12 @@ func TestListPublicAllocationOwnershipsOnlyReturnsActivelyUsedAllocations(t *tes
 	deletedAllocation := newTestAllocation(t, ctx, store, user, managedDomain, "deleted", "active")
 	inactiveAllocation := newTestAllocation(t, ctx, store, user, managedDomain, "inactive", "disabled")
 
-	writeDNSAuditLog(t, ctx, store, user, usedAllocation, "dns_record.create")
-	writeDNSAuditLog(t, ctx, store, user, deletedAllocation, "dns_record.create")
-	writeDNSAuditLog(t, ctx, store, user, deletedAllocation, "dns_record.delete")
-	writeDNSAuditLog(t, ctx, store, user, inactiveAllocation, "dns_record.create")
+	writeDNSAuditLog(t, ctx, store, user, usedAllocation, "dns_record.create", "used-record-a")
+	writeDNSAuditLog(t, ctx, store, user, usedAllocation, "dns_record.create", "used-record-b")
+	writeDNSAuditLog(t, ctx, store, user, usedAllocation, "dns_record.delete", "used-record-a")
+	writeDNSAuditLog(t, ctx, store, user, deletedAllocation, "dns_record.create", "deleted-record")
+	writeDNSAuditLog(t, ctx, store, user, deletedAllocation, "dns_record.delete", "deleted-record")
+	writeDNSAuditLog(t, ctx, store, user, inactiveAllocation, "dns_record.create", "inactive-record")
 
 	items, err := store.ListPublicAllocationOwnerships(ctx)
 	if err != nil {
@@ -136,12 +138,12 @@ func newTestAllocation(t *testing.T, ctx context.Context, store *Store, user mod
 }
 
 // writeDNSAuditLog 为指定 allocation 写入一条 DNS 审计事件，用来模拟真实的记录创建/删除历史。
-func writeDNSAuditLog(t *testing.T, ctx context.Context, store *Store, user model.User, allocation model.Allocation, action string) {
+func writeDNSAuditLog(t *testing.T, ctx context.Context, store *Store, user model.User, allocation model.Allocation, action string, recordID string) {
 	t.Helper()
 
 	metadata, err := json.Marshal(map[string]any{
 		"allocation_id": allocation.ID,
-		"record_id":     action + "-record",
+		"record_id":     recordID,
 		"name":          allocation.FQDN,
 		"type":          "A",
 	})
@@ -153,7 +155,7 @@ func writeDNSAuditLog(t *testing.T, ctx context.Context, store *Store, user mode
 		ActorUserID:  &user.ID,
 		Action:       action,
 		ResourceType: "dns_record",
-		ResourceID:   action + "-resource",
+		ResourceID:   recordID,
 		MetadataJSON: string(metadata),
 	}); err != nil {
 		t.Fatalf("write dns audit log %q: %v", action, err)
