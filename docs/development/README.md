@@ -1,9 +1,6 @@
-# LinuxDoSpace 开发文档
-
-本目录用于保存 LinuxDoSpace 的开发期持久化文档，确保后续维护、功能迭代、Bug 修复和审计都具备可追溯性。
-
-建议阅读顺序：
-
+﻿# LinuxDoSpace 寮€鍙戞枃妗?
+鏈洰褰曠敤浜庝繚瀛?LinuxDoSpace 鐨勫紑鍙戞湡鎸佷箙鍖栨枃妗ｏ紝纭繚鍚庣画缁存姢銆佸姛鑳借凯浠ｃ€丅ug 淇鍜屽璁￠兘鍏峰鍙拷婧€с€?
+寤鸿闃呰椤哄簭锛?
 1. [architecture.md](/G:/ClaudeProjects/LinuxDoSpace/docs/development/architecture.md)
 2. [api.md](/G:/ClaudeProjects/LinuxDoSpace/docs/development/api.md)
 3. [runbook.md](/G:/ClaudeProjects/LinuxDoSpace/docs/development/runbook.md)
@@ -12,10 +9,6 @@
 6. [known-issues.md](/G:/ClaudeProjects/LinuxDoSpace/docs/development/known-issues.md)
 7. [changelog.md](/G:/ClaudeProjects/LinuxDoSpace/docs/development/changelog.md)
 
-当前阶段说明：
-
-- 已完成 Go 后端可运行版本，包含 Linux Do OAuth、服务端会话、CSRF、防越权 DNS 命名空间管理和管理员接口。
-- 已完成 SQLite 持久化、Cloudflare 真实集成测试和开发期文档沉淀。
-- 已完成前端核心页面对接，包含登录态同步、域名查询、命名空间申请和 DNS 记录管理。
-- 已完成单镜像 Docker 化方案，并补充 GHCR 构建发布与 Debian 服务器部署工作流。
-- 管理员相关后端接口尚未配套后台管理页面。
+褰撳墠闃舵璇存槑锛?
+- 宸插畬鎴?Go 鍚庣鍙繍琛岀増鏈紝鍖呭惈 Linux Do OAuth銆佹湇鍔＄浼氳瘽銆丆SRF銆侀槻瓒婃潈 DNS 鍛藉悕绌洪棿绠＄悊鍜岀鐞嗗憳鎺ュ彛銆?- 宸插畬鎴?SQLite 鎸佷箙鍖栥€丆loudflare 鐪熷疄闆嗘垚娴嬭瘯鍜屽紑鍙戞湡鏂囨。娌夋穩銆?- 宸插畬鎴愬墠绔牳蹇冮〉闈㈠鎺ワ紝鍖呭惈鐧诲綍鎬佸悓姝ャ€佸煙鍚嶆煡璇€佸懡鍚嶇┖闂寸敵璇峰拰 DNS 璁板綍绠＄悊銆?- 宸插畬鎴愬崟闀滃儚 Docker 鍖栨柟妗堬紝骞惰ˉ鍏?GHCR 鏋勫缓鍙戝竷涓?Debian 鏈嶅姟鍣ㄩ儴缃插伐浣滄祦銆?- 绠＄悊鍛樼浉鍏冲悗绔帴鍙ｅ皻鏈厤濂楀悗鍙扮鐞嗛〉闈€?
+- 新增独立的管理员前端工程 `admin-frontend/`，用于单独部署到另一个 Cloudflare Pages；当前为 UI 原型阶段。

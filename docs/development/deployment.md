@@ -78,3 +78,22 @@ curl http://127.0.0.1:8080/healthz
 - LINUXDO_OAUTH_REDIRECT_URL 必须指向后端回调地址，例如 https://api.linuxdo.space/v1/auth/callback`r
 - LINUXDO_OAUTH_SCOPE 建议保持为 user，与 Linux Do 官方示例一致
 
+
+## Admin Frontend (Cloudflare Pages)
+
+管理员前端已经从设计稿拆分为独立工程：
+
+- [admin-frontend/README.md](/G:/ClaudeProjects/LinuxDoSpace/admin-frontend/README.md)
+
+推荐在 Cloudflare Pages 中使用如下配置：
+
+- Root directory: `admin-frontend`
+- Build command: `npm run build`
+- Build output directory: `dist`
+- Optional env: `VITE_ADMIN_DEMO_PASSWORD`
+
+注意事项：
+
+- 当前管理员前端仍是 UI 原型，未接入真实管理 API。
+- 该演示口令只用于静态页面预览，不可替代服务端管理员鉴权。
+- 后续若上线真实后台，必须先补服务端权限校验、审计日志和敏感操作防护。
