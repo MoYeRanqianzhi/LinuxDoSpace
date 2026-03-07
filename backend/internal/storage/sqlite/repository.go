@@ -686,13 +686,29 @@ ORDER BY a.is_primary DESC, a.created_at ASC
 // 该查询只暴露分配的 FQDN 与拥有者身份，不会返回任何 DNS 记录值。
 func (s *Store) ListPublicAllocationOwnerships(ctx context.Context) ([]model.PublicAllocationOwnership, error) {
 	rows, err := s.db.QueryContext(ctx, `
+WITH latest_dns_events AS (
+    SELECT
+        CAST(json_extract(metadata_json, '$.allocation_id') AS INTEGER) AS allocation_id,
+        action,
+        ROW_NUMBER() OVER (
+            PARTITION BY CAST(json_extract(metadata_json, '$.allocation_id') AS INTEGER)
+            ORDER BY created_at DESC, id DESC
+        ) AS row_num
+    FROM audit_logs
+    WHERE resource_type = 'dns_record'
+      AND action IN ('dns_record.create', 'dns_record.update', 'dns_record.delete')
+      AND json_extract(metadata_json, '$.allocation_id') IS NOT NULL
+)
 SELECT
     a.fqdn,
     u.username,
     u.display_name
-FROM allocations a
+FROM latest_dns_events e
+JOIN allocations a ON a.id = e.allocation_id
 JOIN users u ON u.id = a.user_id
-WHERE a.status = 'active'
+WHERE e.row_num = 1
+  AND e.action IN ('dns_record.create', 'dns_record.update')
+  AND a.status = 'active'
 ORDER BY a.fqdn ASC, u.username ASC
 `)
 	if err != nil {

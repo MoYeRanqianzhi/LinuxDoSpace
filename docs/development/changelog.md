@@ -1,4 +1,9 @@
-﻿## 0.5.3-alpha.21
+## 0.5.3-alpha.22
+
+- 修复公开“共同监督”页统计过量的问题；后端不再按所有 active allocation 直接展示，而是改为基于数据库内的 DNS 审计日志判断子域名是否真的被实际使用。
+- 只有最近一次 DNS 事件仍为 `dns_record.create` 或 `dns_record.update` 的 allocation 才会出现在公开监督列表中；仅自动分配但从未填写记录的占位子域名将不再显示。
+- 新增 sqlite 仓储层测试，覆盖“未使用不显示、删除后不显示、禁用 allocation 不显示”的关键场景。
+## 0.5.3-alpha.21
 
 - 从 `new-ui-design` 中提取管理员页面，重组为独立的 `admin-frontend` React 项目，便于单独部署到另一个 Cloudflare Pages。
 - 为管理员端补充独立入口、图标、演示登录、移动端导航、hash 标签页切换和五个管理页面的本地交互原型。
