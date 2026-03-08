@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/subtle"
 	"strings"
 	"time"
 
@@ -225,6 +226,42 @@ func (s *AuthService) Logout(ctx context.Context, sessionID string, actorUserID 
 		return InternalError("failed to write auth logout audit log", err)
 	}
 	return nil
+}
+
+// VerifyAdminPassword checks the extra administrator password and upgrades the
+// current session after a successful constant-time comparison.
+func (s *AuthService) VerifyAdminPassword(ctx context.Context, session model.Session, actor model.User, password string) (time.Time, error) {
+	if !actor.IsAppAdmin {
+		return time.Time{}, ForbiddenError("admin permission required")
+	}
+	if strings.TrimSpace(password) == "" {
+		return time.Time{}, ValidationError("admin password is required")
+	}
+	if session.AdminVerifiedAt != nil {
+		return session.AdminVerifiedAt.UTC(), nil
+	}
+
+	expected := s.cfg.App.AdminPassword
+	if subtle.ConstantTimeCompare([]byte(password), []byte(expected)) != 1 {
+		return time.Time{}, UnauthorizedError("invalid admin password")
+	}
+
+	verifiedAt := time.Now().UTC()
+	if err := s.store.MarkSessionAdminVerified(ctx, session.ID, verifiedAt); err != nil {
+		return time.Time{}, InternalError("failed to persist admin password verification", err)
+	}
+
+	if err := s.store.WriteAuditLog(ctx, sqlite.AuditLogInput{
+		ActorUserID:  &actor.ID,
+		Action:       "admin.session.verify_password",
+		ResourceType: "session",
+		ResourceID:   session.ID,
+		MetadataJSON: `{"second_factor":"password"}`,
+	}); err != nil {
+		return time.Time{}, InternalError("failed to write admin password verification audit log", err)
+	}
+
+	return verifiedAt, nil
 }
 
 // buildAvatarURL converts the avatar template returned by Linux Do into a directly fetchable image URL.

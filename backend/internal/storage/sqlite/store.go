@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -73,9 +74,22 @@ func (s *Store) Migrate(ctx context.Context) error {
 		}
 
 		if _, err := s.db.ExecContext(ctx, string(script)); err != nil {
+			if isIgnorableMigrationError(err) {
+				continue
+			}
 			return fmt.Errorf("execute migration %s: %w", entry.Name(), err)
 		}
 	}
 
 	return nil
+}
+
+// isIgnorableMigrationError reports whether one migration failure only means the
+// schema change was already applied on a previous run.
+func isIgnorableMigrationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	normalized := strings.ToLower(err.Error())
+	return strings.Contains(normalized, "duplicate column name:")
 }

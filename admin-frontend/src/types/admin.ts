@@ -39,10 +39,12 @@ export interface ManagedDomain {
 export interface AdminSessionResponse {
   authenticated: boolean;
   authorized: boolean;
+  password_verified: boolean;
   oauth_configured: boolean;
   user?: AdminUser;
   csrf_token?: string;
   session_expires_at?: string;
+  admin_verified_at?: string;
   managed_domains?: ManagedDomain[];
 }
 

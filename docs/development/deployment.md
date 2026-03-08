@@ -97,8 +97,9 @@ Backend requirements for the admin frontend:
 - `APP_ADMIN_FRONTEND_URL` must point to the deployed admin site
 - `APP_ALLOWED_ORIGINS` must include the admin frontend origin
 - `APP_ADMIN_USERNAMES` must list the Linux Do usernames allowed to access the admin console
+- `APP_ADMIN_PASSWORD` should be set to a private value instead of relying on the temporary default password
 
 Security notes:
 
-- The admin frontend no longer uses a demo password.
-- All real write operations go through backend sessions, admin authorization, CSRF validation, and audit logging.
+- The admin frontend now requires Linux Do admin OAuth plus one extra backend password verification.
+- All real write operations go through backend sessions, admin authorization, admin second-factor verification, CSRF validation, and audit logging.

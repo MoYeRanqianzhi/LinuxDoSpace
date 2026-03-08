@@ -5,9 +5,58 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"linuxdospace/backend/internal/model"
 )
+
+// TestMigrateRemainsIdempotentAfterAddingAdminSessionVerification ensures the
+// embedded migration set can still be replayed on every startup.
+func TestMigrateRemainsIdempotentAfterAddingAdminSessionVerification(t *testing.T) {
+	store := newTestStore(t)
+
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("run migrations twice: %v", err)
+	}
+}
+
+// TestSessionAdminVerificationPersists verifies that the extra admin password
+// verification state survives round-trips through SQLite.
+func TestSessionAdminVerificationPersists(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	user := newTestUser(t, ctx, store, "admin-user")
+
+	session, err := store.CreateSession(ctx, CreateSessionInput{
+		ID:                   "session-test",
+		UserID:               user.ID,
+		CSRFToken:            "csrf-test",
+		UserAgentFingerprint: "ua-fingerprint",
+		ExpiresAt:            time.Now().UTC().Add(30 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if session.AdminVerifiedAt != nil {
+		t.Fatalf("expected new session to start without admin verification, got %+v", session.AdminVerifiedAt)
+	}
+
+	verifiedAt := time.Now().UTC().Truncate(time.Second)
+	if err := store.MarkSessionAdminVerified(ctx, session.ID, verifiedAt); err != nil {
+		t.Fatalf("mark session admin verified: %v", err)
+	}
+
+	reloadedSession, _, err := store.GetSessionWithUserByID(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("reload session with user: %v", err)
+	}
+	if reloadedSession.AdminVerifiedAt == nil {
+		t.Fatalf("expected reloaded session to contain admin verification timestamp")
+	}
+	if !reloadedSession.AdminVerifiedAt.Equal(verifiedAt) {
+		t.Fatalf("expected verified timestamp %s, got %s", verifiedAt.Format(time.RFC3339Nano), reloadedSession.AdminVerifiedAt.Format(time.RFC3339Nano))
+	}
+}
 
 // TestListPublicAllocationOwnershipsOnlyReturnsActivelyUsedAllocations 验证公开监督页只返回数据库中仍然实际在用的子域名。
 func TestListPublicAllocationOwnershipsOnlyReturnsActivelyUsedAllocations(t *testing.T) {

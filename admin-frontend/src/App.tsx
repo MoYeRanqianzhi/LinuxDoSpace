@@ -1,7 +1,7 @@
-﻿import { startTransition, useEffect, useMemo, useState } from 'react';
+import { startTransition, useEffect, useMemo, useState } from 'react';
 import { ShieldCheck } from 'lucide-react';
 import { AdminNavbar } from './components/AdminNavbar';
-import { APIError, getAdminLoginURL, getAdminSession, logout } from './lib/api';
+import { APIError, getAdminLoginURL, getAdminSession, logout, verifyAdminPassword } from './lib/api';
 import { AdminLogin } from './pages/AdminLogin';
 import { ApplicationsPage } from './pages/ApplicationsPage';
 import { DomainsPage } from './pages/DomainsPage';
@@ -12,6 +12,20 @@ import type { AdminSessionResponse, AdminTabKey, ManagedDomain } from './types/a
 
 const STORAGE_KEYS = {
   theme: 'linuxdospace-admin-theme',
+} as const;
+
+const text = {
+  notAdmin:
+    '\u5f53\u524d Linux Do \u8d26\u53f7\u6ca1\u6709\u88ab\u6388\u4e88\u7ba1\u7406\u5458\u6743\u9650\uff0c\u8bf7\u5207\u6362\u8d26\u53f7\u540e\u91cd\u8bd5\u3002',
+  forbidden: '\u5f53\u524d\u8d26\u53f7\u5df2\u88ab\u62d2\u7edd\u8bbf\u95ee\u7ba1\u7406\u5458\u63a7\u5236\u53f0\u3002',
+  sessionExpired: '\u7ba1\u7406\u5458\u4f1a\u8bdd\u5df2\u5931\u6548\uff0c\u8bf7\u91cd\u65b0\u767b\u5f55\u3002',
+  oauthUnavailable:
+    '\u540e\u7aef\u5f53\u524d\u65e0\u6cd5\u5b8c\u6210 Linux Do \u767b\u5f55\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002',
+  loggedInButNotAdmin: '\u5f53\u524d\u8d26\u53f7\u5df2\u767b\u5f55\uff0c\u4f46\u6ca1\u6709\u7ba1\u7406\u5458\u6743\u9650\u3002',
+  backendUnavailable: '\u65e0\u6cd5\u8fde\u63a5\u7ba1\u7406\u5458\u540e\u7aef\u3002',
+  passwordVerifyFailed: '\u7ba1\u7406\u5458\u5bc6\u7801\u9a8c\u8bc1\u5931\u8d25\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002',
+  banner:
+    '\u5f53\u524d\u7ba1\u7406\u5458\u63a7\u5236\u53f0\u5df2\u63a5\u5165\u771f\u5b9e\u540e\u7aef\u6743\u9650\u6a21\u578b\u3002\u6240\u6709\u5199\u64cd\u4f5c\u90fd\u4f1a\u7ecf\u8fc7\u670d\u52a1\u7aef\u4f1a\u8bdd\u3001\u7ba1\u7406\u5458\u68c0\u67e5\u3001\u4e8c\u6b21\u5bc6\u7801\u9a8c\u8bc1\u3001CSRF \u6821\u9a8c\u4e0e\u5ba1\u8ba1\u65e5\u5fd7\u8bb0\u5f55\u3002',
 } as const;
 
 function tabFromHash(hash: string): AdminTabKey {
@@ -37,15 +51,15 @@ function currentAdminNextPath(tab: AdminTabKey): string {
 function authErrorMessage(raw: string | null): string {
   switch ((raw || '').trim().toLowerCase()) {
     case 'admin_required':
-      return '当前 Linux Do 账号没有被授予管理员权限，请切换账号后重试。';
+      return text.notAdmin;
     case 'forbidden':
-      return '当前账号已被拒绝访问管理员控制台。';
+      return text.forbidden;
     case 'unauthorized':
-      return '管理员会话已失效，请重新登录。';
+      return text.sessionExpired;
     case 'service_unavailable':
-      return '后端当前无法完成 Linux Do 登录，请稍后重试。';
+      return text.oauthUnavailable;
     default:
-      return raw ? `管理员登录失败：${raw}` : '';
+      return raw ? `\u7ba1\u7406\u5458\u767b\u5f55\u5931\u8d25\uff1a${raw}` : '';
   }
 }
 
@@ -55,6 +69,7 @@ export default function App() {
   const [session, setSession] = useState<AdminSessionResponse | null>(null);
   const [managedDomains, setManagedDomains] = useState<ManagedDomain[]>([]);
   const [sessionLoading, setSessionLoading] = useState(true);
+  const [passwordLoading, setPasswordLoading] = useState(false);
   const [sessionError, setSessionError] = useState(() => authErrorMessage(new URLSearchParams(window.location.search).get('auth_error')));
 
   const loginURL = useMemo(() => getAdminLoginURL(currentAdminNextPath(activeTab)), [activeTab]);
@@ -99,7 +114,7 @@ export default function App() {
       setSession(data);
       setManagedDomains(data.managed_domains ?? []);
       if (!data.authorized && data.authenticated) {
-        setSessionError('当前账号已登录，但没有管理员权限。');
+        setSessionError(text.loggedInButNotAdmin);
       } else if (data.authenticated) {
         setSessionError('');
       }
@@ -107,7 +122,7 @@ export default function App() {
       if (error instanceof APIError) {
         setSessionError(error.message);
       } else {
-        setSessionError('无法连接管理员后端。');
+        setSessionError(text.backendUnavailable);
       }
     } finally {
       setSessionLoading(false);
@@ -132,6 +147,29 @@ export default function App() {
     setSession(null);
     setManagedDomains([]);
     setSessionError('');
+  }
+
+  async function handleVerifyPassword(password: string) {
+    if (!session?.csrf_token) {
+      setSessionError(text.sessionExpired);
+      return;
+    }
+
+    try {
+      setPasswordLoading(true);
+      const data = await verifyAdminPassword(password, session.csrf_token);
+      setSession(data);
+      setManagedDomains(data.managed_domains ?? []);
+      setSessionError('');
+    } catch (error) {
+      if (error instanceof APIError) {
+        setSessionError(error.message);
+      } else {
+        setSessionError(text.passwordVerifyFailed);
+      }
+    } finally {
+      setPasswordLoading(false);
+    }
   }
 
   function renderContent() {
@@ -160,7 +198,12 @@ export default function App() {
     }
   }
 
-  const authorized = Boolean(session?.authenticated && session.authorized && session.user && session.csrf_token);
+  const requiresPasswordVerification = Boolean(
+    session?.authenticated && session.authorized && !session.password_verified && session.user && session.csrf_token,
+  );
+  const authorized = Boolean(
+    session?.authenticated && session.authorized && session.password_verified && session.user && session.csrf_token,
+  );
 
   if (!authorized) {
     return (
@@ -174,10 +217,13 @@ export default function App() {
           error={sessionError}
           isDark={isDark}
           isLoading={sessionLoading}
+          isVerifyingPassword={passwordLoading}
           loginURL={loginURL}
           onLogout={session?.authenticated ? handleLogout : undefined}
           onToggleTheme={() => setIsDark((value) => !value)}
+          onVerifyPassword={handleVerifyPassword}
           currentUser={session?.user}
+          requiresPasswordVerification={requiresPasswordVerification}
         />
       </div>
     );
@@ -202,9 +248,7 @@ export default function App() {
       <div className="relative z-10 px-4 pb-24 pt-24 sm:px-6">
         <div className="mx-auto mb-6 flex max-w-7xl items-start gap-3 rounded-[28px] border border-amber-300/35 bg-amber-50/75 px-5 py-4 text-sm text-amber-950 shadow-lg backdrop-blur-xl dark:border-amber-500/20 dark:bg-amber-950/35 dark:text-amber-100">
           <ShieldCheck size={18} className="mt-0.5 shrink-0" />
-          <p>
-            当前管理员控制台已接入真实后端权限模型。所有写操作都会经过服务端会话、管理员检查、CSRF 校验与审计日志记录。
-          </p>
+          <p>{text.banner}</p>
         </div>
         {renderContent()}
       </div>

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"time"
 
 	"linuxdospace/backend/internal/cloudflare"
 	"linuxdospace/backend/internal/linuxdo"
@@ -17,6 +18,7 @@ type Store interface {
 	GetUserByUsername(ctx context.Context, username string) (model.User, error)
 	CreateSession(ctx context.Context, input sqlite.CreateSessionInput) (model.Session, error)
 	GetSessionWithUserByID(ctx context.Context, sessionID string) (model.Session, model.User, error)
+	MarkSessionAdminVerified(ctx context.Context, sessionID string, verifiedAt time.Time) error
 	TouchSession(ctx context.Context, sessionID string) error
 	DeleteSession(ctx context.Context, sessionID string) error
 	SaveOAuthState(ctx context.Context, state model.OAuthState) error

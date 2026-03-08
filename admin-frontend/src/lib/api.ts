@@ -85,6 +85,14 @@ export function getAdminSession(): Promise<AdminSessionResponse> {
   return request<AdminSessionResponse>('/v1/admin/me');
 }
 
+export function verifyAdminPassword(password: string, csrfToken: string): Promise<AdminSessionResponse> {
+  return request<AdminSessionResponse>('/v1/admin/verify-password', {
+    method: 'POST',
+    headers: { 'X-CSRF-Token': csrfToken },
+    body: JSON.stringify({ password }),
+  });
+}
+
 export function logout(csrfToken: string): Promise<{ logged_out: boolean }> {
   return request<{ logged_out: boolean }>('/v1/auth/logout', {
     method: 'POST',

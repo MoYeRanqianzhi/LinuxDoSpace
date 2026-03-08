@@ -6,6 +6,7 @@ It is designed to be deployed to a separate Cloudflare Pages site while talking 
 ## Current scope
 
 - Real Linux Do administrator login via the backend OAuth flow
+- A second server-side password check after administrator OAuth login
 - Real administrator session bootstrap via `GET /v1/admin/me`
 - Real user moderation, quota management, managed-domain management, DNS record management, email routes, application review, and redeem-code generation
 - Hash-based client navigation so a static Cloudflare Pages deployment works without SPA rewrite rules
@@ -51,11 +52,12 @@ At minimum configure:
 - `APP_ADMIN_FRONTEND_URL`
 - `APP_ALLOWED_ORIGINS`
 - `APP_ADMIN_USERNAMES`
+- `APP_ADMIN_PASSWORD`
 - Linux Do OAuth credentials
 - Cloudflare API token
 
 ## Security notes
 
 - The admin frontend never stores a backend secret.
-- All write operations rely on backend sessions, administrator authorization, CSRF validation, and server-side audit logs.
+- All write operations rely on backend sessions, administrator authorization, the extra admin password verification, CSRF validation, and server-side audit logs.
 - If a logged-in Linux Do account is not in the backend administrator allowlist, the admin frontend will refuse access.

@@ -19,13 +19,14 @@ type User struct {
 
 // Session 表示服务端持久化保存的登录会话。
 type Session struct {
-	ID                   string    `json:"id"`
-	UserID               int64     `json:"user_id"`
-	CSRFToken            string    `json:"csrf_token"`
-	UserAgentFingerprint string    `json:"-"`
-	ExpiresAt            time.Time `json:"expires_at"`
-	CreatedAt            time.Time `json:"created_at"`
-	LastSeenAt           time.Time `json:"last_seen_at"`
+	ID                   string     `json:"id"`
+	UserID               int64      `json:"user_id"`
+	CSRFToken            string     `json:"csrf_token"`
+	UserAgentFingerprint string     `json:"-"`
+	AdminVerifiedAt      *time.Time `json:"admin_verified_at,omitempty"`
+	ExpiresAt            time.Time  `json:"expires_at"`
+	CreatedAt            time.Time  `json:"created_at"`
+	LastSeenAt           time.Time  `json:"last_seen_at"`
 }
 
 // OAuthState 表示 OAuth 登录流程中的一次性状态记录。

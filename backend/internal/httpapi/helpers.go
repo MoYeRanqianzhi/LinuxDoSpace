@@ -233,6 +233,24 @@ func (a *API) requireAdmin(w http.ResponseWriter, r *http.Request) (*model.Sessi
 	return session, user, true
 }
 
+// requireVerifiedAdmin requires one administrator session that has already
+// completed the extra admin password verification step.
+func (a *API) requireVerifiedAdmin(w http.ResponseWriter, r *http.Request) (*model.Session, *model.User, bool) {
+	session, user, ok := a.requireAdmin(w, r)
+	if !ok {
+		return nil, nil, false
+	}
+	if session.AdminVerifiedAt == nil {
+		writeError(w, &service.Error{
+			StatusCode: http.StatusForbidden,
+			Code:       "admin_password_required",
+			Message:    "admin password verification required",
+		})
+		return nil, nil, false
+	}
+	return session, user, true
+}
+
 // enforceCSRF validates the double-submit token on unsafe requests.
 func (a *API) enforceCSRF(w http.ResponseWriter, r *http.Request, session *model.Session) bool {
 	if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {

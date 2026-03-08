@@ -28,6 +28,7 @@ type CreateSessionInput struct {
 	UserID               int64
 	CSRFToken            string
 	UserAgentFingerprint string
+	AdminVerifiedAt      *time.Time
 	ExpiresAt            time.Time
 }
 
@@ -182,15 +183,17 @@ INSERT INTO sessions (
     user_id,
     csrf_token,
     user_agent_fingerprint,
+    admin_verified_at,
     expires_at,
     created_at,
     last_seen_at
-) VALUES (?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING
     id,
     user_id,
     csrf_token,
     user_agent_fingerprint,
+    admin_verified_at,
     expires_at,
     created_at,
     last_seen_at
@@ -199,6 +202,7 @@ RETURNING
 		input.UserID,
 		input.CSRFToken,
 		input.UserAgentFingerprint,
+		formatNullableTime(input.AdminVerifiedAt),
 		formatTime(input.ExpiresAt.UTC()),
 		formatTime(now),
 		formatTime(now),
@@ -215,6 +219,7 @@ SELECT
     s.user_id,
     s.csrf_token,
     s.user_agent_fingerprint,
+    s.admin_verified_at,
     s.expires_at,
     s.created_at,
     s.last_seen_at,
@@ -235,6 +240,17 @@ WHERE s.id = ?
 `, sessionID)
 
 	return scanSessionWithUser(row)
+}
+
+// MarkSessionAdminVerified writes the timestamp that marks one administrator
+// session as having passed the extra password verification step.
+func (s *Store) MarkSessionAdminVerified(ctx context.Context, sessionID string, verifiedAt time.Time) error {
+	_, err := s.db.ExecContext(ctx, `
+UPDATE sessions
+SET admin_verified_at = ?, last_seen_at = ?
+WHERE id = ?
+`, formatTime(verifiedAt.UTC()), formatTime(time.Now().UTC()), sessionID)
+	return err
 }
 
 // TouchSession 更新会话最近访问时间。
@@ -850,6 +866,7 @@ func scanUser(scanner interface{ Scan(dest ...any) error }) (model.User, error) 
 func scanSession(scanner interface{ Scan(dest ...any) error }) (model.Session, error) {
 	var item model.Session
 	var createdAt string
+	var adminVerifiedAt sql.NullString
 	var expiresAt string
 	var lastSeenAt string
 
@@ -858,6 +875,7 @@ func scanSession(scanner interface{ Scan(dest ...any) error }) (model.Session, e
 		&item.UserID,
 		&item.CSRFToken,
 		&item.UserAgentFingerprint,
+		&adminVerifiedAt,
 		&expiresAt,
 		&createdAt,
 		&lastSeenAt,
@@ -875,6 +893,9 @@ func scanSession(scanner interface{ Scan(dest ...any) error }) (model.Session, e
 	if item.LastSeenAt, err = parseTime(lastSeenAt); err != nil {
 		return model.Session{}, err
 	}
+	if item.AdminVerifiedAt, err = parseNullableTime(adminVerifiedAt); err != nil {
+		return model.Session{}, err
+	}
 
 	return item, nil
 }
@@ -885,6 +906,7 @@ func scanSessionWithUser(scanner interface{ Scan(dest ...any) error }) (model.Se
 	var user model.User
 
 	var sessionCreatedAt string
+	var sessionAdminVerifiedAt sql.NullString
 	var sessionExpiresAt string
 	var sessionLastSeenAt string
 
@@ -900,6 +922,7 @@ func scanSessionWithUser(scanner interface{ Scan(dest ...any) error }) (model.Se
 		&session.UserID,
 		&session.CSRFToken,
 		&session.UserAgentFingerprint,
+		&sessionAdminVerifiedAt,
 		&sessionExpiresAt,
 		&sessionCreatedAt,
 		&sessionLastSeenAt,
@@ -929,6 +952,9 @@ func scanSessionWithUser(scanner interface{ Scan(dest ...any) error }) (model.Se
 		return model.Session{}, model.User{}, err
 	}
 	if session.LastSeenAt, err = parseTime(sessionLastSeenAt); err != nil {
+		return model.Session{}, model.User{}, err
+	}
+	if session.AdminVerifiedAt, err = parseNullableTime(sessionAdminVerifiedAt); err != nil {
 		return model.Session{}, model.User{}, err
 	}
 
@@ -1095,6 +1121,15 @@ func formatTime(value time.Time) string {
 	return value.UTC().Format(time.RFC3339Nano)
 }
 
+// formatNullableTime converts one optional timestamp into the TEXT value stored
+// by SQLite. Nil values are kept NULL so old sessions remain unverified.
+func formatNullableTime(value *time.Time) any {
+	if value == nil {
+		return nil
+	}
+	return formatTime(value.UTC())
+}
+
 // parseTime 把数据库中的 RFC3339Nano 文本恢复为 time.Time。
 func parseTime(raw string) (time.Time, error) {
 	value, err := time.Parse(time.RFC3339Nano, raw)
@@ -1102,6 +1137,18 @@ func parseTime(raw string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("parse time %q: %w", raw, err)
 	}
 	return value.UTC(), nil
+}
+
+// parseNullableTime restores one optional timestamp from SQLite NULL / TEXT.
+func parseNullableTime(raw sql.NullString) (*time.Time, error) {
+	if !raw.Valid || strings.TrimSpace(raw.String) == "" {
+		return nil, nil
+	}
+	value, err := parseTime(raw.String)
+	if err != nil {
+		return nil, err
+	}
+	return &value, nil
 }
 
 // boolToInt 把布尔值转成 SQLite 中更容易处理的 0/1。

@@ -43,6 +43,7 @@ func NewRouter(deps RouterDependencies) http.Handler {
 	mux.HandleFunc("POST /v1/auth/logout", api.handleAuthLogout)
 	mux.HandleFunc("GET /v1/me", api.handleMe)
 	mux.HandleFunc("GET /v1/admin/me", api.handleAdminMe)
+	mux.HandleFunc("POST /v1/admin/verify-password", api.handleAdminVerifyPassword)
 	mux.HandleFunc("GET /v1/my/allocations", api.handleMyAllocations)
 	mux.HandleFunc("POST /v1/my/allocations", api.handleCreateAllocation)
 	mux.HandleFunc("GET /v1/my/allocations/{allocationID}/records", api.handleAllocationRecords)

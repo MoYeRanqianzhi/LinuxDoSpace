@@ -6,6 +6,12 @@ import (
 	"linuxdospace/backend/internal/service"
 )
 
+// verifyAdminPasswordRequest describes the JSON payload accepted by the admin
+// second-factor password verification endpoint.
+type verifyAdminPasswordRequest struct {
+	Password string `json:"password"`
+}
+
 // handleAdminMe returns the current administrator session state for the standalone admin frontend.
 func (a *API) handleAdminMe(w http.ResponseWriter, r *http.Request) {
 	session, user, err := a.optionalActor(w, r)
@@ -16,9 +22,10 @@ func (a *API) handleAdminMe(w http.ResponseWriter, r *http.Request) {
 
 	if session == nil || user == nil {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"authenticated":    false,
-			"authorized":       false,
-			"oauth_configured": a.config.OAuthConfigured(),
+			"authenticated":     false,
+			"authorized":        false,
+			"password_verified": false,
+			"oauth_configured":  a.config.OAuthConfigured(),
 		})
 		return
 	}
@@ -27,6 +34,20 @@ func (a *API) handleAdminMe(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"authenticated":      true,
 			"authorized":         false,
+			"password_verified":  false,
+			"oauth_configured":   a.config.OAuthConfigured(),
+			"user":               user,
+			"csrf_token":         session.CSRFToken,
+			"session_expires_at": session.ExpiresAt,
+		})
+		return
+	}
+
+	if session.AdminVerifiedAt == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"authenticated":      true,
+			"authorized":         true,
+			"password_verified":  false,
 			"oauth_configured":   a.config.OAuthConfigured(),
 			"user":               user,
 			"csrf_token":         session.CSRFToken,
@@ -44,17 +65,61 @@ func (a *API) handleAdminMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"authenticated":      true,
 		"authorized":         true,
+		"password_verified":  true,
 		"oauth_configured":   a.config.OAuthConfigured(),
 		"user":               user,
 		"csrf_token":         session.CSRFToken,
 		"session_expires_at": session.ExpiresAt,
+		"admin_verified_at":  session.AdminVerifiedAt,
+		"managed_domains":    managedDomains,
+	})
+}
+
+// handleAdminVerifyPassword upgrades one authenticated administrator session
+// after the extra password has been verified on the server side.
+func (a *API) handleAdminVerifyPassword(w http.ResponseWriter, r *http.Request) {
+	session, user, ok := a.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	if !a.enforceCSRF(w, r, session) {
+		return
+	}
+
+	var request verifyAdminPasswordRequest
+	if err := decodeJSONBody(r, &request); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	verifiedAt, err := a.authService.VerifyAdminPassword(r.Context(), *session, *user, request.Password)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	managedDomains, err := a.domainService.ListAdminDomains(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"authenticated":      true,
+		"authorized":         true,
+		"password_verified":  true,
+		"oauth_configured":   a.config.OAuthConfigured(),
+		"user":               user,
+		"csrf_token":         session.CSRFToken,
+		"session_expires_at": session.ExpiresAt,
+		"admin_verified_at":  verifiedAt,
 		"managed_domains":    managedDomains,
 	})
 }
 
 // handleAdminDomains returns all managed root domain configurations.
 func (a *API) handleAdminDomains(w http.ResponseWriter, r *http.Request) {
-	_, _, ok := a.requireAdmin(w, r)
+	_, _, ok := a.requireVerifiedAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -69,7 +134,7 @@ func (a *API) handleAdminDomains(w http.ResponseWriter, r *http.Request) {
 
 // handleAdminUpsertDomain creates or updates one managed root domain configuration.
 func (a *API) handleAdminUpsertDomain(w http.ResponseWriter, r *http.Request) {
-	session, user, ok := a.requireAdmin(w, r)
+	session, user, ok := a.requireVerifiedAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -93,7 +158,7 @@ func (a *API) handleAdminUpsertDomain(w http.ResponseWriter, r *http.Request) {
 
 // handleAdminSetQuota writes one user quota override for one managed root domain.
 func (a *API) handleAdminSetQuota(w http.ResponseWriter, r *http.Request) {
-	session, user, ok := a.requireAdmin(w, r)
+	session, user, ok := a.requireVerifiedAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -117,7 +182,7 @@ func (a *API) handleAdminSetQuota(w http.ResponseWriter, r *http.Request) {
 
 // handleAdminUsers returns the compact user list required by the admin console user page.
 func (a *API) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
-	_, _, ok := a.requireAdmin(w, r)
+	_, _, ok := a.requireVerifiedAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -132,7 +197,7 @@ func (a *API) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 
 // handleAdminUserDetail returns the expanded moderation and quota view for one user.
 func (a *API) handleAdminUserDetail(w http.ResponseWriter, r *http.Request) {
-	_, _, ok := a.requireAdmin(w, r)
+	_, _, ok := a.requireVerifiedAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -153,7 +218,7 @@ func (a *API) handleAdminUserDetail(w http.ResponseWriter, r *http.Request) {
 
 // handleAdminUpdateUser updates the moderation state for one user.
 func (a *API) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
-	session, actor, ok := a.requireAdmin(w, r)
+	session, actor, ok := a.requireVerifiedAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -183,7 +248,7 @@ func (a *API) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 
 // handleAdminAllocations returns all allocation namespaces with owner identity.
 func (a *API) handleAdminAllocations(w http.ResponseWriter, r *http.Request) {
-	_, _, ok := a.requireAdmin(w, r)
+	_, _, ok := a.requireVerifiedAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -198,7 +263,7 @@ func (a *API) handleAdminAllocations(w http.ResponseWriter, r *http.Request) {
 
 // handleAdminRecords returns the global DNS record list visible to administrators.
 func (a *API) handleAdminRecords(w http.ResponseWriter, r *http.Request) {
-	_, _, ok := a.requireAdmin(w, r)
+	_, _, ok := a.requireVerifiedAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -213,7 +278,7 @@ func (a *API) handleAdminRecords(w http.ResponseWriter, r *http.Request) {
 
 // handleAdminCreateRecord creates a DNS record inside one allocation namespace.
 func (a *API) handleAdminCreateRecord(w http.ResponseWriter, r *http.Request) {
-	session, actor, ok := a.requireAdmin(w, r)
+	session, actor, ok := a.requireVerifiedAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -243,7 +308,7 @@ func (a *API) handleAdminCreateRecord(w http.ResponseWriter, r *http.Request) {
 
 // handleAdminUpdateRecord updates a DNS record inside one allocation namespace.
 func (a *API) handleAdminUpdateRecord(w http.ResponseWriter, r *http.Request) {
-	session, actor, ok := a.requireAdmin(w, r)
+	session, actor, ok := a.requireVerifiedAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -279,7 +344,7 @@ func (a *API) handleAdminUpdateRecord(w http.ResponseWriter, r *http.Request) {
 
 // handleAdminDeleteRecord deletes a DNS record inside one allocation namespace.
 func (a *API) handleAdminDeleteRecord(w http.ResponseWriter, r *http.Request) {
-	session, actor, ok := a.requireAdmin(w, r)
+	session, actor, ok := a.requireVerifiedAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -308,7 +373,7 @@ func (a *API) handleAdminDeleteRecord(w http.ResponseWriter, r *http.Request) {
 
 // handleAdminEmailRoutes lists all administrator-managed email forwarding rules.
 func (a *API) handleAdminEmailRoutes(w http.ResponseWriter, r *http.Request) {
-	_, _, ok := a.requireAdmin(w, r)
+	_, _, ok := a.requireVerifiedAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -323,7 +388,7 @@ func (a *API) handleAdminEmailRoutes(w http.ResponseWriter, r *http.Request) {
 
 // handleAdminCreateEmailRoute creates one email forwarding rule.
 func (a *API) handleAdminCreateEmailRoute(w http.ResponseWriter, r *http.Request) {
-	session, actor, ok := a.requireAdmin(w, r)
+	session, actor, ok := a.requireVerifiedAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -347,7 +412,7 @@ func (a *API) handleAdminCreateEmailRoute(w http.ResponseWriter, r *http.Request
 
 // handleAdminUpdateEmailRoute updates one email forwarding rule.
 func (a *API) handleAdminUpdateEmailRoute(w http.ResponseWriter, r *http.Request) {
-	session, actor, ok := a.requireAdmin(w, r)
+	session, actor, ok := a.requireVerifiedAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -377,7 +442,7 @@ func (a *API) handleAdminUpdateEmailRoute(w http.ResponseWriter, r *http.Request
 
 // handleAdminDeleteEmailRoute deletes one email forwarding rule.
 func (a *API) handleAdminDeleteEmailRoute(w http.ResponseWriter, r *http.Request) {
-	session, actor, ok := a.requireAdmin(w, r)
+	session, actor, ok := a.requireVerifiedAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -400,7 +465,7 @@ func (a *API) handleAdminDeleteEmailRoute(w http.ResponseWriter, r *http.Request
 
 // handleAdminApplications lists all moderation requests.
 func (a *API) handleAdminApplications(w http.ResponseWriter, r *http.Request) {
-	_, _, ok := a.requireAdmin(w, r)
+	_, _, ok := a.requireVerifiedAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -415,7 +480,7 @@ func (a *API) handleAdminApplications(w http.ResponseWriter, r *http.Request) {
 
 // handleAdminUpdateApplication updates the moderation decision for one request.
 func (a *API) handleAdminUpdateApplication(w http.ResponseWriter, r *http.Request) {
-	session, actor, ok := a.requireAdmin(w, r)
+	session, actor, ok := a.requireVerifiedAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -445,7 +510,7 @@ func (a *API) handleAdminUpdateApplication(w http.ResponseWriter, r *http.Reques
 
 // handleAdminRedeemCodes lists all generated redeem codes.
 func (a *API) handleAdminRedeemCodes(w http.ResponseWriter, r *http.Request) {
-	_, _, ok := a.requireAdmin(w, r)
+	_, _, ok := a.requireVerifiedAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -460,7 +525,7 @@ func (a *API) handleAdminRedeemCodes(w http.ResponseWriter, r *http.Request) {
 
 // handleAdminGenerateRedeemCodes generates one batch of redeem codes.
 func (a *API) handleAdminGenerateRedeemCodes(w http.ResponseWriter, r *http.Request) {
-	session, actor, ok := a.requireAdmin(w, r)
+	session, actor, ok := a.requireVerifiedAdmin(w, r)
 	if !ok {
 		return
 	}
@@ -484,7 +549,7 @@ func (a *API) handleAdminGenerateRedeemCodes(w http.ResponseWriter, r *http.Requ
 
 // handleAdminDeleteRedeemCode deletes one generated redeem code.
 func (a *API) handleAdminDeleteRedeemCode(w http.ResponseWriter, r *http.Request) {
-	session, actor, ok := a.requireAdmin(w, r)
+	session, actor, ok := a.requireVerifiedAdmin(w, r)
 	if !ok {
 		return
 	}
