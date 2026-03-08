@@ -1,16 +1,40 @@
-import { useState, type FormEvent } from 'react';
+﻿import { useEffect, useState, type FormEvent } from 'react';
 import { CheckCircle2, Copy, Plus, Ticket, Trash2 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import { mockRedeemCodes } from '../data/mockAdminData';
+import { APIError, deleteRedeemCode, generateRedeemCodes, listRedeemCodes } from '../lib/api';
 import { GlassCard } from '../components/GlassCard';
-import type { AdminRedeemCodeRecord, RedeemPermissionType } from '../types/admin';
+import type { AdminRedeemCodeRecord, GenerateRedeemCodesInput, RedeemPermissionType } from '../types/admin';
 
-// RedeemCodesPage 提供兑换码生成、复制和删除的前端演示能力。
-export function RedeemCodesPage() {
-  const [records, setRecords] = useState<AdminRedeemCodeRecord[]>(mockRedeemCodes);
+interface RedeemCodesPageProps {
+  csrfToken: string;
+}
+
+export function RedeemCodesPage({ csrfToken }: RedeemCodesPageProps) {
+  const [records, setRecords] = useState<AdminRedeemCodeRecord[]>([]);
   const [amount, setAmount] = useState(1);
   const [permissionType, setPermissionType] = useState<RedeemPermissionType>('single');
   const [target, setTarget] = useState('');
+  const [note, setNote] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    async function loadData() {
+      try {
+        setLoading(true);
+        const data = await listRedeemCodes();
+        setRecords(data);
+        setError('');
+      } catch (loadError) {
+        setError(loadError instanceof APIError ? loadError.message : '加载兑换码失败。');
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    void loadData();
+  }, []);
 
   function readableType(type: RedeemPermissionType): string {
     switch (type) {
@@ -24,25 +48,37 @@ export function RedeemCodesPage() {
     }
   }
 
-  // handleGenerate 在本地生成演示兑换码，便于先还原页面交互。
-  function handleGenerate(event: FormEvent<HTMLFormElement>) {
+  async function handleGenerate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const nextRecords = Array.from({ length: amount }).map((_, index) => ({
-      id: Date.now() + index,
-      code: `LINUXDO-${new Date().getFullYear()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`,
-      type: permissionType,
-      target: target.trim() || (permissionType === 'multiple' ? '默认额度' : '待填写目标'),
-      usedBy: null,
-      createdAt: new Date().toISOString().slice(0, 10),
-    }));
-
-    setRecords((current) => [...nextRecords, ...current]);
-    setAmount(1);
-    setTarget('');
+    try {
+      setSaving(true);
+      const created = await generateRedeemCodes(
+        { amount, type: permissionType, target: target.trim(), note: note.trim() } as GenerateRedeemCodesInput,
+        csrfToken,
+      );
+      setRecords((current) => [...created, ...current]);
+      setAmount(1);
+      setTarget('');
+      setNote('');
+      setError('');
+    } catch (saveError) {
+      setError(saveError instanceof APIError ? saveError.message : '生成兑换码失败。');
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function copyCode(code: string) {
     await navigator.clipboard.writeText(code);
+  }
+
+  async function removeCode(id: number) {
+    try {
+      await deleteRedeemCode(id, csrfToken);
+      setRecords((current) => current.filter((record) => record.id !== id));
+    } catch (deleteError) {
+      setError(deleteError instanceof APIError ? deleteError.message : '删除兑换码失败。');
+    }
   }
 
   return (
@@ -53,9 +89,15 @@ export function RedeemCodesPage() {
         </div>
         <div>
           <h1 className="text-3xl font-bold text-slate-900 dark:text-white">兑换码</h1>
-          <p className="mt-1 text-sm text-slate-500 dark:text-slate-300">生成临时授权码，后续可接入后台签发与核销逻辑。</p>
+          <p className="mt-1 text-sm text-slate-500 dark:text-slate-300">批量生成一次性授权码，用于后续额外权限或额度发放。</p>
         </div>
       </div>
+
+      {error ? (
+        <div className="mb-5 rounded-2xl border border-red-300/50 bg-red-50/80 px-4 py-3 text-sm text-red-700 dark:border-red-500/20 dark:bg-red-950/30 dark:text-red-200">
+          {error}
+        </div>
+      ) : null}
 
       <div className="grid gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
         <GlassCard>
@@ -84,9 +126,14 @@ export function RedeemCodesPage() {
               <input value={target} onChange={(event) => setTarget(event.target.value)} placeholder={permissionType === 'multiple' ? '例如 5 次额度' : '例如 api.linuxdo.space'} className="w-full rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white" />
             </div>
 
-            <button type="submit" className="flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-indigo-500 to-violet-500 px-4 py-3 font-medium text-white shadow-lg transition hover:from-indigo-600 hover:to-violet-600">
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">备注</label>
+              <input value={note} onChange={(event) => setNote(event.target.value)} placeholder="可选，用于后台追踪发放原因" className="w-full rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white" />
+            </div>
+
+            <button type="submit" disabled={saving || !target.trim()} className="flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-indigo-500 to-violet-500 px-4 py-3 font-medium text-white shadow-lg transition hover:from-indigo-600 hover:to-violet-600 disabled:cursor-not-allowed disabled:opacity-60">
               <Ticket size={18} />
-              <span>立即生成</span>
+              <span>{saving ? '生成中...' : '立即生成'}</span>
             </button>
           </form>
         </GlassCard>
@@ -103,38 +150,47 @@ export function RedeemCodesPage() {
                 </tr>
               </thead>
               <tbody>
-                <AnimatePresence>
-                  {records.map((record) => (
-                    <motion.tr key={record.id} layout initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, x: -30 }} className="border-b border-white/10 text-sm hover:bg-white/30 dark:border-white/5 dark:hover:bg-white/5">
-                      <td className="px-5 py-4">
-                        <div className="font-mono font-semibold text-indigo-600 dark:text-indigo-300">{record.code}</div>
-                        <div className="mt-1 text-xs text-slate-400">{record.createdAt}</div>
-                      </td>
-                      <td className="px-5 py-4">
-                        <div className="font-medium text-slate-900 dark:text-white">{readableType(record.type)}</div>
-                        <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">{record.target}</div>
-                      </td>
-                      <td className="px-5 py-4">
-                        {record.usedBy ? (
-                          <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700 dark:bg-slate-800 dark:text-slate-300">
-                            <CheckCircle2 size={12} />
-                            已使用 ({record.usedBy})
-                          </span>
-                        ) : (
-                          <span className="inline-flex rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">
-                            未使用
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-5 py-4">
-                        <div className="flex justify-end gap-2">
-                          <button onClick={() => void copyCode(record.code)} className="rounded-xl p-2 text-indigo-500 transition hover:bg-indigo-100 dark:hover:bg-indigo-900/25" aria-label={`复制 ${record.code}`}><Copy size={16} /></button>
-                          <button onClick={() => setRecords((current) => current.filter((item) => item.id !== record.id))} className="rounded-xl p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white" aria-label={`删除 ${record.code}`}><Trash2 size={16} /></button>
-                        </div>
-                      </td>
-                    </motion.tr>
-                  ))}
-                </AnimatePresence>
+                {loading ? (
+                  <tr>
+                    <td colSpan={4} className="px-5 py-8 text-center text-sm text-slate-500 dark:text-slate-300">
+                      正在加载兑换码...
+                    </td>
+                  </tr>
+                ) : null}
+                {!loading ? (
+                  <AnimatePresence>
+                    {records.map((record) => (
+                      <motion.tr key={record.id} layout initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, x: -30 }} className="border-b border-white/10 text-sm hover:bg-white/30 dark:border-white/5 dark:hover:bg-white/5">
+                        <td className="px-5 py-4">
+                          <div className="font-mono font-semibold text-indigo-600 dark:text-indigo-300">{record.code}</div>
+                          <div className="mt-1 text-xs text-slate-400">{new Date(record.created_at).toLocaleString('zh-CN')}</div>
+                        </td>
+                        <td className="px-5 py-4">
+                          <div className="font-medium text-slate-900 dark:text-white">{readableType(record.type)}</div>
+                          <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">{record.target}</div>
+                        </td>
+                        <td className="px-5 py-4">
+                          {record.used_by_username ? (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                              <CheckCircle2 size={12} />
+                              已使用 ({record.used_by_username})
+                            </span>
+                          ) : (
+                            <span className="inline-flex rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">
+                              未使用
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-5 py-4">
+                          <div className="flex justify-end gap-2">
+                            <button onClick={() => void copyCode(record.code)} className="rounded-xl p-2 text-indigo-500 transition hover:bg-indigo-100 dark:hover:bg-indigo-900/25" aria-label={`复制 ${record.code}`}><Copy size={16} /></button>
+                            <button onClick={() => void removeCode(record.id)} className="rounded-xl p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white" aria-label={`删除 ${record.code}`}><Trash2 size={16} /></button>
+                          </div>
+                        </td>
+                      </motion.tr>
+                    ))}
+                  </AnimatePresence>
+                ) : null}
               </tbody>
             </table>
           </div>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+﻿import { useEffect, useState } from 'react';
 import {
   Cloud,
   FileText,
@@ -15,7 +15,6 @@ import {
 import { AnimatePresence, motion } from 'motion/react';
 import type { AdminTabKey } from '../types/admin';
 
-// AdminNavbarProps 描述管理员导航栏需要的状态和交互函数。
 interface AdminNavbarProps {
   activeTab: AdminTabKey;
   onTabChange: (tab: AdminTabKey) => void;
@@ -24,7 +23,6 @@ interface AdminNavbarProps {
   onLogout: () => void;
 }
 
-// navItems 把标签页和图标定义集中，避免桌面端和移动端重复维护。
 const navItems: Array<{ id: AdminTabKey; label: string; icon: typeof Users }> = [
   { id: 'users', label: '用户管理', icon: Users },
   { id: 'domains', label: '域名管理', icon: Cloud },
@@ -33,11 +31,9 @@ const navItems: Array<{ id: AdminTabKey; label: string; icon: typeof Users }> = 
   { id: 'redeem', label: '兑换码', icon: Ticket },
 ];
 
-// AdminNavbar 提供固定顶部导航和移动端抽屉菜单。
 export function AdminNavbar({ activeTab, onTabChange, isDark, onToggleTheme, onLogout }: AdminNavbarProps) {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
-  // 切换标签页后自动收起移动菜单，避免遮挡内容。
   useEffect(() => {
     setIsMobileMenuOpen(false);
   }, [activeTab]);
@@ -94,7 +90,7 @@ export function AdminNavbar({ activeTab, onTabChange, isDark, onToggleTheme, onL
               className="flex items-center gap-2 rounded-full bg-slate-900 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-black"
             >
               <LogOut size={17} />
-              <span>退出演示</span>
+              <span>退出登录</span>
             </button>
           </div>
 
@@ -118,7 +114,7 @@ export function AdminNavbar({ activeTab, onTabChange, isDark, onToggleTheme, onL
       </motion.nav>
 
       <AnimatePresence>
-        {isMobileMenuOpen && (
+        {isMobileMenuOpen ? (
           <>
             <motion.button
               type="button"
@@ -176,11 +172,11 @@ export function AdminNavbar({ activeTab, onTabChange, isDark, onToggleTheme, onL
                 className="mt-5 flex items-center justify-center gap-2 rounded-2xl bg-slate-900 px-4 py-3 text-sm font-medium text-white"
               >
                 <LogOut size={18} />
-                <span>退出演示</span>
+                <span>退出登录</span>
               </button>
             </motion.aside>
           </>
-        )}
+        ) : null}
       </AnimatePresence>
     </>
   );

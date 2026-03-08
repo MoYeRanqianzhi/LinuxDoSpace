@@ -1,27 +1,21 @@
-import { useState, type FormEvent } from 'react';
-import { ArrowRight, KeyRound, Moon, Shield, Sun } from 'lucide-react';
+﻿import { ArrowRight, LogOut, Moon, Shield, Sun } from 'lucide-react';
 import { motion } from 'motion/react';
 import { GlassCard } from '../components/GlassCard';
+import type { AdminUser } from '../types/admin';
 
-// AdminLoginProps 描述管理员登录页需要的交互参数。
+// AdminLoginProps describes the data required by the standalone admin login page.
 interface AdminLoginProps {
   error: string;
   isDark: boolean;
-  onLogin: (password: string) => void;
+  isLoading: boolean;
+  loginURL: string;
+  onLogout?: () => void;
   onToggleTheme: () => void;
-  passwordHint: string;
+  currentUser?: AdminUser;
 }
 
-// AdminLogin 展示独立管理员端的演示登录入口。
-export function AdminLogin({ error, isDark, onLogin, onToggleTheme, passwordHint }: AdminLoginProps) {
-  const [password, setPassword] = useState('');
-
-  // handleSubmit 把输入口令交给上层统一校验。
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    onLogin(password.trim());
-  }
-
+// AdminLogin renders the administrator-only Linux Do login entry.
+export function AdminLogin({ error, isDark, isLoading, loginURL, onLogout, onToggleTheme, currentUser }: AdminLoginProps) {
   return (
     <div className="relative flex min-h-screen items-center justify-center px-4 py-10">
       <button
@@ -45,30 +39,16 @@ export function AdminLogin({ error, isDark, onLogin, onToggleTheme, passwordHint
             </div>
             <h1 className="text-3xl font-bold text-slate-900 dark:text-white">LinuxDoSpace Admin</h1>
             <p className="mt-3 max-w-md text-sm leading-6 text-slate-500 dark:text-slate-300">
-              这是从 `new-ui-design` 中拆出的独立管理员前端。当前登录仅用于 UI 演示，不代表真实管理权限。
+              管理员控制台已接入真实后端会话与权限检查。仅被站点授予管理员权限的 Linux Do 账号可以进入。
             </p>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-5">
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">演示口令</label>
-              <div className="relative">
-                <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-4 text-slate-400">
-                  <KeyRound size={18} />
-                </span>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  placeholder="输入演示口令"
-                  className="w-full rounded-2xl border border-slate-200 bg-white/60 py-3 pl-11 pr-4 text-slate-900 outline-none transition focus:border-red-400 focus:ring-2 focus:ring-red-400/25 dark:border-slate-700 dark:bg-black/35 dark:text-white"
-                />
+          <div className="space-y-5">
+            {currentUser ? (
+              <div className="rounded-2xl border border-amber-300/50 bg-amber-50/80 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/25 dark:bg-amber-950/35 dark:text-amber-100">
+                当前已登录账号：<span className="font-semibold">{currentUser.username}</span>，但该账号没有管理员权限。
               </div>
-            </div>
-
-            <div className="rounded-2xl border border-slate-200/70 bg-white/35 px-4 py-3 text-sm text-slate-600 dark:border-white/10 dark:bg-white/5 dark:text-slate-300">
-              默认演示口令: <span className="font-mono font-semibold text-red-500">{passwordHint}</span>
-            </div>
+            ) : null}
 
             {error ? (
               <div className="rounded-2xl border border-red-300/50 bg-red-50/80 px-4 py-3 text-sm text-red-700 dark:border-red-500/20 dark:bg-red-950/30 dark:text-red-200">
@@ -76,15 +56,26 @@ export function AdminLogin({ error, isDark, onLogin, onToggleTheme, passwordHint
               </div>
             ) : null}
 
-            <button
-              type="submit"
-              className="flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-red-500 to-orange-500 px-5 py-3 font-medium text-white shadow-lg transition hover:from-red-600 hover:to-orange-600 disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={!password.trim()}
+            <a
+              href={loginURL}
+              className={`flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-red-500 to-orange-500 px-5 py-3 font-medium text-white shadow-lg transition hover:from-red-600 hover:to-orange-600 ${
+                isLoading ? 'pointer-events-none opacity-60' : ''
+              }`}
             >
-              <span>进入控制台</span>
+              <span>{isLoading ? '正在检查会话...' : '使用 Linux Do 管理员登录'}</span>
               <ArrowRight size={18} />
-            </button>
-          </form>
+            </a>
+
+            {currentUser && onLogout ? (
+              <button
+                onClick={onLogout}
+                className="flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-100 px-5 py-3 font-medium text-slate-700 transition hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
+              >
+                <LogOut size={18} />
+                <span>退出当前账号</span>
+              </button>
+            ) : null}
+          </div>
         </GlassCard>
       </motion.div>
     </div>

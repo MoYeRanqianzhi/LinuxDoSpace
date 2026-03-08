@@ -1,21 +1,19 @@
-import { startTransition, useEffect, useMemo, useState } from 'react';
+﻿import { startTransition, useEffect, useMemo, useState } from 'react';
 import { ShieldCheck } from 'lucide-react';
 import { AdminNavbar } from './components/AdminNavbar';
+import { APIError, getAdminLoginURL, getAdminSession, logout } from './lib/api';
 import { AdminLogin } from './pages/AdminLogin';
 import { ApplicationsPage } from './pages/ApplicationsPage';
 import { DomainsPage } from './pages/DomainsPage';
 import { EmailsPage } from './pages/EmailsPage';
 import { RedeemCodesPage } from './pages/RedeemCodesPage';
 import { UsersPage } from './pages/UsersPage';
-import type { AdminTabKey } from './types/admin';
+import type { AdminSessionResponse, AdminTabKey, ManagedDomain } from './types/admin';
 
-// 本地存储键集中管理，避免散落在多个组件里。
 const STORAGE_KEYS = {
   theme: 'linuxdospace-admin-theme',
-  demoAuth: 'linuxdospace-admin-demo-auth',
 } as const;
 
-// tabFromHash 根据 location.hash 解析出当前页面标签。
 function tabFromHash(hash: string): AdminTabKey {
   switch (hash.replace('#', '').toLowerCase()) {
     case 'domains':
@@ -32,36 +30,57 @@ function tabFromHash(hash: string): AdminTabKey {
   }
 }
 
-// App 负责管理员端的主题、伪登录态和标签页切换。
+function currentAdminNextPath(tab: AdminTabKey): string {
+  return `/#${tab}`;
+}
+
+function authErrorMessage(raw: string | null): string {
+  switch ((raw || '').trim().toLowerCase()) {
+    case 'admin_required':
+      return '当前 Linux Do 账号没有被授予管理员权限，请切换账号后重试。';
+    case 'forbidden':
+      return '当前账号已被拒绝访问管理员控制台。';
+    case 'unauthorized':
+      return '管理员会话已失效，请重新登录。';
+    case 'service_unavailable':
+      return '后端当前无法完成 Linux Do 登录，请稍后重试。';
+    default:
+      return raw ? `管理员登录失败：${raw}` : '';
+  }
+}
+
 export default function App() {
   const [isDark, setIsDark] = useState<boolean>(() => window.localStorage.getItem(STORAGE_KEYS.theme) === 'dark');
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(
-    () => window.localStorage.getItem(STORAGE_KEYS.demoAuth) === '1',
-  );
   const [activeTab, setActiveTab] = useState<AdminTabKey>(() => tabFromHash(window.location.hash));
-  const [loginError, setLoginError] = useState('');
+  const [session, setSession] = useState<AdminSessionResponse | null>(null);
+  const [managedDomains, setManagedDomains] = useState<ManagedDomain[]>([]);
+  const [sessionLoading, setSessionLoading] = useState(true);
+  const [sessionError, setSessionError] = useState(() => authErrorMessage(new URLSearchParams(window.location.search).get('auth_error')));
 
-  // demoPassword 明确标注它只是前端演示口令，不代表真正的管理员鉴权。
-  const demoPassword = useMemo(
-    () => (import.meta.env.VITE_ADMIN_DEMO_PASSWORD?.trim() || 'linuxdospace-admin-demo'),
-    [],
-  );
+  const loginURL = useMemo(() => getAdminLoginURL(currentAdminNextPath(activeTab)), [activeTab]);
 
-  // 同步深色模式类名，继续沿用现有 UI 的 dark 机制。
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDark);
     window.localStorage.setItem(STORAGE_KEYS.theme, isDark ? 'dark' : 'light');
   }, [isDark]);
 
-  // 当前标签页变化时写回 hash，便于单页静态部署后刷新保持当前位置。
   useEffect(() => {
     const nextHash = `#${activeTab}`;
     if (window.location.hash !== nextHash) {
-      window.history.replaceState(null, '', nextHash);
+      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${nextHash}`);
     }
   }, [activeTab]);
 
-  // 处理浏览器前进后退，让 hash 与页面状态保持同步。
+  useEffect(() => {
+    const search = new URLSearchParams(window.location.search);
+    if (search.has('auth_error')) {
+      search.delete('auth_error');
+      const nextSearch = search.toString();
+      const nextURL = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`;
+      window.history.replaceState(null, '', nextURL);
+    }
+  }, []);
+
   useEffect(() => {
     const handleHashChange = () => {
       startTransition(() => {
@@ -73,42 +92,77 @@ export default function App() {
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
-  // handleLogin 仅做演示密码校验，并把结果写入本地存储。
-  function handleLogin(password: string) {
-    if (password !== demoPassword) {
-      setLoginError('演示口令不正确，请检查 Cloudflare Pages 环境变量或使用默认口令。');
+  async function loadSession() {
+    try {
+      setSessionLoading(true);
+      const data = await getAdminSession();
+      setSession(data);
+      setManagedDomains(data.managed_domains ?? []);
+      if (!data.authorized && data.authenticated) {
+        setSessionError('当前账号已登录，但没有管理员权限。');
+      } else if (data.authenticated) {
+        setSessionError('');
+      }
+    } catch (error) {
+      if (error instanceof APIError) {
+        setSessionError(error.message);
+      } else {
+        setSessionError('无法连接管理员后端。');
+      }
+    } finally {
+      setSessionLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadSession();
+  }, []);
+
+  async function handleLogout() {
+    if (!session?.csrf_token) {
+      setSession(null);
+      setManagedDomains([]);
       return;
     }
-
-    setLoginError('');
-    setIsAuthenticated(true);
-    window.localStorage.setItem(STORAGE_KEYS.demoAuth, '1');
+    try {
+      await logout(session.csrf_token);
+    } catch {
+      // Ignore logout transport errors and force local signed-out state.
+    }
+    setSession(null);
+    setManagedDomains([]);
+    setSessionError('');
   }
 
-  // handleLogout 清理演示登录态，避免误导成真实后台权限。
-  function handleLogout() {
-    setIsAuthenticated(false);
-    window.localStorage.removeItem(STORAGE_KEYS.demoAuth);
-  }
-
-  // renderContent 根据标签页渲染不同的管理页面。
   function renderContent() {
+    if (!session?.csrf_token) {
+      return null;
+    }
+
     switch (activeTab) {
       case 'domains':
-        return <DomainsPage />;
+        return (
+          <DomainsPage
+            csrfToken={session.csrf_token}
+            managedDomains={managedDomains}
+            onManagedDomainsChange={setManagedDomains}
+          />
+        );
       case 'emails':
-        return <EmailsPage />;
+        return <EmailsPage csrfToken={session.csrf_token} managedDomains={managedDomains} />;
       case 'applications':
-        return <ApplicationsPage />;
+        return <ApplicationsPage csrfToken={session.csrf_token} />;
       case 'redeem':
-        return <RedeemCodesPage />;
+        return <RedeemCodesPage csrfToken={session.csrf_token} />;
       case 'users':
       default:
-        return <UsersPage />;
+        return <UsersPage csrfToken={session.csrf_token} managedDomains={managedDomains} />;
     }
   }
 
-  if (!isAuthenticated) {
+  const authorized = Boolean(session?.authenticated && session.authorized && session.user && session.csrf_token);
+
+  if (!authorized) {
     return (
       <div className="relative min-h-screen overflow-x-hidden font-sans text-slate-900 transition-colors duration-500 dark:text-white">
         <div
@@ -117,11 +171,13 @@ export default function App() {
         />
         <div className="fixed inset-0 z-[-1] bg-white/45 backdrop-blur-[2px] dark:bg-black/45" />
         <AdminLogin
-          error={loginError}
+          error={sessionError}
           isDark={isDark}
-          onLogin={handleLogin}
+          isLoading={sessionLoading}
+          loginURL={loginURL}
+          onLogout={session?.authenticated ? handleLogout : undefined}
           onToggleTheme={() => setIsDark((value) => !value)}
-          passwordHint={demoPassword}
+          currentUser={session?.user}
         />
       </div>
     );
@@ -147,7 +203,7 @@ export default function App() {
         <div className="mx-auto mb-6 flex max-w-7xl items-start gap-3 rounded-[28px] border border-amber-300/35 bg-amber-50/75 px-5 py-4 text-sm text-amber-950 shadow-lg backdrop-blur-xl dark:border-amber-500/20 dark:bg-amber-950/35 dark:text-amber-100">
           <ShieldCheck size={18} className="mt-0.5 shrink-0" />
           <p>
-            当前管理员站点仍是独立 UI 原型，已适配为可单独部署的 React 项目，但暂未接入真实后台鉴权与管理 API。
+            当前管理员控制台已接入真实后端权限模型。所有写操作都会经过服务端会话、管理员检查、CSRF 校验与审计日志记录。
           </p>
         </div>
         {renderContent()}

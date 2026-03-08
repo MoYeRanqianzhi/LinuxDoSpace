@@ -1,14 +1,23 @@
-import { useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, FileText, Search, XCircle } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import { mockApplications } from '../data/mockAdminData';
+import { APIError, listApplications, updateApplication } from '../lib/api';
 import { GlassCard } from '../components/GlassCard';
 import type { AdminApplicationRecord, ApplicationStatus } from '../types/admin';
 
-// ApplicationsPage 用于演示特批申请的审核流转界面。
-export function ApplicationsPage() {
-  const [records, setRecords] = useState<AdminApplicationRecord[]>(mockApplications);
+interface ApplicationsPageProps {
+  csrfToken: string;
+}
+
+function formatDate(value: string): string {
+  return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(value));
+}
+
+export function ApplicationsPage({ csrfToken }: ApplicationsPageProps) {
+  const [records, setRecords] = useState<AdminApplicationRecord[]>([]);
   const [keyword, setKeyword] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
   const filteredRecords = useMemo(() => {
     const search = keyword.trim().toLowerCase();
@@ -16,12 +25,36 @@ export function ApplicationsPage() {
       return records;
     }
     return records.filter((record) =>
-      [record.applicant, record.target, record.reason, record.status].some((field) => field.toLowerCase().includes(search)),
+      [record.applicant_username, record.target, record.reason, record.status].some((field) =>
+        field.toLowerCase().includes(search),
+      ),
     );
   }, [keyword, records]);
 
-  function updateStatus(id: number, status: ApplicationStatus) {
-    setRecords((current) => current.map((record) => (record.id === id ? { ...record, status } : record)));
+  useEffect(() => {
+    async function loadData() {
+      try {
+        setLoading(true);
+        const data = await listApplications();
+        setRecords(data);
+        setError('');
+      } catch (loadError) {
+        setError(loadError instanceof APIError ? loadError.message : '加载申请记录失败。');
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    void loadData();
+  }, []);
+
+  async function updateStatus(id: number, status: ApplicationStatus) {
+    try {
+      const updated = await updateApplication(id, { status, review_note: '' }, csrfToken);
+      setRecords((current) => current.map((record) => (record.id === id ? updated : record)));
+    } catch (saveError) {
+      setError(saveError instanceof APIError ? saveError.message : '更新申请状态失败。');
+    }
   }
 
   function typeLabel(type: AdminApplicationRecord['type']): string {
@@ -60,6 +93,20 @@ export function ApplicationsPage() {
         </label>
       </div>
 
+      {error ? (
+        <div className="mb-5 rounded-2xl border border-red-300/50 bg-red-50/80 px-4 py-3 text-sm text-red-700 dark:border-red-500/20 dark:bg-red-950/30 dark:text-red-200">
+          {error}
+        </div>
+      ) : null}
+
+      {loading ? (
+        <GlassCard className="p-6 text-sm text-slate-500 dark:text-slate-300">正在加载申请记录...</GlassCard>
+      ) : null}
+
+      {!loading && filteredRecords.length === 0 ? (
+        <GlassCard className="p-6 text-sm text-slate-500 dark:text-slate-300">当前没有待展示的申请记录。</GlassCard>
+      ) : null}
+
       <div className="space-y-5">
         <AnimatePresence>
           {filteredRecords.map((record) => (
@@ -68,8 +115,8 @@ export function ApplicationsPage() {
                 <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
                   <div className="space-y-4">
                     <div className="flex flex-wrap items-center gap-3">
-                      <span className="text-lg font-bold text-slate-900 dark:text-white">{record.applicant}</span>
-                      <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300">{record.appliedAt}</span>
+                      <span className="text-lg font-bold text-slate-900 dark:text-white">{record.applicant_username}</span>
+                      <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300">{formatDate(record.created_at)}</span>
                       <span className={`rounded-full px-3 py-1 text-xs font-semibold ${record.status === 'pending' ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' : record.status === 'approved' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'}`}>
                         {record.status === 'pending' ? '待审核' : record.status === 'approved' ? '已通过' : '已拒绝'}
                       </span>
@@ -96,11 +143,11 @@ export function ApplicationsPage() {
 
                   {record.status === 'pending' ? (
                     <div className="flex gap-3 lg:flex-col">
-                      <button onClick={() => updateStatus(record.id, 'approved')} className="flex items-center justify-center gap-2 rounded-2xl bg-emerald-500 px-5 py-3 text-sm font-medium text-white shadow-lg transition hover:bg-emerald-600">
+                      <button onClick={() => void updateStatus(record.id, 'approved')} className="flex items-center justify-center gap-2 rounded-2xl bg-emerald-500 px-5 py-3 text-sm font-medium text-white shadow-lg transition hover:bg-emerald-600">
                         <CheckCircle2 size={18} />
                         <span>批准</span>
                       </button>
-                      <button onClick={() => updateStatus(record.id, 'rejected')} className="flex items-center justify-center gap-2 rounded-2xl bg-red-500 px-5 py-3 text-sm font-medium text-white shadow-lg transition hover:bg-red-600">
+                      <button onClick={() => void updateStatus(record.id, 'rejected')} className="flex items-center justify-center gap-2 rounded-2xl bg-red-500 px-5 py-3 text-sm font-medium text-white shadow-lg transition hover:bg-red-600">
                         <XCircle size={18} />
                         <span>拒绝</span>
                       </button>
