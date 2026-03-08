@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -274,4 +275,28 @@ func (a *API) frontendRedirectURL(target string, nextPath string) string {
 		return path
 	}
 	return base + path
+}
+
+// requestClientIP extracts the best available client IP from trusted reverse-
+// proxy headers and finally falls back to RemoteAddr for local development.
+func requestClientIP(r *http.Request) string {
+	if value := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); value != "" {
+		return value
+	}
+	if forwardedFor := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); forwardedFor != "" {
+		parts := strings.Split(forwardedFor, ",")
+		if len(parts) > 0 {
+			if candidate := strings.TrimSpace(parts[0]); candidate != "" {
+				return candidate
+			}
+		}
+	}
+	if value := strings.TrimSpace(r.Header.Get("X-Real-IP")); value != "" {
+		return value
+	}
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err == nil && strings.TrimSpace(host) != "" {
+		return strings.TrimSpace(host)
+	}
+	return strings.TrimSpace(r.RemoteAddr)
 }

@@ -20,11 +20,12 @@ type RouterDependencies struct {
 // NewRouter builds the complete HTTP router used by the backend process.
 func NewRouter(deps RouterDependencies) http.Handler {
 	api := &API{
-		config:        deps.Config,
-		version:       deps.Version,
-		authService:   deps.AuthService,
-		domainService: deps.DomainService,
-		adminService:  deps.AdminService,
+		config:               deps.Config,
+		version:              deps.Version,
+		authService:          deps.AuthService,
+		domainService:        deps.DomainService,
+		adminService:         deps.AdminService,
+		adminPasswordLimiter: newAdminPasswordLimiter(adminPasswordMaxFailures, adminPasswordBlockDuration, adminPasswordStateTTL),
 	}
 
 	mux := http.NewServeMux()

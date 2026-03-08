@@ -243,6 +243,15 @@ func (s *AuthService) VerifyAdminPassword(ctx context.Context, session model.Ses
 
 	expected := s.cfg.App.AdminPassword
 	if subtle.ConstantTimeCompare([]byte(password), []byte(expected)) != 1 {
+		if err := s.store.WriteAuditLog(ctx, sqlite.AuditLogInput{
+			ActorUserID:  &actor.ID,
+			Action:       "admin.session.verify_password_failed",
+			ResourceType: "session",
+			ResourceID:   session.ID,
+			MetadataJSON: `{"second_factor":"password","result":"rejected"}`,
+		}); err != nil {
+			return time.Time{}, InternalError("failed to write admin password rejection audit log", err)
+		}
 		return time.Time{}, UnauthorizedError("invalid admin password")
 	}
 
@@ -256,7 +265,7 @@ func (s *AuthService) VerifyAdminPassword(ctx context.Context, session model.Ses
 		Action:       "admin.session.verify_password",
 		ResourceType: "session",
 		ResourceID:   session.ID,
-		MetadataJSON: `{"second_factor":"password"}`,
+		MetadataJSON: `{"second_factor":"password","result":"verified"}`,
 	}); err != nil {
 		return time.Time{}, InternalError("failed to write admin password verification audit log", err)
 	}

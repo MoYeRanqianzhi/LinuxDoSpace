@@ -5,6 +5,7 @@
 - Hardened administrator configuration so the backend now fails closed unless `APP_ADMIN_USERNAMES` and `APP_ADMIN_PASSWORD` are explicitly configured together.
 - Added configuration tests that verify development defaults stay locked down and production rejects incomplete admin protection settings.
 - Tightened admin identity resolution so only the local administrator allowlist can unlock the admin console, even if Linux Do marks a user as a forum administrator.
+- Added rate limiting and failure audit logs to `POST /v1/admin/verify-password` so the extra admin password cannot be brute-forced indefinitely.
 
 ## 0.6.0
 

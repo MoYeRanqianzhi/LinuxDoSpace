@@ -55,6 +55,12 @@ func ConflictError(message string) *Error {
 	return &Error{StatusCode: 409, Code: "conflict", Message: message}
 }
 
+// TooManyRequestsError indicates that one sensitive endpoint temporarily rejects
+// additional requests because the caller exceeded a security threshold.
+func TooManyRequestsError(message string) *Error {
+	return &Error{StatusCode: 429, Code: "too_many_requests", Message: message}
+}
+
 // UnavailableError 表示必要外部依赖未配置或不可用。
 func UnavailableError(message string, cause error) *Error {
 	return &Error{StatusCode: 503, Code: "service_unavailable", Message: message, Cause: cause}

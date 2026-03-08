@@ -95,6 +95,10 @@ Possible results:
 - `authenticated=true, authorized=false` when the Linux Do account is logged in but not granted admin permission
 - `authenticated=true, authorized=true` with `csrf_token`, `session_expires_at`, `user`, and `managed_domains` when the account is an administrator
 
+### `POST /v1/admin/verify-password`
+Completes the second administrator verification step by checking the extra backend password.
+This endpoint is rate limited by both session ID and client IP. Repeated failures return `429 too_many_requests` with a `Retry-After` header.
+
 ## Administrator data endpoints
 
 All write endpoints below require:

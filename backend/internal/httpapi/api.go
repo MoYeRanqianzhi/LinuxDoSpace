@@ -7,9 +7,10 @@ import (
 
 // API groups the service dependencies required by the HTTP layer.
 type API struct {
-	config        config.Config
-	version       string
-	authService   *service.AuthService
-	domainService *service.DomainService
-	adminService  *service.AdminService
+	config               config.Config
+	version              string
+	authService          *service.AuthService
+	domainService        *service.DomainService
+	adminService         *service.AdminService
+	adminPasswordLimiter *adminPasswordLimiter
 }

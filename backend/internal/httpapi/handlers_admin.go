@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"net/http"
+	"strconv"
+	"time"
 
 	"linuxdospace/backend/internal/service"
 )
@@ -86,6 +88,13 @@ func (a *API) handleAdminVerifyPassword(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	clientIP := requestClientIP(r)
+	if retryAfter, blocked := a.adminPasswordLimiter.Check(session.ID, clientIP, time.Now().UTC()); blocked {
+		w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
+		writeError(w, service.TooManyRequestsError("too many invalid admin password attempts, please retry later"))
+		return
+	}
+
 	var request verifyAdminPasswordRequest
 	if err := decodeJSONBody(r, &request); err != nil {
 		writeError(w, err)
@@ -94,9 +103,13 @@ func (a *API) handleAdminVerifyPassword(w http.ResponseWriter, r *http.Request) 
 
 	verifiedAt, err := a.authService.VerifyAdminPassword(r.Context(), *session, *user, request.Password)
 	if err != nil {
+		if normalized := service.NormalizeError(err); normalized != nil && normalized.Code == "unauthorized" {
+			a.adminPasswordLimiter.RegisterFailure(session.ID, clientIP, time.Now().UTC())
+		}
 		writeError(w, err)
 		return
 	}
+	a.adminPasswordLimiter.Reset(session.ID, clientIP)
 
 	managedDomains, err := a.domainService.ListAdminDomains(r.Context())
 	if err != nil {
