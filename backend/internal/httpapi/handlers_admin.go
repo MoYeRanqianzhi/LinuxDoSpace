@@ -274,6 +274,60 @@ func (a *API) handleAdminAllocations(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
+// handleAdminCreateAllocation manually creates one allocation namespace.
+func (a *API) handleAdminCreateAllocation(w http.ResponseWriter, r *http.Request) {
+	session, actor, ok := a.requireVerifiedAdmin(w, r)
+	if !ok {
+		return
+	}
+	if !a.enforceCSRF(w, r, session) {
+		return
+	}
+
+	var request service.CreateAdminAllocationRequest
+	if err := decodeJSONBody(r, &request); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	item, err := a.adminService.CreateAllocation(r.Context(), *actor, request)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
+}
+
+// handleAdminUpdateAllocation changes the lifecycle controls for one existing allocation.
+func (a *API) handleAdminUpdateAllocation(w http.ResponseWriter, r *http.Request) {
+	session, actor, ok := a.requireVerifiedAdmin(w, r)
+	if !ok {
+		return
+	}
+	if !a.enforceCSRF(w, r, session) {
+		return
+	}
+
+	allocationID, err := pathInt64(r, "allocationID")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	var request service.UpdateAdminAllocationRequest
+	if err := decodeJSONBody(r, &request); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	item, err := a.adminService.UpdateAllocation(r.Context(), *actor, allocationID, request)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
 // handleAdminRecords returns the global DNS record list visible to administrators.
 func (a *API) handleAdminRecords(w http.ResponseWriter, r *http.Request) {
 	_, _, ok := a.requireVerifiedAdmin(w, r)

@@ -104,6 +104,14 @@ type UpdatePermissionPolicyRequest struct {
 	MinTrustLevel *int  `json:"min_trust_level,omitempty"`
 }
 
+// AdminSetUserPermissionRequest describes one administrator-authored permission
+// decision written directly against a target user.
+type AdminSetUserPermissionRequest struct {
+	Status     string `json:"status"`
+	ReviewNote string `json:"review_note"`
+	Reason     string `json:"reason"`
+}
+
 // catchAllNamespace describes the routed namespace derived from the current
 // user account and the configured default root domain.
 type catchAllNamespace struct {
@@ -331,6 +339,91 @@ func (s *PermissionService) UpdatePermissionPolicy(ctx context.Context, actor mo
 	return updated, nil
 }
 
+// ListPermissionsForUser returns the current permission card set for one target
+// user so administrators can inspect and control it from the user editor.
+func (s *PermissionService) ListPermissionsForUser(ctx context.Context, userID int64) ([]UserPermissionView, error) {
+	user, err := s.db.GetUserByID(ctx, userID)
+	if err != nil {
+		if sqlite.IsNotFound(err) {
+			return nil, NotFoundError("target user not found")
+		}
+		return nil, InternalError("failed to load target user", err)
+	}
+	return s.ListMyPermissions(ctx, user)
+}
+
+// SetPermissionForUser lets an administrator directly create or override one
+// permission state for a target user, even without a prior user-side request.
+func (s *PermissionService) SetPermissionForUser(ctx context.Context, actor model.User, userID int64, permissionKey string, request AdminSetUserPermissionRequest) (UserPermissionView, error) {
+	if strings.TrimSpace(permissionKey) != PermissionKeyEmailCatchAll {
+		return UserPermissionView{}, ValidationError("unsupported permission key")
+	}
+
+	user, err := s.db.GetUserByID(ctx, userID)
+	if err != nil {
+		if sqlite.IsNotFound(err) {
+			return UserPermissionView{}, NotFoundError("target user not found")
+		}
+		return UserPermissionView{}, InternalError("failed to load target user", err)
+	}
+
+	status := normalizeAdminApplicationStatus(request.Status)
+	if status == "" {
+		return UserPermissionView{}, ValidationError("status must be pending, approved, or rejected")
+	}
+
+	permission, err := s.loadEmailCatchAllPermission(ctx, user)
+	if err != nil {
+		return UserPermissionView{}, err
+	}
+
+	reason := strings.TrimSpace(request.Reason)
+	if reason == "" {
+		if permission.Application != nil && strings.TrimSpace(permission.Application.Reason) != "" {
+			reason = permission.Application.Reason
+		} else {
+			reason = "管理员手动设置该权限状态。"
+		}
+	}
+
+	now := time.Now().UTC()
+	item, err := s.db.UpsertAdminApplication(ctx, sqlite.UpsertAdminApplicationInput{
+		ApplicantUserID:  user.ID,
+		Type:             PermissionKeyEmailCatchAll,
+		Target:           permission.Target,
+		Reason:           reason,
+		Status:           status,
+		ReviewNote:       strings.TrimSpace(request.ReviewNote),
+		ReviewedByUserID: &actor.ID,
+		ReviewedAt:       &now,
+	})
+	if err != nil {
+		return UserPermissionView{}, InternalError("failed to set target user permission", err)
+	}
+
+	if err := s.disableCatchAllEmailRouteForApplication(ctx, actor, item); err != nil {
+		return UserPermissionView{}, err
+	}
+
+	metadata, _ := json.Marshal(map[string]any{
+		"application_id": item.ID,
+		"permission_key": PermissionKeyEmailCatchAll,
+		"target_user_id": user.ID,
+		"status":         item.Status,
+	})
+	if err := s.db.WriteAuditLog(ctx, sqlite.AuditLogInput{
+		ActorUserID:  &actor.ID,
+		Action:       "admin.permission.user_set",
+		ResourceType: "admin_application",
+		ResourceID:   strconv.FormatInt(item.ID, 10),
+		MetadataJSON: string(metadata),
+	}); err != nil {
+		return UserPermissionView{}, InternalError("failed to write admin permission audit log", err)
+	}
+
+	return s.loadEmailCatchAllPermission(ctx, user)
+}
+
 // loadEmailCatchAllPermission resolves the current policy, eligibility, and
 // application state into the single card rendered by the public frontend.
 func (s *PermissionService) loadEmailCatchAllPermission(ctx context.Context, user model.User) (UserPermissionView, error) {
@@ -526,4 +619,54 @@ func itemDisplayName(value string, fallback string) string {
 		return fallback
 	}
 	return trimmed
+}
+
+// disableCatchAllEmailRouteForApplication keeps the effective route in sync when
+// an administrator moves a catch-all permission away from approved.
+func (s *PermissionService) disableCatchAllEmailRouteForApplication(ctx context.Context, actor model.User, application model.AdminApplication) error {
+	if application.Type != PermissionKeyEmailCatchAll || application.Status == "approved" {
+		return nil
+	}
+
+	_, rootDomain, err := parseCatchAllTargetAddress(application.Target)
+	if err != nil {
+		return InternalError("failed to parse catch-all permission target", err)
+	}
+
+	route, err := s.db.GetEmailRouteByAddress(ctx, rootDomain, emailCatchAllPrefix)
+	if err != nil {
+		if sqlite.IsNotFound(err) {
+			return nil
+		}
+		return InternalError("failed to load catch-all email route", err)
+	}
+	if !route.Enabled {
+		return nil
+	}
+
+	updated, err := s.db.UpdateEmailRoute(ctx, sqlite.UpdateEmailRouteInput{
+		ID:          route.ID,
+		TargetEmail: route.TargetEmail,
+		Enabled:     false,
+	})
+	if err != nil {
+		return InternalError("failed to disable catch-all email route", err)
+	}
+
+	metadata, _ := json.Marshal(map[string]any{
+		"email_route_id": updated.ID,
+		"application_id": application.ID,
+		"address":        updated.Prefix + "@" + updated.RootDomain,
+		"status":         application.Status,
+	})
+	if err := s.db.WriteAuditLog(ctx, sqlite.AuditLogInput{
+		ActorUserID:  &actor.ID,
+		Action:       "admin.email_route.disable_on_permission_update",
+		ResourceType: "email_route",
+		ResourceID:   strconv.FormatInt(updated.ID, 10),
+		MetadataJSON: string(metadata),
+	}); err != nil {
+		return InternalError("failed to write catch-all disable audit log", err)
+	}
+	return nil
 }

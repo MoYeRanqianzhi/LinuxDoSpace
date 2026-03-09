@@ -189,9 +189,56 @@ Request example:
 }
 ```
 
+### `GET /v1/admin/users/{userID}/permissions`
+Returns the current administrator-visible permission cards for one target user.
+
+### `PATCH /v1/admin/users/{userID}/permissions/{permissionKey}`
+Lets an administrator directly override one target user's permission state.
+
+Request example:
+
+```json
+{
+  "status": "approved",
+  "review_note": "manual grant after review",
+  "reason": "管理员手动设置该权限状态。"
+}
+```
+
 ### `GET /v1/admin/allocations`
 Returns all allocation namespaces together with owner identity.
 Useful for admin record creation workflows.
+
+### `POST /v1/admin/allocations`
+Creates one allocation namespace on behalf of any user.
+
+Request example:
+
+```json
+{
+  "owner_user_id": 1,
+  "root_domain": "linuxdo.space",
+  "prefix": "alice",
+  "is_primary": true,
+  "source": "manual",
+  "status": "active"
+}
+```
+
+### `PATCH /v1/admin/allocations/{allocationID}`
+Updates one allocation's owner or lifecycle state.
+`status` currently accepts `active` or `disabled`.
+
+Request example:
+
+```json
+{
+  "owner_user_id": 2,
+  "is_primary": true,
+  "source": "manual-transfer",
+  "status": "active"
+}
+```
 
 ### `GET /v1/admin/records`
 Returns the global administrator DNS record list across all allocation namespaces.
@@ -250,6 +297,7 @@ Request example:
 
 ### `PATCH /v1/admin/applications/{applicationID}`
 Updates one moderation request state.
+`status` accepts `pending`, `approved`, and `rejected` so admins can reopen an application when needed.
 
 Request example:
 

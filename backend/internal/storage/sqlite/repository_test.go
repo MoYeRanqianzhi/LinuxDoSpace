@@ -107,6 +107,82 @@ func TestListPublicAllocationOwnershipsOnlyReturnsActivelyUsedAllocations(t *tes
 	}
 }
 
+// TestUpdateAllocationReassignsPrimary verifies that transferring an allocation
+// between users still preserves the single-primary invariant per user+domain.
+func TestUpdateAllocationReassignsPrimary(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+
+	alice := newTestUser(t, ctx, store, "alice")
+	bob, err := store.UpsertUser(ctx, UpsertUserInput{
+		LinuxDOUserID: 202,
+		Username:      "bob",
+		DisplayName:   "bob",
+		AvatarURL:     "https://example.com/avatar-bob.png",
+		TrustLevel:    2,
+	})
+	if err != nil {
+		t.Fatalf("upsert second test user: %v", err)
+	}
+	managedDomain := newTestManagedDomain(t, ctx, store, "linuxdo.space")
+
+	bobPrimary, err := store.CreateAllocation(ctx, CreateAllocationInput{
+		UserID:           bob.ID,
+		ManagedDomainID:  managedDomain.ID,
+		Prefix:           "bob-main",
+		NormalizedPrefix: "bob-main",
+		FQDN:             "bob-main." + managedDomain.RootDomain,
+		IsPrimary:        true,
+		Source:           "test",
+		Status:           "active",
+	})
+	if err != nil {
+		t.Fatalf("create bob primary allocation: %v", err)
+	}
+
+	alicePrimary, err := store.CreateAllocation(ctx, CreateAllocationInput{
+		UserID:           alice.ID,
+		ManagedDomainID:  managedDomain.ID,
+		Prefix:           "alice-main",
+		NormalizedPrefix: "alice-main",
+		FQDN:             "alice-main." + managedDomain.RootDomain,
+		IsPrimary:        true,
+		Source:           "test",
+		Status:           "active",
+	})
+	if err != nil {
+		t.Fatalf("create alice primary allocation: %v", err)
+	}
+
+	updated, err := store.UpdateAllocation(ctx, UpdateAllocationInput{
+		ID:        alicePrimary.ID,
+		UserID:    bob.ID,
+		IsPrimary: true,
+		Source:    "manual-transfer",
+		Status:    "active",
+	})
+	if err != nil {
+		t.Fatalf("update allocation owner: %v", err)
+	}
+	if updated.UserID != bob.ID {
+		t.Fatalf("expected updated allocation owner %d, got %d", bob.ID, updated.UserID)
+	}
+	if !updated.IsPrimary {
+		t.Fatalf("expected transferred allocation to stay primary for the new owner")
+	}
+	if updated.Source != "manual-transfer" {
+		t.Fatalf("expected updated source to persist, got %q", updated.Source)
+	}
+
+	reloadedBobPrimary, err := store.GetAllocationByID(ctx, bobPrimary.ID)
+	if err != nil {
+		t.Fatalf("reload bob original primary allocation: %v", err)
+	}
+	if reloadedBobPrimary.IsPrimary {
+		t.Fatalf("expected bob original primary allocation to be cleared after transfer")
+	}
+}
+
 // newTestStore 创建一个只用于当前测试的 sqlite store，并自动执行迁移。
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
@@ -132,8 +208,13 @@ func newTestStore(t *testing.T) *Store {
 func newTestUser(t *testing.T, ctx context.Context, store *Store, username string) model.User {
 	t.Helper()
 
+	linuxDOUserID := int64(1000)
+	for _, runeValue := range username {
+		linuxDOUserID = linuxDOUserID*31 + int64(runeValue)
+	}
+
 	user, err := store.UpsertUser(ctx, UpsertUserInput{
-		LinuxDOUserID: 101,
+		LinuxDOUserID: linuxDOUserID,
 		Username:      username,
 		DisplayName:   username,
 		AvatarURL:     "https://example.com/avatar.png",

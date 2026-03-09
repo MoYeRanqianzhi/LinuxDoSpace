@@ -56,6 +56,26 @@ type UpsertAdminRecordRequest struct {
 	Priority *int   `json:"priority,omitempty"`
 }
 
+// CreateAdminAllocationRequest describes the administrator-only fields needed to
+// manually create one allocation namespace.
+type CreateAdminAllocationRequest struct {
+	OwnerUserID int64  `json:"owner_user_id"`
+	RootDomain  string `json:"root_domain"`
+	Prefix      string `json:"prefix"`
+	IsPrimary   bool   `json:"is_primary"`
+	Source      string `json:"source"`
+	Status      string `json:"status"`
+}
+
+// UpdateAdminAllocationRequest describes the mutable lifecycle controls for one
+// existing allocation namespace.
+type UpdateAdminAllocationRequest struct {
+	OwnerUserID *int64 `json:"owner_user_id,omitempty"`
+	IsPrimary   *bool  `json:"is_primary,omitempty"`
+	Source      string `json:"source"`
+	Status      string `json:"status"`
+}
+
 // UpsertEmailRouteRequest describes the input accepted by the email routes page.
 type UpsertEmailRouteRequest struct {
 	OwnerUserID int64  `json:"owner_user_id"`
@@ -218,6 +238,137 @@ func (s *AdminService) ListAllocations(ctx context.Context) ([]model.AdminAlloca
 		return nil, InternalError("failed to list admin allocations", err)
 	}
 	return items, nil
+}
+
+// CreateAllocation manually provisions one allocation namespace for any user.
+func (s *AdminService) CreateAllocation(ctx context.Context, actor model.User, request CreateAdminAllocationRequest) (model.AdminAllocationSummary, error) {
+	owner, managedDomain, normalizedPrefix, fqdn, status, source, err := s.validateAdminAllocationWrite(ctx, request.OwnerUserID, request.RootDomain, request.Prefix, request.Status, request.Source)
+	if err != nil {
+		return model.AdminAllocationSummary{}, err
+	}
+	if status != "active" && request.IsPrimary {
+		return model.AdminAllocationSummary{}, ValidationError("disabled allocations cannot be marked as primary")
+	}
+
+	item, err := s.db.CreateAllocation(ctx, sqlite.CreateAllocationInput{
+		UserID:           owner.ID,
+		ManagedDomainID:  managedDomain.ID,
+		Prefix:           normalizedPrefix,
+		NormalizedPrefix: normalizedPrefix,
+		FQDN:             fqdn,
+		IsPrimary:        request.IsPrimary,
+		Source:           source,
+		Status:           status,
+	})
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return model.AdminAllocationSummary{}, ConflictError("the requested allocation already exists")
+		}
+		return model.AdminAllocationSummary{}, InternalError("failed to create allocation", err)
+	}
+
+	created, err := s.loadAdminAllocation(ctx, item.ID)
+	if err != nil {
+		return model.AdminAllocationSummary{}, err
+	}
+
+	metadata, _ := json.Marshal(map[string]any{
+		"allocation_id": created.ID,
+		"owner_user_id": created.UserID,
+		"fqdn":          created.FQDN,
+		"status":        created.Status,
+		"source":        created.Source,
+	})
+	if err := s.db.WriteAuditLog(ctx, sqlite.AuditLogInput{
+		ActorUserID:  &actor.ID,
+		Action:       "admin.allocation.create",
+		ResourceType: "allocation",
+		ResourceID:   strconv.FormatInt(created.ID, 10),
+		MetadataJSON: string(metadata),
+	}); err != nil {
+		return model.AdminAllocationSummary{}, InternalError("failed to write allocation create audit log", err)
+	}
+
+	return created, nil
+}
+
+// UpdateAllocation changes ownership or lifecycle state for one allocation.
+func (s *AdminService) UpdateAllocation(ctx context.Context, actor model.User, allocationID int64, request UpdateAdminAllocationRequest) (model.AdminAllocationSummary, error) {
+	existing, err := s.loadAdminAllocation(ctx, allocationID)
+	if err != nil {
+		return model.AdminAllocationSummary{}, err
+	}
+
+	ownerID := existing.UserID
+	if request.OwnerUserID != nil {
+		ownerID = *request.OwnerUserID
+	}
+	owner, err := s.db.GetUserByID(ctx, ownerID)
+	if err != nil {
+		if sqlite.IsNotFound(err) {
+			return model.AdminAllocationSummary{}, NotFoundError("allocation owner not found")
+		}
+		return model.AdminAllocationSummary{}, InternalError("failed to load allocation owner", err)
+	}
+
+	status := normalizeAdminAllocationStatus(request.Status)
+	if status == "" {
+		status = existing.Status
+	}
+	source := strings.TrimSpace(request.Source)
+	if source == "" {
+		source = existing.Source
+	}
+	if status != "active" && request.IsPrimary != nil && *request.IsPrimary {
+		return model.AdminAllocationSummary{}, ValidationError("disabled allocations cannot be marked as primary")
+	}
+	isPrimary := existing.IsPrimary
+	if request.IsPrimary != nil {
+		isPrimary = *request.IsPrimary
+	}
+	if status != "active" {
+		isPrimary = false
+	}
+
+	updated, err := s.db.UpdateAllocation(ctx, sqlite.UpdateAllocationInput{
+		ID:        allocationID,
+		UserID:    owner.ID,
+		IsPrimary: isPrimary,
+		Source:    source,
+		Status:    status,
+	})
+	if err != nil {
+		if sqlite.IsNotFound(err) {
+			return model.AdminAllocationSummary{}, NotFoundError("allocation not found")
+		}
+		return model.AdminAllocationSummary{}, InternalError("failed to update allocation", err)
+	}
+
+	result, err := s.loadAdminAllocation(ctx, updated.ID)
+	if err != nil {
+		return model.AdminAllocationSummary{}, err
+	}
+
+	metadata, _ := json.Marshal(map[string]any{
+		"allocation_id":    result.ID,
+		"previous_user_id": existing.UserID,
+		"owner_user_id":    result.UserID,
+		"fqdn":             result.FQDN,
+		"status":           result.Status,
+		"source":           result.Source,
+		"is_primary":       result.IsPrimary,
+	})
+	if err := s.db.WriteAuditLog(ctx, sqlite.AuditLogInput{
+		ActorUserID:  &actor.ID,
+		Action:       "admin.allocation.update",
+		ResourceType: "allocation",
+		ResourceID:   strconv.FormatInt(result.ID, 10),
+		MetadataJSON: string(metadata),
+	}); err != nil {
+		return model.AdminAllocationSummary{}, InternalError("failed to write allocation update audit log", err)
+	}
+
+	return result, nil
 }
 
 // ListRecords returns the global DNS record list visible to administrators.
@@ -786,6 +937,56 @@ func findBestAllocationMatch(recordName string, allocations []model.AdminAllocat
 		}
 	}
 	return model.AdminAllocationSummary{}, false
+}
+
+// validateAdminAllocationWrite resolves the owner and root domain while
+// normalizing the mutable administrator allocation payload.
+func (s *AdminService) validateAdminAllocationWrite(ctx context.Context, ownerUserID int64, rootDomain string, prefix string, rawStatus string, rawSource string) (model.User, model.ManagedDomain, string, string, string, string, error) {
+	owner, err := s.db.GetUserByID(ctx, ownerUserID)
+	if err != nil {
+		if sqlite.IsNotFound(err) {
+			return model.User{}, model.ManagedDomain{}, "", "", "", "", NotFoundError("allocation owner not found")
+		}
+		return model.User{}, model.ManagedDomain{}, "", "", "", "", InternalError("failed to load allocation owner", err)
+	}
+
+	managedDomain, err := s.db.GetManagedDomainByRoot(ctx, strings.ToLower(strings.TrimSpace(rootDomain)))
+	if err != nil {
+		if sqlite.IsNotFound(err) {
+			return model.User{}, model.ManagedDomain{}, "", "", "", "", NotFoundError("managed domain not found")
+		}
+		return model.User{}, model.ManagedDomain{}, "", "", "", "", InternalError("failed to load managed domain", err)
+	}
+
+	normalizedPrefix, err := NormalizePrefix(prefix)
+	if err != nil {
+		return model.User{}, model.ManagedDomain{}, "", "", "", "", ValidationError(err.Error())
+	}
+
+	status := normalizeAdminAllocationStatus(rawStatus)
+	if status == "" {
+		return model.User{}, model.ManagedDomain{}, "", "", "", "", ValidationError("allocation status must be active or disabled")
+	}
+
+	source := strings.TrimSpace(rawSource)
+	if source == "" {
+		source = "manual"
+	}
+
+	return owner, managedDomain, normalizedPrefix, normalizedPrefix + "." + managedDomain.RootDomain, status, source, nil
+}
+
+// normalizeAdminAllocationStatus restricts administrator allocation lifecycle
+// writes to the states currently supported by the application.
+func normalizeAdminAllocationStatus(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "active":
+		return "active"
+	case "disabled":
+		return "disabled"
+	default:
+		return ""
+	}
 }
 
 // normalizeAdminApplicationStatus validates and normalizes moderation request states.

@@ -4,6 +4,8 @@
 
 - Added the first real user-facing permission flow for `catch-all@<username>.linuxdo.space`, including policy-backed auto-approval, administrator policy controls, and end-to-end frontend integration for the email and permission pages.
 - Added persistent permission-policy storage plus user-side email-route APIs so catch-all forwarding now has a real backend instead of preview-only UI.
+- Added direct administrator permission controls inside the user management flow so admins can inspect and override `email_catch_all` status per user, with review notes kept alongside the application record.
+- Added administrator allocation lifecycle controls so the admin console can now create namespaces, transfer ownership, disable allocations, and reassign the primary namespace without editing SQLite manually.
 - Restored the public anime background as an opt-out browser preference, defaulting to enabled and exposing the toggle from a new navbar settings button beside the GitHub icon.
 - Hardened administrator configuration so the backend now fails closed unless `APP_ADMIN_USERNAMES` and `APP_ADMIN_PASSWORD` are explicitly configured together.
 - Added configuration tests that verify development defaults stay locked down and production rejects incomplete admin protection settings.

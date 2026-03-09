@@ -130,3 +130,60 @@ func (a *API) handleAdminUpdatePermissionPolicy(w http.ResponseWriter, r *http.R
 	}
 	writeJSON(w, http.StatusOK, item)
 }
+
+// handleAdminUserPermissions returns the current permission cards for one target user.
+func (a *API) handleAdminUserPermissions(w http.ResponseWriter, r *http.Request) {
+	_, _, ok := a.requireVerifiedAdmin(w, r)
+	if !ok {
+		return
+	}
+
+	userID, err := pathInt64(r, "userID")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	items, err := a.permissionService.ListPermissionsForUser(r.Context(), userID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+// handleAdminSetUserPermission lets an administrator directly override one target user's permission state.
+func (a *API) handleAdminSetUserPermission(w http.ResponseWriter, r *http.Request) {
+	session, actor, ok := a.requireVerifiedAdmin(w, r)
+	if !ok {
+		return
+	}
+	if !a.enforceCSRF(w, r, session) {
+		return
+	}
+
+	userID, err := pathInt64(r, "userID")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	permissionKey := r.PathValue("permissionKey")
+	if permissionKey == "" {
+		writeError(w, service.ValidationError("permissionKey is required"))
+		return
+	}
+
+	var request service.AdminSetUserPermissionRequest
+	if err := decodeJSONBody(r, &request); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	item, err := a.permissionService.SetPermissionForUser(r.Context(), *actor, userID, permissionKey, request)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}

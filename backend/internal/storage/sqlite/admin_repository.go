@@ -32,6 +32,16 @@ type UpdateEmailRouteInput struct {
 	Enabled     bool
 }
 
+// UpdateAllocationInput describes the mutable administrator-managed portion of
+// one allocation namespace row.
+type UpdateAllocationInput struct {
+	ID        int64
+	UserID    int64
+	IsPrimary bool
+	Source    string
+	Status    string
+}
+
 // UpdateAdminApplicationInput describes one moderation decision for an application request.
 type UpdateAdminApplicationInput struct {
 	ID               int64
@@ -44,11 +54,14 @@ type UpdateAdminApplicationInput struct {
 // The unique applicant/type/target tuple lets one row act as both the latest
 // application snapshot and the currently effective approval state.
 type UpsertAdminApplicationInput struct {
-	ApplicantUserID int64
-	Type            string
-	Target          string
-	Reason          string
-	Status          string
+	ApplicantUserID  int64
+	Type             string
+	Target           string
+	Reason           string
+	Status           string
+	ReviewNote       string
+	ReviewedByUserID *int64
+	ReviewedAt       *time.Time
 }
 
 // UpsertEmailRouteByAddressInput describes an idempotent email-route write keyed
@@ -228,6 +241,98 @@ ORDER BY a.created_at DESC, a.id DESC
 		return nil, err
 	}
 	return items, nil
+}
+
+// UpdateAllocation updates one allocation row for administrator moderation and
+// ownership-correction workflows.
+func (s *Store) UpdateAllocation(ctx context.Context, input UpdateAllocationInput) (model.Allocation, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.Allocation{}, err
+	}
+	defer tx.Rollback()
+
+	var managedDomainID int64
+	row := tx.QueryRowContext(ctx, `
+SELECT managed_domain_id
+FROM allocations
+WHERE id = ?
+`, input.ID)
+	if err := row.Scan(&managedDomainID); err != nil {
+		return model.Allocation{}, err
+	}
+
+	now := time.Now().UTC()
+	if input.IsPrimary {
+		if _, err := tx.ExecContext(ctx, `
+UPDATE allocations
+SET is_primary = 0, updated_at = ?
+WHERE user_id = ? AND managed_domain_id = ? AND id <> ?
+`, formatTime(now), input.UserID, managedDomainID, input.ID); err != nil {
+			return model.Allocation{}, err
+		}
+	}
+
+	row = tx.QueryRowContext(ctx, `
+UPDATE allocations
+SET user_id = ?,
+    is_primary = ?,
+    source = ?,
+    status = ?,
+    updated_at = ?
+WHERE id = ?
+RETURNING
+    id,
+    user_id,
+    managed_domain_id,
+    prefix,
+    normalized_prefix,
+    fqdn,
+    is_primary,
+    source,
+    status,
+    created_at,
+    updated_at
+`,
+		input.UserID,
+		boolToInt(input.IsPrimary),
+		strings.TrimSpace(input.Source),
+		strings.TrimSpace(input.Status),
+		formatTime(now),
+		input.ID,
+	)
+
+	var item model.Allocation
+	var createdAt string
+	var updatedAt string
+	var isPrimary int
+	if err := row.Scan(
+		&item.ID,
+		&item.UserID,
+		&item.ManagedDomainID,
+		&item.Prefix,
+		&item.NormalizedPrefix,
+		&item.FQDN,
+		&isPrimary,
+		&item.Source,
+		&item.Status,
+		&createdAt,
+		&updatedAt,
+	); err != nil {
+		return model.Allocation{}, err
+	}
+	item.IsPrimary = isPrimary == 1
+	if item.CreatedAt, err = parseTime(createdAt); err != nil {
+		return model.Allocation{}, err
+	}
+	if item.UpdatedAt, err = parseTime(updatedAt); err != nil {
+		return model.Allocation{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return model.Allocation{}, err
+	}
+	return item, nil
 }
 
 // ListEmailRoutes returns all persisted email forwarding rules.
@@ -523,6 +628,10 @@ ORDER BY ap.updated_at DESC, ap.id DESC
 // UpsertAdminApplication inserts or refreshes one permission application row.
 func (s *Store) UpsertAdminApplication(ctx context.Context, input UpsertAdminApplicationInput) (model.AdminApplication, error) {
 	now := time.Now().UTC()
+	var reviewedAtValue any
+	if input.ReviewedAt != nil {
+		reviewedAtValue = formatTime(input.ReviewedAt.UTC())
+	}
 	row := s.db.QueryRowContext(ctx, `
 INSERT INTO admin_applications (
     applicant_user_id,
@@ -535,7 +644,7 @@ INSERT INTO admin_applications (
     reviewed_at,
     created_at,
     updated_at
-) VALUES (?, ?, ?, ?, ?, '', NULL, NULL, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(applicant_user_id, type, target) DO UPDATE SET
     reason = excluded.reason,
     status = excluded.status,
@@ -550,6 +659,9 @@ RETURNING id
 		strings.TrimSpace(input.Target),
 		strings.TrimSpace(input.Reason),
 		strings.TrimSpace(input.Status),
+		strings.TrimSpace(input.ReviewNote),
+		input.ReviewedByUserID,
+		reviewedAtValue,
 		formatTime(now),
 		formatTime(now),
 	)
