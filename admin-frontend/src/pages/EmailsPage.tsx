@@ -2,6 +2,7 @@
 import { ArrowRight, Edit2, Mail, Plus, Search, Trash2 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { APIError, createEmailRoute, deleteEmailRoute, listAdminUsers, listEmailRoutes, updateEmailRoute } from '../lib/api';
+import { AdminSelect } from '../components/AdminSelect';
 import { GlassCard } from '../components/GlassCard';
 import type { AdminEmailRecord, AdminUserRecord, ManagedDomain, UpsertEmailRouteInput } from '../types/admin';
 
@@ -156,7 +157,7 @@ export function EmailsPage({ csrfToken, managedDomains }: EmailsPageProps) {
 
             <div>
               <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">所属用户</label>
-              <select
+              <AdminSelect
                 value={draft.owner_user_id}
                 onChange={(event) => setDraft((current) => ({ ...current, owner_user_id: Number(event.target.value) }))}
                 className="w-full rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 outline-none focus:border-fuchsia-400 focus:ring-2 focus:ring-fuchsia-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
@@ -167,12 +168,12 @@ export function EmailsPage({ csrfToken, managedDomains }: EmailsPageProps) {
                     {user.username}
                   </option>
                 ))}
-              </select>
+              </AdminSelect>
             </div>
 
             <div>
               <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">根域名</label>
-              <select
+              <AdminSelect
                 value={draft.root_domain}
                 onChange={(event) => setDraft((current) => ({ ...current, root_domain: event.target.value }))}
                 className="w-full rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 outline-none focus:border-fuchsia-400 focus:ring-2 focus:ring-fuchsia-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
@@ -183,7 +184,7 @@ export function EmailsPage({ csrfToken, managedDomains }: EmailsPageProps) {
                     {domain.root_domain}
                   </option>
                 ))}
-              </select>
+              </AdminSelect>
             </div>
 
             <div>

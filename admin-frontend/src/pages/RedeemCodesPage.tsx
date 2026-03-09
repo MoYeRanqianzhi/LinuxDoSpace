@@ -2,6 +2,7 @@
 import { CheckCircle2, Copy, Plus, Ticket, Trash2 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { APIError, deleteRedeemCode, generateRedeemCodes, listRedeemCodes } from '../lib/api';
+import { AdminSelect } from '../components/AdminSelect';
 import { GlassCard } from '../components/GlassCard';
 import type { AdminRedeemCodeRecord, GenerateRedeemCodesInput, RedeemPermissionType } from '../types/admin';
 
@@ -114,11 +115,11 @@ export function RedeemCodesPage({ csrfToken }: RedeemCodesPageProps) {
 
             <div>
               <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">授权类型</label>
-              <select value={permissionType} onChange={(event) => setPermissionType(event.target.value as RedeemPermissionType)} className="w-full rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white">
+              <AdminSelect value={permissionType} onChange={(event) => setPermissionType(event.target.value as RedeemPermissionType)} className="w-full rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white">
                 <option value="single">特定域名</option>
                 <option value="multiple">追加额度</option>
                 <option value="wildcard">泛解析</option>
-              </select>
+              </AdminSelect>
             </div>
 
             <div>

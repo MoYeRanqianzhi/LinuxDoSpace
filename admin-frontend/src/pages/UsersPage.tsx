@@ -10,6 +10,7 @@ import {
   setUserQuota,
   updateAdminUser,
 } from '../lib/api';
+import { AdminSelect } from '../components/AdminSelect';
 import { GlassCard } from '../components/GlassCard';
 import type { AdminUserDetail, AdminUserPermission, AdminUserRecord, ApplicationStatus, ManagedDomain } from '../types/admin';
 
@@ -492,7 +493,7 @@ export function UsersPage({ csrfToken, managedDomains }: UsersPageProps) {
                           <div className="grid gap-3 lg:w-[22rem]">
                             <div>
                               <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">权限状态</label>
-                              <select
+                              <AdminSelect
                                 value={draft.status}
                                 onChange={(event) =>
                                   setPermissionDrafts((current) => ({
@@ -508,7 +509,7 @@ export function UsersPage({ csrfToken, managedDomains }: UsersPageProps) {
                                 <option value="pending">待审核</option>
                                 <option value="approved">已通过</option>
                                 <option value="rejected">已拒绝</option>
-                              </select>
+                              </AdminSelect>
                             </div>
                             <div>
                               <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">申请/设置原因</label>

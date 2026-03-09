@@ -14,6 +14,7 @@ import {
   updateAdminRecord,
   upsertManagedDomain,
 } from '../lib/api';
+import { AdminSelect } from '../components/AdminSelect';
 import { GlassCard } from '../components/GlassCard';
 import type {
   AdminAllocationRecord,
@@ -421,7 +422,7 @@ export function DomainsPage({ csrfToken, managedDomains, onManagedDomainsChange 
             <div className="space-y-4">
               <div>
                 <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">所属命名空间</label>
-                <select
+                <AdminSelect
                   value={creatingAllocationID}
                   onChange={(event) => setCreatingAllocationID(Number(event.target.value))}
                   className="w-full rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
@@ -432,7 +433,7 @@ export function DomainsPage({ csrfToken, managedDomains, onManagedDomainsChange 
                       {allocation.fqdn} · {allocation.owner_username}
                     </option>
                   ))}
-                </select>
+                </AdminSelect>
               </div>
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>
@@ -445,7 +446,7 @@ export function DomainsPage({ csrfToken, managedDomains, onManagedDomainsChange 
                 </div>
                 <div>
                   <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">类型</label>
-                  <select
+                  <AdminSelect
                     value={creatingRecordDraft.type}
                     onChange={(event) =>
                       setCreatingRecordDraft((current) => ({
@@ -461,7 +462,7 @@ export function DomainsPage({ csrfToken, managedDomains, onManagedDomainsChange 
                     <option value="CNAME">CNAME</option>
                     <option value="TXT">TXT</option>
                     <option value="MX">MX</option>
-                  </select>
+                  </AdminSelect>
                 </div>
               </div>
               <div>
@@ -687,7 +688,7 @@ export function DomainsPage({ csrfToken, managedDomains, onManagedDomainsChange 
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="sm:col-span-2">
                 <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">所属用户</label>
-                <select
+                <AdminSelect
                   value={allocationDraft.owner_user_id}
                   onChange={(event) => setAllocationDraft({ ...allocationDraft, owner_user_id: Number(event.target.value) })}
                   className="w-full rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
@@ -698,11 +699,11 @@ export function DomainsPage({ csrfToken, managedDomains, onManagedDomainsChange 
                       {user.username} · TL {user.trust_level}
                     </option>
                   ))}
-                </select>
+                </AdminSelect>
               </div>
               <div>
                 <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">根域名</label>
-                <select
+                <AdminSelect
                   value={allocationDraft.root_domain}
                   disabled={allocationDraft.mode === 'edit'}
                   onChange={(event) => setAllocationDraft({ ...allocationDraft, root_domain: event.target.value })}
@@ -714,7 +715,7 @@ export function DomainsPage({ csrfToken, managedDomains, onManagedDomainsChange 
                       {domain.root_domain}
                     </option>
                   ))}
-                </select>
+                </AdminSelect>
               </div>
               <div>
                 <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">前缀</label>
@@ -735,7 +736,7 @@ export function DomainsPage({ csrfToken, managedDomains, onManagedDomainsChange 
               </div>
               <div>
                 <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">状态</label>
-                <select
+                <AdminSelect
                   value={allocationDraft.status}
                   onChange={(event) =>
                     setAllocationDraft({
@@ -748,7 +749,7 @@ export function DomainsPage({ csrfToken, managedDomains, onManagedDomainsChange 
                 >
                   <option value="active">active</option>
                   <option value="disabled">disabled</option>
-                </select>
+                </AdminSelect>
               </div>
               <label className="sm:col-span-2 flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 text-sm text-slate-700 dark:border-slate-700 dark:bg-black/35 dark:text-slate-200">
                 <input
