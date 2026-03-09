@@ -83,8 +83,8 @@ export function ApplicationsPage({ csrfToken }: ApplicationsPageProps) {
   const [error, setError] = useState('');
   const [applicationsLoadError, setApplicationsLoadError] = useState('');
   const [policiesLoadError, setPoliciesLoadError] = useState('');
-  const [savingPolicyKey, setSavingPolicyKey] = useState('');
-  const [updatingApplicationID, setUpdatingApplicationID] = useState<number | null>(null);
+  const [savingPolicyKeys, setSavingPolicyKeys] = useState<Record<string, boolean>>({});
+  const [updatingApplicationIDs, setUpdatingApplicationIDs] = useState<Record<number, boolean>>({});
 
   // filteredRecords applies the shared search box to the application audit list.
   const filteredRecords = useMemo(() => {
@@ -157,7 +157,7 @@ export function ApplicationsPage({ csrfToken }: ApplicationsPageProps) {
   // saveApplication persists the selected status and review note for one record.
   async function saveApplication(record: AdminApplicationRecord): Promise<void> {
     try {
-      setUpdatingApplicationID(record.id);
+      setUpdatingApplicationIDs((current) => ({ ...current, [record.id]: true }));
       const updated = await updateApplication(
         record.id,
         {
@@ -173,7 +173,11 @@ export function ApplicationsPage({ csrfToken }: ApplicationsPageProps) {
     } catch (saveError) {
       setError(saveError instanceof APIError ? saveError.message : '更新申请状态失败。');
     } finally {
-      setUpdatingApplicationID(null);
+      setUpdatingApplicationIDs((current) => {
+        const next = { ...current };
+        delete next[record.id];
+        return next;
+      });
     }
   }
 
@@ -185,7 +189,7 @@ export function ApplicationsPage({ csrfToken }: ApplicationsPageProps) {
     }
 
     try {
-      setSavingPolicyKey(policyKey);
+      setSavingPolicyKeys((current) => ({ ...current, [policyKey]: true }));
       const updated = await updatePermissionPolicy(
         policyKey,
         {
@@ -208,7 +212,11 @@ export function ApplicationsPage({ csrfToken }: ApplicationsPageProps) {
     } catch (saveError) {
       setError(saveError instanceof APIError ? saveError.message : '保存权限策略失败。');
     } finally {
-      setSavingPolicyKey('');
+      setSavingPolicyKeys((current) => {
+        const next = { ...current };
+        delete next[policyKey];
+        return next;
+      });
     }
   }
 
@@ -345,11 +353,11 @@ export function ApplicationsPage({ csrfToken }: ApplicationsPageProps) {
                 <div className="text-xs text-slate-500 dark:text-slate-400">最近更新：{formatDate(policy.updated_at)}</div>
                 <button
                   onClick={() => void savePolicy(policy.key)}
-                  disabled={savingPolicyKey === policy.key}
+                  disabled={Boolean(savingPolicyKeys[policy.key])}
                   className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-amber-500 to-orange-500 px-4 py-2 text-sm font-medium text-white shadow-lg transition hover:from-amber-600 hover:to-orange-600 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {savingPolicyKey === policy.key ? <LoaderCircle size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
-                  <span>{savingPolicyKey === policy.key ? '保存中...' : '保存策略'}</span>
+                  {savingPolicyKeys[policy.key] ? <LoaderCircle size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
+                  <span>{savingPolicyKeys[policy.key] ? '保存中...' : '保存策略'}</span>
                 </button>
               </div>
             </GlassCard>
@@ -430,7 +438,7 @@ export function ApplicationsPage({ csrfToken }: ApplicationsPageProps) {
                                 <button
                                   key={status}
                                   onClick={() => setStatusDrafts((current) => ({ ...current, [record.id]: status }))}
-                                  disabled={updatingApplicationID === record.id}
+                                  disabled={Boolean(updatingApplicationIDs[record.id])}
                                   className={`rounded-2xl border px-4 py-2 text-sm font-medium transition ${selected ? selectedClass : `bg-white/55 dark:bg-black/20 ${baseClass}`}`}
                                 >
                                   {statusLabel(status)}
@@ -466,11 +474,11 @@ export function ApplicationsPage({ csrfToken }: ApplicationsPageProps) {
 
                         <button
                           onClick={() => void saveApplication(record)}
-                          disabled={updatingApplicationID === record.id || !dirty}
+                          disabled={Boolean(updatingApplicationIDs[record.id]) || !dirty}
                           className="flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-amber-500 to-orange-500 px-5 py-3 text-sm font-medium text-white shadow-lg transition hover:from-amber-600 hover:to-orange-600 disabled:cursor-not-allowed disabled:opacity-60"
                         >
-                          {updatingApplicationID === record.id ? <LoaderCircle size={18} className="animate-spin" /> : <CheckCircle2 size={18} />}
-                          <span>{updatingApplicationID === record.id ? '保存中...' : '保存审核'}</span>
+                          {updatingApplicationIDs[record.id] ? <LoaderCircle size={18} className="animate-spin" /> : <CheckCircle2 size={18} />}
+                          <span>{updatingApplicationIDs[record.id] ? '保存中...' : '保存审核'}</span>
                         </button>
 
                         <button
@@ -478,7 +486,7 @@ export function ApplicationsPage({ csrfToken }: ApplicationsPageProps) {
                             setStatusDrafts((current) => ({ ...current, [record.id]: record.status }));
                             setReviewDrafts((current) => ({ ...current, [record.id]: record.review_note }));
                           }}
-                          disabled={updatingApplicationID === record.id || !dirty}
+                          disabled={Boolean(updatingApplicationIDs[record.id]) || !dirty}
                           className="flex items-center justify-center gap-2 rounded-2xl bg-slate-100 px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
                         >
                           <XCircle size={18} />
