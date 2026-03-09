@@ -72,6 +72,9 @@ jobs:
     name: Deploy To Debian
     needs: build-and-push
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     concurrency:
       group: linuxdospace-production-deploy
       cancel-in-progress: true
@@ -124,6 +127,13 @@ jobs:
             exit 1
           fi
 
+      - name: Log in to GHCR for deployment
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Deploy to Debian with full retries
         shell: bash
         env:
@@ -134,6 +144,7 @@ jobs:
           MAX_DEPLOY_ATTEMPTS: '10'
           MAX_OUTER_DEPLOY_ATTEMPTS: '10'
           DOCKER_PULL_TIMEOUT_SECONDS: '600'
+          REMOTE_IMAGE_STREAM_TIMEOUT_SECONDS: '1800'
           COMPOSE_UP_TIMEOUT_SECONDS: '300'
           REMOTE_DEPLOY_BASENAME: github-actions-deploy-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
@@ -213,6 +224,7 @@ jobs:
           : "${MAX_DEPLOY_ATTEMPTS:?MAX_DEPLOY_ATTEMPTS is required}"
           : "${STATUS_FILE:?STATUS_FILE is required}"
           : "${DOCKER_PULL_TIMEOUT_SECONDS:=600}"
+          : "${SKIP_REMOTE_PULL:=false}"
           : "${COMPOSE_UP_TIMEOUT_SECONDS:=300}"
           : "${DEPLOY_LOCK_FILE:=${DEPLOY_PATH}/.remote-deploy.lock}"
 
@@ -281,7 +293,16 @@ jobs:
           for attempt in $(seq 1 "$MAX_DEPLOY_ATTEMPTS"); do
             echo "Deploy attempt ${attempt}/${MAX_DEPLOY_ATTEMPTS}"
 
-            if timeout "$DOCKER_PULL_TIMEOUT_SECONDS" docker pull "$TARGET_IMAGE" && timeout "$COMPOSE_UP_TIMEOUT_SECONDS" docker compose up -d --force-recreate; then
+            if [ "$SKIP_REMOTE_PULL" = 'true' ]; then
+              echo 'Using preloaded image from the GitHub runner.'
+              deployment_command_result=0
+              timeout "$COMPOSE_UP_TIMEOUT_SECONDS" docker compose up -d --force-recreate || deployment_command_result=$?
+            else
+              deployment_command_result=0
+              timeout "$DOCKER_PULL_TIMEOUT_SECONDS" docker pull "$TARGET_IMAGE" && timeout "$COMPOSE_UP_TIMEOUT_SECONDS" docker compose up -d --force-recreate || deployment_command_result=$?
+            fi
+
+            if [ "$deployment_command_result" -eq 0 ]; then
               for health_check_round in $(seq 1 12); do
                 echo "Health check round ${health_check_round}/12"
                 sleep 10
@@ -322,6 +343,7 @@ jobs:
               command -v docker >/dev/null && \
               docker compose version >/dev/null && \
               command -v flock >/dev/null && \
+              command -v gzip >/dev/null && \
               command -v setsid >/dev/null && \
               command -v timeout >/dev/null && \
               mkdir -p '$DEPLOY_PATH'"
@@ -334,10 +356,34 @@ jobs:
             ssh $SSH_OPTS -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "\
               set +e && \
               ps -eo pid=,args= | \
-                grep -E 'remote-deploy\.sh|docker pull ghcr\.io/moyeranqianzhi/linuxdospace' | \
+                grep -E 'remote-deploy\.sh|docker pull ghcr\.io/moyeranqianzhi/linuxdospace|docker load' | \
                 grep -v grep | \
                 while read -r pid _; do kill -9 \"\$pid\" 2>/dev/null || true; done && \
               exit 0"
+          }
+
+          # load_target_image_on_remote pulls the already-published latest image on the
+          # GitHub runner, then streams it into the Debian host with `docker load`.
+          # This avoids depending on the server's flaky outbound GHCR connectivity.
+          load_target_image_on_remote() {
+            local runner_revision
+            local remote_revision
+
+            timeout "$DOCKER_PULL_TIMEOUT_SECONDS" docker pull "$TARGET_IMAGE"
+
+            runner_revision="$(docker image inspect "$TARGET_IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
+            if [ "$runner_revision" != "$TARGET_REVISION" ]; then
+              echo "::error::Runner pulled revision ${runner_revision}, expected ${TARGET_REVISION}."
+              return 1
+            fi
+
+            timeout "$REMOTE_IMAGE_STREAM_TIMEOUT_SECONDS" bash -lc "docker save '$TARGET_IMAGE' | gzip -1 | ssh $SSH_OPTS -p '$DEPLOY_PORT' '$DEPLOY_USER@$DEPLOY_HOST' 'gzip -d | docker load'"
+
+            remote_revision="$(ssh $SSH_OPTS -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "docker image inspect '$TARGET_IMAGE' --format '{{index .Config.Labels \"org.opencontainers.image.revision\"}}'")"
+            if [ "$remote_revision" != "$TARGET_REVISION" ]; then
+              echo "::error::Remote host loaded revision ${remote_revision}, expected ${TARGET_REVISION}."
+              return 1
+            fi
           }
 
           # upload_compose_bundle transfers every file needed by the remote script.
@@ -364,6 +410,7 @@ jobs:
                   MAX_DEPLOY_ATTEMPTS='$MAX_DEPLOY_ATTEMPTS' \
                   STATUS_FILE='$REMOTE_STATUS_FILE' \
                   DOCKER_PULL_TIMEOUT_SECONDS='$DOCKER_PULL_TIMEOUT_SECONDS' \
+                  SKIP_REMOTE_PULL='true' \
                   COMPOSE_UP_TIMEOUT_SECONDS='$COMPOSE_UP_TIMEOUT_SECONDS' \
                   bash -lc 'echo \$\$ > '$REMOTE_PID_FILE'; exec ./remote-deploy.sh' \
                   > '$REMOTE_LOG_FILE' 2>&1 < /dev/null && \
@@ -427,6 +474,7 @@ jobs:
             check_remote_deployment_prerequisites
             cleanup_remote_deployment_processes
             upload_compose_bundle
+            load_target_image_on_remote
             start_remote_deployment_job
             wait_for_remote_deployment_result
           }
