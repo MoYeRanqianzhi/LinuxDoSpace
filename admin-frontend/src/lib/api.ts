@@ -35,6 +35,11 @@ interface APIErrorBody {
   };
 }
 
+// adminAuthInvalidatedEvent lets the app shell react when any protected admin
+// request proves that the current session or second-factor verification is no
+// longer valid.
+export const adminAuthInvalidatedEvent = 'linuxdospace:admin-auth-invalidated';
+
 function resolveAPIBaseURL(): string {
   const configuredBaseURL = import.meta.env.VITE_API_BASE_URL?.trim();
   if (configuredBaseURL) {
@@ -70,6 +75,18 @@ export class APIError extends Error {
   }
 }
 
+// notifyAdminAuthInvalidated broadcasts authentication-state failures back to
+// the admin shell so page-level loaders do not get stuck in a stale authorized UI.
+function notifyAdminAuthInvalidated(code: string, status: number): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  if (!['unauthorized', 'forbidden', 'admin_password_required'].includes(code)) {
+    return;
+  }
+  window.dispatchEvent(new CustomEvent(adminAuthInvalidatedEvent, { detail: { code, status } }));
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${apiBaseURL}${path}`, {
     credentials: 'include',
@@ -96,6 +113,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     if (!isJSONResponse) {
       throw await buildNonJSONAPIError(path, response);
     }
+    notifyAdminAuthInvalidated(errorBody?.error.code ?? 'http_error', response.status);
     throw new APIError(
       errorBody?.error.message ?? `Request failed with status ${response.status}`,
       errorBody?.error.code ?? 'http_error',

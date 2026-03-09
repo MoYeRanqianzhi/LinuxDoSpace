@@ -144,7 +144,7 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
       setPermissionError('');
     } else {
       const maybePermissionError = permissionResult.reason;
-      if (maybePermissionError instanceof APIError && (maybePermissionError.code === 'invalid_response_content_type' || maybePermissionError.code === 'not_found')) {
+      if (maybePermissionError instanceof APIError && maybePermissionError.code === 'not_found') {
         setPermission(null);
         setPermissionError('');
       } else {

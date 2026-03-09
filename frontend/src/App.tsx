@@ -3,6 +3,7 @@ import { Footer } from './components/Footer';
 import { Navbar } from './components/Navbar';
 import {
   APIError,
+  authInvalidEventName,
   getAuthLoginURL,
   getCurrentSession,
   listPublicDomains,
@@ -162,13 +163,14 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>(() => pathToTab(window.location.pathname));
   const [isDark, setIsDark] = useState(false);
   const [animeBackgroundEnabled, setAnimeBackgroundEnabled] = useState<boolean>(() => readAnimeBackgroundPreference());
+  const [authBanner, setAuthBanner] = useState(() => authErrorMessage(new URLSearchParams(window.location.search).get('auth_error')));
   const [session, setSession] = useState<SessionState>({
     authenticated: false,
     oauthConfigured: false,
     allocations: [],
   });
   const [sessionLoading, setSessionLoading] = useState(true);
-  const [sessionError, setSessionError] = useState(() => authErrorMessage(new URLSearchParams(window.location.search).get('auth_error')));
+  const [sessionError, setSessionError] = useState('');
   const [publicDomains, setPublicDomains] = useState<ManagedDomain[]>([]);
   const [domainsLoading, setDomainsLoading] = useState(true);
   const [domainsError, setDomainsError] = useState('');
@@ -213,6 +215,53 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const refreshOnFocus = () => {
+      if (document.visibilityState === 'hidden') {
+        return;
+      }
+      void refreshSession({ silent: true });
+    };
+
+    window.addEventListener('focus', refreshOnFocus);
+    document.addEventListener('visibilitychange', refreshOnFocus);
+    return () => {
+      window.removeEventListener('focus', refreshOnFocus);
+      document.removeEventListener('visibilitychange', refreshOnFocus);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!session.authenticated) {
+      return;
+    }
+
+    const refreshInterval = window.setInterval(() => {
+      void refreshSession({ silent: true });
+    }, 2 * 60 * 1000);
+
+    return () => window.clearInterval(refreshInterval);
+  }, [session.authenticated]);
+
+  useEffect(() => {
+    const handleAuthInvalid = () => {
+      setSession((current) => {
+        if (!current.authenticated) {
+          return current;
+        }
+        return {
+          authenticated: false,
+          oauthConfigured: current.oauthConfigured,
+          allocations: [],
+        };
+      });
+      setSessionError('登录状态已失效，请重新登录。');
+    };
+
+    window.addEventListener(authInvalidEventName, handleAuthInvalid);
+    return () => window.removeEventListener(authInvalidEventName, handleAuthInvalid);
+  }, []);
+
+  useEffect(() => {
     const handlePopState = () => {
       startTransition(() => {
         setActiveTab(pathToTab(window.location.pathname));
@@ -244,6 +293,9 @@ export default function App() {
     try {
       const response = await getCurrentSession();
       setSession(normalizeSessionResponse(response));
+      if (response.authenticated) {
+        setAuthBanner('');
+      }
       setSessionError('');
     } catch (error) {
       const shouldClearSession = error instanceof APIError && (error.code === 'unauthorized' || error.code === 'forbidden');
@@ -294,6 +346,7 @@ export default function App() {
   }
 
   function beginLogin(nextTab: TabKey): void {
+    setAuthBanner('');
     window.location.assign(getAuthLoginURL(tabPathMap[nextTab]));
   }
 
@@ -392,7 +445,7 @@ export default function App() {
     }
   }
 
-  const bannerMessage = sessionError || domainsError;
+  const bannerMessage = authBanner || sessionError || domainsError;
 
   return (
     <div className="relative min-h-screen overflow-x-hidden font-sans text-gray-900 transition-colors duration-500 dark:text-white">

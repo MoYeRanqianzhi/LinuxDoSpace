@@ -19,6 +19,21 @@ const blankRouteDraft: UpsertEmailRouteInput = {
   enabled: true,
 };
 
+// validateEmailRouteInput performs the small client-side checks that keep the
+// admin modal from hiding obvious mistakes behind a generic API failure.
+function validateEmailRouteInput(prefix: string, targetEmail: string): string {
+  if (!prefix.trim()) {
+    return '邮箱前缀不能为空。';
+  }
+  if (!targetEmail.trim()) {
+    return '目标邮箱不能为空。';
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(targetEmail.trim())) {
+    return '目标邮箱格式不正确。';
+  }
+  return '';
+}
+
 export function EmailsPage({ csrfToken, managedDomains }: EmailsPageProps) {
   const [records, setRecords] = useState<AdminEmailRecord[]>([]);
   const [users, setUsers] = useState<AdminUserRecord[]>([]);
@@ -31,6 +46,7 @@ export function EmailsPage({ csrfToken, managedDomains }: EmailsPageProps) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [modalError, setModalError] = useState('');
 
   const filteredRecords = useMemo(() => {
     const search = keyword.trim().toLowerCase();
@@ -54,10 +70,24 @@ export function EmailsPage({ csrfToken, managedDomains }: EmailsPageProps) {
   async function loadData() {
     try {
       setLoading(true);
-      const [nextRoutes, nextUsers] = await Promise.all([listEmailRoutes(), listAdminUsers()]);
-      setRecords(nextRoutes);
-      setUsers(nextUsers);
-      setError('');
+      const [routesResult, usersResult] = await Promise.allSettled([listEmailRoutes(), listAdminUsers()]);
+      const loadErrors: string[] = [];
+
+      if (routesResult.status === 'fulfilled') {
+        setRecords(routesResult.value);
+      } else {
+        setRecords([]);
+        loadErrors.push(routesResult.reason instanceof APIError ? routesResult.reason.message : '加载邮箱路由失败。');
+      }
+
+      if (usersResult.status === 'fulfilled') {
+        setUsers(usersResult.value);
+      } else {
+        setUsers([]);
+        loadErrors.push(usersResult.reason instanceof APIError ? usersResult.reason.message : '加载用户列表失败。');
+      }
+
+      setError(loadErrors.join(' '));
     } catch (loadError) {
       setError(loadError instanceof APIError ? loadError.message : '加载邮箱路由失败。');
     } finally {
@@ -70,8 +100,23 @@ export function EmailsPage({ csrfToken, managedDomains }: EmailsPageProps) {
   }, []);
 
   async function submitCreate() {
+    const validationError = validateEmailRouteInput(draft.prefix, draft.target_email);
+    if (draft.owner_user_id <= 0) {
+      setError('请选择所属用户。');
+      return;
+    }
+    if (!draft.root_domain.trim()) {
+      setError('请选择根域名。');
+      return;
+    }
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+
     try {
       setSaving(true);
+      setError('');
       const created = await createEmailRoute(draft, csrfToken);
       setRecords((current) => [created, ...current]);
       setDraft({ ...blankRouteDraft, root_domain: managedDomains[0]?.root_domain ?? '' });
@@ -86,8 +131,17 @@ export function EmailsPage({ csrfToken, managedDomains }: EmailsPageProps) {
     if (!editingRecord) {
       return;
     }
+
+    const validationError = validateEmailRouteInput(editingRecord.prefix, editingRecord.target_email);
+    if (validationError) {
+      setModalError(validationError);
+      return;
+    }
+
     try {
       setSaving(true);
+      setError('');
+      setModalError('');
       const updateInput: UpdateEmailRouteInput = {
         target_email: editingRecord.target_email,
         enabled: editingRecord.enabled,
@@ -100,7 +154,9 @@ export function EmailsPage({ csrfToken, managedDomains }: EmailsPageProps) {
       setRecords((current) => current.map((item) => (item.id === updated.id ? updated : item)));
       setEditingRecord(null);
     } catch (saveError) {
-      setError(saveError instanceof APIError ? saveError.message : '保存邮箱路由失败。');
+      const message = saveError instanceof APIError ? saveError.message : '保存邮箱路由失败。';
+      setError(message);
+      setModalError(message);
     } finally {
       setSaving(false);
     }
@@ -197,6 +253,7 @@ export function EmailsPage({ csrfToken, managedDomains }: EmailsPageProps) {
             <div>
               <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">目标邮箱</label>
               <input
+                type="email"
                 value={draft.target_email}
                 onChange={(event) => setDraft((current) => ({ ...current, target_email: event.target.value }))}
                 className="w-full rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 outline-none focus:border-fuchsia-400 focus:ring-2 focus:ring-fuchsia-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
@@ -255,7 +312,7 @@ export function EmailsPage({ csrfToken, managedDomains }: EmailsPageProps) {
                         </td>
                         <td className="px-5 py-4">
                           <div className="flex justify-end gap-2">
-                            <button onClick={() => setEditingRecord({ ...record })} className="rounded-xl p-2 text-fuchsia-500 transition hover:bg-fuchsia-100 dark:hover:bg-fuchsia-900/25" aria-label={`编辑 ${record.prefix}`}><Edit2 size={16} /></button>
+                            <button onClick={() => { setEditingRecord({ ...record }); setModalError(''); }} className="rounded-xl p-2 text-fuchsia-500 transition hover:bg-fuchsia-100 dark:hover:bg-fuchsia-900/25" aria-label={`编辑 ${record.prefix}`}><Edit2 size={16} /></button>
                             <button onClick={() => void removeRecord(record.id)} className="rounded-xl p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white" aria-label={`删除 ${record.prefix}`}><Trash2 size={16} /></button>
                           </div>
                         </td>
@@ -271,9 +328,14 @@ export function EmailsPage({ csrfToken, managedDomains }: EmailsPageProps) {
 
       {editingRecord ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
-          <button className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setEditingRecord(null)} aria-label="关闭编辑弹窗" />
+          <button className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => { setEditingRecord(null); setModalError(''); }} aria-label="关闭编辑弹窗" />
           <GlassCard className="relative z-10 w-full max-w-lg border-white/35 bg-white/80 p-6 dark:bg-slate-950/80">
             <h2 className="mb-5 text-2xl font-bold text-slate-900 dark:text-white">编辑邮箱转发</h2>
+            {modalError ? (
+              <div className="mb-4 rounded-2xl border border-red-300/50 bg-red-50/80 px-4 py-3 text-sm text-red-700 dark:border-red-500/20 dark:bg-red-950/30 dark:text-red-200">
+                {modalError}
+              </div>
+            ) : null}
             <div className="space-y-4">
               <div>
                 <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">邮箱地址</label>
@@ -283,7 +345,7 @@ export function EmailsPage({ csrfToken, managedDomains }: EmailsPageProps) {
               </div>
               <div>
                 <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">目标邮箱</label>
-                <input value={editingRecord.target_email} onChange={(event) => setEditingRecord({ ...editingRecord, target_email: event.target.value })} className="w-full rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 outline-none focus:border-fuchsia-400 focus:ring-2 focus:ring-fuchsia-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white" />
+                <input type="email" value={editingRecord.target_email} onChange={(event) => setEditingRecord({ ...editingRecord, target_email: event.target.value })} className="w-full rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 outline-none focus:border-fuchsia-400 focus:ring-2 focus:ring-fuchsia-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white" />
               </div>
               <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 text-sm text-slate-700 dark:border-slate-700 dark:bg-black/35 dark:text-slate-200">
                 <input type="checkbox" checked={editingRecord.enabled} onChange={(event) => setEditingRecord({ ...editingRecord, enabled: event.target.checked })} />
@@ -291,7 +353,7 @@ export function EmailsPage({ csrfToken, managedDomains }: EmailsPageProps) {
               </label>
             </div>
             <div className="mt-6 flex gap-3">
-              <button onClick={() => setEditingRecord(null)} className="flex-1 rounded-2xl bg-slate-100 px-4 py-3 font-medium text-slate-700 dark:bg-slate-800 dark:text-slate-100">取消</button>
+              <button onClick={() => { setEditingRecord(null); setModalError(''); }} className="flex-1 rounded-2xl bg-slate-100 px-4 py-3 font-medium text-slate-700 dark:bg-slate-800 dark:text-slate-100">取消</button>
               <button onClick={() => void saveEditingRecord()} disabled={saving} className="flex-1 rounded-2xl bg-gradient-to-r from-fuchsia-500 to-pink-500 px-4 py-3 font-medium text-white disabled:cursor-not-allowed disabled:opacity-60">{saving ? '保存中...' : '保存'}</button>
             </div>
           </GlassCard>

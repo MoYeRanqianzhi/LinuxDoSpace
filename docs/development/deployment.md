@@ -50,9 +50,12 @@ For the split deployment model, the important public URLs are:
 - `APP_FRONTEND_URL=https://app.example.com`
 - `APP_ADMIN_FRONTEND_URL=https://admin.example.com`
 - `APP_ADMIN_VERIFICATION_TTL=30m`
+- `APP_TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128`
 - `LINUXDO_OAUTH_REDIRECT_URL=https://api.example.com/v1/auth/callback`
 
 `APP_ALLOWED_ORIGINS` must include both frontend origins.
+
+`APP_TRUSTED_PROXY_CIDRS` should only list the direct reverse-proxy hops that are allowed to supply `CF-Connecting-IP`, `X-Forwarded-For`, or `X-Real-IP`. The default loopback-only value is the safe choice when Nginx runs on the same host.
 
 ## GitHub Actions workflow
 

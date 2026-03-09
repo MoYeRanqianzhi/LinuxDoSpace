@@ -1,7 +1,7 @@
 import { startTransition, useEffect, useMemo, useState } from 'react';
 import { ShieldCheck } from 'lucide-react';
 import { AdminNavbar } from './components/AdminNavbar';
-import { APIError, getAdminLoginURL, getAdminSession, logout, verifyAdminPassword } from './lib/api';
+import { APIError, adminAuthInvalidatedEvent, getAdminLoginURL, getAdminSession, logout, verifyAdminPassword } from './lib/api';
 import { AdminLogin } from './pages/AdminLogin';
 import { ApplicationsPage } from './pages/ApplicationsPage';
 import { DomainsPage } from './pages/DomainsPage';
@@ -147,6 +147,15 @@ export default function App() {
     void loadSession();
   }, []);
 
+  useEffect(() => {
+    const handleAuthInvalidated = () => {
+      void loadSession();
+    };
+
+    window.addEventListener(adminAuthInvalidatedEvent, handleAuthInvalidated);
+    return () => window.removeEventListener(adminAuthInvalidatedEvent, handleAuthInvalidated);
+  }, []);
+
   async function handleLogout() {
     if (!session?.csrf_token) {
       setSession(null);
@@ -155,8 +164,15 @@ export default function App() {
     }
     try {
       await logout(session.csrf_token);
-    } catch {
-      // Ignore logout transport errors and force local signed-out state.
+    } catch (error) {
+      if (error instanceof APIError && (error.code === 'unauthorized' || error.code === 'forbidden')) {
+        setSession(null);
+        setManagedDomains([]);
+        setSessionError('');
+        return;
+      }
+      setSessionError(error instanceof APIError ? error.message : text.backendUnavailable);
+      return;
     }
     setSession(null);
     setManagedDomains([]);

@@ -81,6 +81,8 @@ export function ApplicationsPage({ csrfToken }: ApplicationsPageProps) {
   const [keyword, setKeyword] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [applicationsLoadError, setApplicationsLoadError] = useState('');
+  const [policiesLoadError, setPoliciesLoadError] = useState('');
   const [savingPolicyKey, setSavingPolicyKey] = useState('');
   const [updatingApplicationID, setUpdatingApplicationID] = useState<number | null>(null);
 
@@ -111,24 +113,40 @@ export function ApplicationsPage({ csrfToken }: ApplicationsPageProps) {
   async function loadData(): Promise<void> {
     try {
       setLoading(true);
-      const [nextRecords, nextPolicies] = await Promise.all([listApplications(), listPermissionPolicies()]);
-      setRecords(nextRecords);
-      setPolicies(nextPolicies);
-      setReviewDrafts(Object.fromEntries(nextRecords.map((record) => [record.id, record.review_note])));
-      setStatusDrafts(Object.fromEntries(nextRecords.map((record) => [record.id, record.status])));
-      setPolicyDrafts(
-        Object.fromEntries(
-          nextPolicies.map((policy) => [
-            policy.key,
-            {
-              enabled: policy.enabled,
-              auto_approve: policy.auto_approve,
-              min_trust_level: policy.min_trust_level,
-            },
-          ]),
-        ),
-      );
+      const [recordsResult, policiesResult] = await Promise.allSettled([listApplications(), listPermissionPolicies()]);
+
+      if (recordsResult.status === 'fulfilled') {
+        const nextRecords = recordsResult.value;
+        setRecords(nextRecords);
+        setReviewDrafts(Object.fromEntries(nextRecords.map((record) => [record.id, record.review_note])));
+        setStatusDrafts(Object.fromEntries(nextRecords.map((record) => [record.id, record.status])));
+        setApplicationsLoadError('');
+      } else {
+        setApplicationsLoadError(recordsResult.reason instanceof APIError ? recordsResult.reason.message : '应用申请列表加载失败。');
+      }
+
+      if (policiesResult.status === 'fulfilled') {
+        const nextPolicies = policiesResult.value;
+        setPolicies(nextPolicies);
+        setPolicyDrafts(
+          Object.fromEntries(
+            nextPolicies.map((policy) => [
+              policy.key,
+              {
+                enabled: policy.enabled,
+                auto_approve: policy.auto_approve,
+                min_trust_level: policy.min_trust_level,
+              },
+            ]),
+          ),
+        );
+        setPoliciesLoadError('');
+      } else {
+        setPoliciesLoadError(policiesResult.reason instanceof APIError ? policiesResult.reason.message : '权限策略加载失败。');
+      }
+
       setError('');
+      return;
     } catch (loadError) {
       setError(loadError instanceof APIError ? loadError.message : '加载申请记录失败。');
     } finally {
@@ -221,6 +239,18 @@ export function ApplicationsPage({ csrfToken }: ApplicationsPageProps) {
       {error ? (
         <div className="mb-5 rounded-2xl border border-red-300/50 bg-red-50/80 px-4 py-3 text-sm text-red-700 dark:border-red-500/20 dark:bg-red-950/30 dark:text-red-200">
           {error}
+        </div>
+      ) : null}
+
+      {policiesLoadError ? (
+        <div className="mb-5 rounded-2xl border border-amber-300/50 bg-amber-50/80 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/20 dark:bg-amber-950/30 dark:text-amber-100">
+          {policiesLoadError}
+        </div>
+      ) : null}
+
+      {applicationsLoadError ? (
+        <div className="mb-5 rounded-2xl border border-amber-300/50 bg-amber-50/80 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/20 dark:bg-amber-950/30 dark:text-amber-100">
+          {applicationsLoadError}
         </div>
       ) : null}
 

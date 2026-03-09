@@ -47,6 +47,10 @@ function resolveAPIBaseURL(): string {
 // apiBaseURL stores the backend origin used by the public frontend.
 export const apiBaseURL = resolveAPIBaseURL();
 
+// authInvalidEventName lets the app shell react when an authenticated request
+// proves that the browser session expired after page bootstrap.
+export const authInvalidEventName = 'linuxdospace:auth-invalid';
+
 // APIError is the shared frontend error shape used by public pages.
 export class APIError extends Error {
   code: string;
@@ -58,6 +62,26 @@ export class APIError extends Error {
     this.code = code;
     this.status = status;
   }
+}
+
+// notifyAuthInvalid informs the top-level app shell about expired or forbidden
+// sessions while still letting the original caller handle the rejected request.
+function notifyAuthInvalid(path: string, status: number, code: string): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  if (path === '/v1/me' || path === '/v1/auth/logout') {
+    return;
+  }
+  if (!(status === 401 || status === 403 || code === 'unauthorized' || code === 'forbidden')) {
+    return;
+  }
+
+  window.dispatchEvent(
+    new CustomEvent(authInvalidEventName, {
+      detail: { path, status, code },
+    }),
+  );
 }
 
 // request wraps fetch so every page consistently gets cookies, JSON decoding,
@@ -93,6 +117,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       throw await buildNonJSONAPIError(path, requestMethod, response);
     }
 
+    notifyAuthInvalid(path, response.status, errorBody?.error.code ?? 'http_error');
     throw new APIError(
       errorBody?.error.message ?? `请求失败：${requestMethod} ${path}（HTTP ${response.status}）`,
       errorBody?.error.code ?? 'http_error',
