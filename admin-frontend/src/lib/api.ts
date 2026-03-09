@@ -1,15 +1,19 @@
 ﻿import type {
   AdminAllocationRecord,
   AdminApplicationRecord,
+  CreateAdminAllocationInput,
   AdminDomainRecord,
   AdminEmailRecord,
   AdminRedeemCodeRecord,
   AdminSessionResponse,
+  UpdateAdminAllocationInput,
+  AdminUserPermission,
   AdminUserDetail,
   AdminUserRecord,
   GenerateRedeemCodesInput,
   ManagedDomain,
   PermissionPolicy,
+  SetAdminUserPermissionInput,
   SetUserQuotaInput,
   UpdateAdminUserInput,
   UpdateApplicationInput,
@@ -138,8 +142,41 @@ export function updateAdminUser(userID: number, input: UpdateAdminUserInput, csr
   });
 }
 
+export function listAdminUserPermissions(userID: number): Promise<AdminUserPermission[]> {
+  return request<AdminUserPermission[]>(`/v1/admin/users/${userID}/permissions`);
+}
+
+export function setAdminUserPermission(
+  userID: number,
+  permissionKey: string,
+  input: SetAdminUserPermissionInput,
+  csrfToken: string,
+): Promise<AdminUserPermission> {
+  return request<AdminUserPermission>(`/v1/admin/users/${userID}/permissions/${encodeURIComponent(permissionKey)}`, {
+    method: 'PATCH',
+    headers: { 'X-CSRF-Token': csrfToken },
+    body: JSON.stringify(input),
+  });
+}
+
 export function listAdminAllocations(): Promise<AdminAllocationRecord[]> {
   return request<AdminAllocationRecord[]>('/v1/admin/allocations');
+}
+
+export function createAdminAllocation(input: CreateAdminAllocationInput, csrfToken: string): Promise<AdminAllocationRecord> {
+  return request<AdminAllocationRecord>('/v1/admin/allocations', {
+    method: 'POST',
+    headers: { 'X-CSRF-Token': csrfToken },
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateAdminAllocation(allocationID: number, input: UpdateAdminAllocationInput, csrfToken: string): Promise<AdminAllocationRecord> {
+  return request<AdminAllocationRecord>(`/v1/admin/allocations/${allocationID}`, {
+    method: 'PATCH',
+    headers: { 'X-CSRF-Token': csrfToken },
+    body: JSON.stringify(input),
+  });
 }
 
 export function listAdminRecords(): Promise<AdminDomainRecord[]> {

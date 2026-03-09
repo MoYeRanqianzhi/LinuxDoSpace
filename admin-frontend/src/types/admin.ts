@@ -7,6 +7,9 @@ export type UserStatus = 'active' | 'banned';
 // ApplicationStatus mirrors the backend moderation request lifecycle.
 export type ApplicationStatus = 'pending' | 'approved' | 'rejected';
 
+// AllocationStatus mirrors the administrator-controlled allocation lifecycle.
+export type AllocationStatus = 'active' | 'disabled';
+
 // RedeemPermissionType mirrors the backend redeem code type field.
 export type RedeemPermissionType = 'single' | 'multiple' | 'wildcard';
 
@@ -97,10 +100,30 @@ export interface AdminAllocationRecord {
   fqdn: string;
   is_primary: boolean;
   source: string;
-  status: string;
+  status: AllocationStatus;
   cloudflare_zone_id: string;
   created_at: string;
   updated_at: string;
+}
+
+// CreateAdminAllocationInput mirrors the payload accepted by the allocation
+// creation endpoint.
+export interface CreateAdminAllocationInput {
+  owner_user_id: number;
+  root_domain: string;
+  prefix: string;
+  is_primary: boolean;
+  source: string;
+  status: AllocationStatus;
+}
+
+// UpdateAdminAllocationInput mirrors the mutable administrator allocation
+// controls accepted by the allocation update endpoint.
+export interface UpdateAdminAllocationInput {
+  owner_user_id?: number;
+  is_primary?: boolean;
+  source?: string;
+  status?: AllocationStatus;
 }
 
 // AdminDomainRecord mirrors one DNS record row visible to administrators.
@@ -236,6 +259,43 @@ export interface UpdatePermissionPolicyInput {
   enabled?: boolean;
   auto_approve?: boolean;
   min_trust_level?: number;
+}
+
+// AdminPermissionApplicationSummary mirrors the latest application snapshot for
+// one user permission card rendered inside the admin user editor.
+export interface AdminPermissionApplicationSummary {
+  id: number;
+  status: ApplicationStatus;
+  reason: string;
+  review_note: string;
+  reviewed_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// AdminUserPermission mirrors one permission card returned for a specific user.
+export interface AdminUserPermission {
+  key: string;
+  display_name: string;
+  description: string;
+  target: string;
+  pledge_text: string;
+  policy_enabled: boolean;
+  auto_approve: boolean;
+  min_trust_level: number;
+  eligible: boolean;
+  eligibility_reasons: string[];
+  status: 'not_requested' | ApplicationStatus;
+  can_apply: boolean;
+  can_manage_route: boolean;
+  application?: AdminPermissionApplicationSummary;
+}
+
+// SetAdminUserPermissionInput mirrors the direct administrator override payload.
+export interface SetAdminUserPermissionInput {
+  status: ApplicationStatus;
+  review_note: string;
+  reason?: string;
 }
 
 // GenerateRedeemCodesInput mirrors the batch generation payload.

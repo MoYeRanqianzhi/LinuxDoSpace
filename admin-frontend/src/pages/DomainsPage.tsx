@@ -3,11 +3,14 @@ import { Cloud, Edit2, Plus, Search, ShieldCheck, Trash2 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   APIError,
+  createAdminAllocation,
   createAdminRecord,
   deleteAdminRecord,
   listAdminAllocations,
   listAdminRecords,
+  listAdminUsers,
   listManagedDomains,
+  updateAdminAllocation,
   updateAdminRecord,
   upsertManagedDomain,
 } from '../lib/api';
@@ -15,7 +18,11 @@ import { GlassCard } from '../components/GlassCard';
 import type {
   AdminAllocationRecord,
   AdminDomainRecord,
+  AdminUserRecord,
+  AllocationStatus,
+  CreateAdminAllocationInput,
   ManagedDomain,
+  UpdateAdminAllocationInput,
   UpsertAdminDomainRecordInput,
   UpsertManagedDomainInput,
 } from '../types/admin';
@@ -44,13 +51,46 @@ const blankManagedDomainDraft: UpsertManagedDomainInput = {
   enabled: true,
 };
 
+interface AllocationDraft {
+  id?: number;
+  owner_user_id: number;
+  root_domain: string;
+  prefix: string;
+  is_primary: boolean;
+  source: string;
+  status: AllocationStatus;
+  mode: 'create' | 'edit';
+}
+
+const blankAllocationDraft: AllocationDraft = {
+  owner_user_id: 0,
+  root_domain: '',
+  prefix: '',
+  is_primary: false,
+  source: 'manual',
+  status: 'active',
+  mode: 'create',
+};
+
+function formatDateTime(value: string): string {
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(value));
+}
+
 export function DomainsPage({ csrfToken, managedDomains, onManagedDomainsChange }: DomainsPageProps) {
   const [records, setRecords] = useState<AdminDomainRecord[]>([]);
   const [allocations, setAllocations] = useState<AdminAllocationRecord[]>([]);
+  const [users, setUsers] = useState<AdminUserRecord[]>([]);
   const [keyword, setKeyword] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [editingRecord, setEditingRecord] = useState<AdminDomainRecord | null>(null);
+  const [allocationDraft, setAllocationDraft] = useState<AllocationDraft | null>(null);
   const [creatingAllocationID, setCreatingAllocationID] = useState<number>(0);
   const [creatingRecordDraft, setCreatingRecordDraft] = useState<UpsertAdminDomainRecordInput>(blankRecordDraft);
   const [managedDomainDraft, setManagedDomainDraft] = useState<UpsertManagedDomainInput | null>(null);
@@ -68,12 +108,25 @@ export function DomainsPage({ csrfToken, managedDomains, onManagedDomainsChange 
     );
   }, [keyword, records]);
 
+  const filteredAllocations = useMemo(() => {
+    const search = keyword.trim().toLowerCase();
+    if (!search) {
+      return allocations;
+    }
+    return allocations.filter((allocation) =>
+      [allocation.owner_username, allocation.owner_display_name, allocation.fqdn, allocation.prefix, allocation.source, allocation.status].some((field) =>
+        field.toLowerCase().includes(search),
+      ),
+    );
+  }, [allocations, keyword]);
+
   async function loadData() {
     try {
       setLoading(true);
-      const [nextRecords, nextAllocations] = await Promise.all([listAdminRecords(), listAdminAllocations()]);
+      const [nextRecords, nextAllocations, nextUsers] = await Promise.all([listAdminRecords(), listAdminAllocations(), listAdminUsers()]);
       setRecords(nextRecords);
       setAllocations(nextAllocations);
+      setUsers(nextUsers);
       setError('');
     } catch (loadError) {
       setError(loadError instanceof APIError ? loadError.message : '加载域名数据失败。');
@@ -92,6 +145,72 @@ export function DomainsPage({ csrfToken, managedDomains, onManagedDomainsChange 
       onManagedDomainsChange(nextDomains);
     } catch (loadError) {
       setError(loadError instanceof APIError ? loadError.message : '刷新根域名配置失败。');
+    }
+  }
+
+  function openCreateAllocation() {
+    setAllocationDraft({
+      ...blankAllocationDraft,
+      root_domain: managedDomains.find((domain) => domain.enabled)?.root_domain ?? managedDomains[0]?.root_domain ?? '',
+      owner_user_id: users[0]?.id ?? 0,
+      mode: 'create',
+    });
+  }
+
+  function openEditAllocation(allocation: AdminAllocationRecord) {
+    setAllocationDraft({
+      id: allocation.id,
+      owner_user_id: allocation.user_id,
+      root_domain: allocation.root_domain,
+      prefix: allocation.prefix,
+      is_primary: allocation.is_primary,
+      source: allocation.source,
+      status: allocation.status,
+      mode: 'edit',
+    });
+  }
+
+  async function saveAllocation() {
+    if (!allocationDraft) {
+      return;
+    }
+
+    try {
+      setSaving(true);
+      if (allocationDraft.mode === 'create') {
+        const created = await createAdminAllocation(
+          {
+            owner_user_id: allocationDraft.owner_user_id,
+            root_domain: allocationDraft.root_domain,
+            prefix: allocationDraft.prefix,
+            is_primary: allocationDraft.is_primary,
+            source: allocationDraft.source,
+            status: allocationDraft.status,
+          } satisfies CreateAdminAllocationInput,
+          csrfToken,
+        );
+        setAllocations((current) => [created, ...current]);
+      } else if (allocationDraft.id) {
+        const updated = await updateAdminAllocation(
+          allocationDraft.id,
+          {
+            owner_user_id: allocationDraft.owner_user_id,
+            is_primary: allocationDraft.is_primary,
+            source: allocationDraft.source,
+            status: allocationDraft.status,
+          } satisfies UpdateAdminAllocationInput,
+          csrfToken,
+        );
+        setAllocations((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+      }
+
+      await loadData();
+      setAllocationDraft(null);
+      setError('');
+    } catch (saveError) {
+      setError(saveError instanceof APIError ? saveError.message : '保存命名空间失败。');
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -243,121 +362,173 @@ export function DomainsPage({ csrfToken, managedDomains, onManagedDomainsChange 
           </div>
         </GlassCard>
 
-        <GlassCard>
-          <div className="mb-4 flex items-center gap-2 text-xl font-bold text-slate-900 dark:text-white">
-            <Plus size={18} className="text-indigo-500" />
-            新建解析记录
-          </div>
-          <div className="space-y-4">
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">所属命名空间</label>
-              <select
-                value={creatingAllocationID}
-                onChange={(event) => setCreatingAllocationID(Number(event.target.value))}
-                className="w-full rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
-              >
-                <option value={0}>请选择命名空间</option>
-                {allocations.map((allocation) => (
-                  <option key={allocation.id} value={allocation.id}>
-                    {allocation.fqdn} · {allocation.owner_username}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="grid gap-4 sm:grid-cols-2">
+        <div className="space-y-4">
+          <GlassCard>
+            <div className="mb-4 flex items-center justify-between gap-3">
               <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">记录名</label>
-                <input
-                  value={creatingRecordDraft.name}
-                  onChange={(event) => setCreatingRecordDraft((current) => ({ ...current, name: event.target.value }))}
-                  className="w-full rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
-                />
+                <h2 className="text-xl font-bold text-slate-900 dark:text-white">命名空间归属</h2>
+                <p className="mt-1 text-sm text-slate-500 dark:text-slate-300">在这里手动发放、转移、停用 allocation，并指定哪个是该用户在此根域名下的主命名空间。</p>
               </div>
+              <button
+                onClick={openCreateAllocation}
+                className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-500 px-4 py-2 text-sm font-medium text-white shadow-lg"
+              >
+                <Plus size={16} />
+                <span>新增命名空间</span>
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              {loading ? <div className="text-sm text-slate-500 dark:text-slate-300">正在加载命名空间...</div> : null}
+              {!loading && filteredAllocations.length === 0 ? <div className="text-sm text-slate-500 dark:text-slate-300">当前没有命中搜索条件的命名空间。</div> : null}
+              {!loading
+                ? filteredAllocations.map((allocation) => (
+                    <div key={allocation.id} className="rounded-2xl border border-white/20 bg-white/35 p-4 dark:border-white/10 dark:bg-black/25">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-mono text-sm font-semibold text-cyan-600 dark:text-cyan-300">{allocation.fqdn}</span>
+                            <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${allocation.status === 'active' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'}`}>
+                              {allocation.status === 'active' ? '启用中' : '已停用'}
+                            </span>
+                            {allocation.is_primary ? <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-semibold text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">主命名空间</span> : null}
+                          </div>
+                          <div className="mt-3 grid gap-2 text-sm text-slate-600 dark:text-slate-300">
+                            <div>所属用户：{allocation.owner_username}</div>
+                            <div>来源标记：{allocation.source}</div>
+                            <div>最近更新：{formatDateTime(allocation.updated_at)}</div>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => openEditAllocation(allocation)}
+                          className="rounded-xl p-2 text-cyan-500 transition hover:bg-cyan-100 dark:hover:bg-cyan-900/25"
+                          aria-label={`编辑 ${allocation.fqdn}`}
+                        >
+                          <Edit2 size={16} />
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                : null}
+            </div>
+          </GlassCard>
+
+          <GlassCard>
+            <div className="mb-4 flex items-center gap-2 text-xl font-bold text-slate-900 dark:text-white">
+              <Plus size={18} className="text-indigo-500" />
+              新建解析记录
+            </div>
+            <div className="space-y-4">
               <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">类型</label>
+                <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">所属命名空间</label>
                 <select
-                  value={creatingRecordDraft.type}
-                  onChange={(event) =>
-                    setCreatingRecordDraft((current) => ({
-                      ...current,
-                      type: event.target.value as UpsertAdminDomainRecordInput['type'],
-                      proxied: event.target.value === 'TXT' || event.target.value === 'MX' ? false : current.proxied,
-                    }))
-                  }
+                  value={creatingAllocationID}
+                  onChange={(event) => setCreatingAllocationID(Number(event.target.value))}
                   className="w-full rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
                 >
-                  <option value="A">A</option>
-                  <option value="AAAA">AAAA</option>
-                  <option value="CNAME">CNAME</option>
-                  <option value="TXT">TXT</option>
-                  <option value="MX">MX</option>
+                  <option value={0}>请选择命名空间</option>
+                  {allocations.map((allocation) => (
+                    <option key={allocation.id} value={allocation.id}>
+                      {allocation.fqdn} · {allocation.owner_username}
+                    </option>
+                  ))}
                 </select>
               </div>
-            </div>
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">内容</label>
-              <input
-                value={creatingRecordDraft.content}
-                onChange={(event) => setCreatingRecordDraft((current) => ({ ...current, content: event.target.value }))}
-                className="w-full rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
-              />
-            </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">TTL</label>
-                <input
-                  type="number"
-                  min={1}
-                  value={creatingRecordDraft.ttl}
-                  onChange={(event) => setCreatingRecordDraft((current) => ({ ...current, ttl: Math.max(1, Number(event.target.value) || 1) }))}
-                  className="w-full rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
-                />
-              </div>
-              {creatingRecordDraft.type === 'MX' ? (
+              <div className="grid gap-4 sm:grid-cols-2">
                 <div>
-                  <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">优先级</label>
+                  <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">记录名</label>
                   <input
-                    type="number"
-                    min={1}
-                    value={creatingRecordDraft.priority ?? 10}
-                    onChange={(event) =>
-                      setCreatingRecordDraft((current) => ({
-                        ...current,
-                        priority: Math.max(1, Number(event.target.value) || 10),
-                      }))
-                    }
+                    value={creatingRecordDraft.name}
+                    onChange={(event) => setCreatingRecordDraft((current) => ({ ...current, name: event.target.value }))}
                     className="w-full rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
                   />
                 </div>
-              ) : null}
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">类型</label>
+                  <select
+                    value={creatingRecordDraft.type}
+                    onChange={(event) =>
+                      setCreatingRecordDraft((current) => ({
+                        ...current,
+                        type: event.target.value as UpsertAdminDomainRecordInput['type'],
+                        proxied: event.target.value === 'TXT' || event.target.value === 'MX' ? false : current.proxied,
+                      }))
+                    }
+                    className="w-full rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
+                  >
+                    <option value="A">A</option>
+                    <option value="AAAA">AAAA</option>
+                    <option value="CNAME">CNAME</option>
+                    <option value="TXT">TXT</option>
+                    <option value="MX">MX</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">内容</label>
+                <input
+                  value={creatingRecordDraft.content}
+                  onChange={(event) => setCreatingRecordDraft((current) => ({ ...current, content: event.target.value }))}
+                  className="w-full rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
+                />
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">TTL</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={creatingRecordDraft.ttl}
+                    onChange={(event) => setCreatingRecordDraft((current) => ({ ...current, ttl: Math.max(1, Number(event.target.value) || 1) }))}
+                    className="w-full rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
+                  />
+                </div>
+                {creatingRecordDraft.type === 'MX' ? (
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">优先级</label>
+                    <input
+                      type="number"
+                      min={1}
+                      value={creatingRecordDraft.priority ?? 10}
+                      onChange={(event) =>
+                        setCreatingRecordDraft((current) => ({
+                          ...current,
+                          priority: Math.max(1, Number(event.target.value) || 10),
+                        }))
+                      }
+                      className="w-full rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
+                    />
+                  </div>
+                ) : null}
+              </div>
+              <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 text-sm text-slate-700 dark:border-slate-700 dark:bg-black/35 dark:text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={creatingRecordDraft.proxied}
+                  disabled={creatingRecordDraft.type === 'TXT' || creatingRecordDraft.type === 'MX'}
+                  onChange={(event) => setCreatingRecordDraft((current) => ({ ...current, proxied: event.target.checked }))}
+                />
+                通过 Cloudflare 代理
+              </label>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">备注</label>
+                <input
+                  value={creatingRecordDraft.comment}
+                  onChange={(event) => setCreatingRecordDraft((current) => ({ ...current, comment: event.target.value }))}
+                  className="w-full rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
+                />
+              </div>
+              <button
+                onClick={() => void submitCreateRecord()}
+                disabled={saving || creatingAllocationID <= 0 || !creatingRecordDraft.content.trim()}
+                className="flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-indigo-500 to-violet-500 px-4 py-3 font-medium text-white shadow-lg transition hover:from-indigo-600 hover:to-violet-600 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Plus size={18} />
+                <span>{saving ? '提交中...' : '创建解析'}</span>
+              </button>
             </div>
-            <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 text-sm text-slate-700 dark:border-slate-700 dark:bg-black/35 dark:text-slate-200">
-              <input
-                type="checkbox"
-                checked={creatingRecordDraft.proxied}
-                disabled={creatingRecordDraft.type === 'TXT' || creatingRecordDraft.type === 'MX'}
-                onChange={(event) => setCreatingRecordDraft((current) => ({ ...current, proxied: event.target.checked }))}
-              />
-              通过 Cloudflare 代理
-            </label>
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">备注</label>
-              <input
-                value={creatingRecordDraft.comment}
-                onChange={(event) => setCreatingRecordDraft((current) => ({ ...current, comment: event.target.value }))}
-                className="w-full rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
-              />
-            </div>
-            <button
-              onClick={() => void submitCreateRecord()}
-              disabled={saving || creatingAllocationID <= 0 || !creatingRecordDraft.content.trim()}
-              className="flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-indigo-500 to-violet-500 px-4 py-3 font-medium text-white shadow-lg transition hover:from-indigo-600 hover:to-violet-600 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <Plus size={18} />
-              <span>{saving ? '提交中...' : '创建解析'}</span>
-            </button>
-          </div>
-        </GlassCard>
+          </GlassCard>
+        </div>
       </div>
 
       <GlassCard className="overflow-hidden p-0">
@@ -503,6 +674,101 @@ export function DomainsPage({ csrfToken, managedDomains, onManagedDomainsChange 
             <div className="mt-6 flex gap-3">
               <button onClick={() => setEditingRecord(null)} className="flex-1 rounded-2xl bg-slate-100 px-4 py-3 font-medium text-slate-700 dark:bg-slate-800 dark:text-slate-100">取消</button>
               <button onClick={() => void saveEditedRecord()} disabled={saving} className="flex-1 rounded-2xl bg-gradient-to-r from-blue-500 to-indigo-500 px-4 py-3 font-medium text-white disabled:cursor-not-allowed disabled:opacity-60">{saving ? '保存中...' : '保存'}</button>
+            </div>
+          </GlassCard>
+        </div>
+      ) : null}
+
+      {allocationDraft ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+          <button className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setAllocationDraft(null)} aria-label="关闭命名空间弹窗" />
+          <GlassCard className="relative z-10 w-full max-w-xl border-white/35 bg-white/80 p-6 dark:bg-slate-950/80">
+            <h2 className="mb-5 text-2xl font-bold text-slate-900 dark:text-white">{allocationDraft.mode === 'create' ? '新增命名空间' : '编辑命名空间'}</h2>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="sm:col-span-2">
+                <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">所属用户</label>
+                <select
+                  value={allocationDraft.owner_user_id}
+                  onChange={(event) => setAllocationDraft({ ...allocationDraft, owner_user_id: Number(event.target.value) })}
+                  className="w-full rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
+                >
+                  <option value={0}>请选择用户</option>
+                  {users.map((user) => (
+                    <option key={user.id} value={user.id}>
+                      {user.username} · TL {user.trust_level}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">根域名</label>
+                <select
+                  value={allocationDraft.root_domain}
+                  disabled={allocationDraft.mode === 'edit'}
+                  onChange={(event) => setAllocationDraft({ ...allocationDraft, root_domain: event.target.value })}
+                  className="w-full rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/20 disabled:bg-slate-100 disabled:text-slate-500 dark:border-slate-700 dark:bg-black/35 dark:text-white dark:disabled:bg-slate-800 dark:disabled:text-slate-400"
+                >
+                  <option value="">请选择根域名</option>
+                  {managedDomains.map((domain) => (
+                    <option key={domain.id} value={domain.root_domain}>
+                      {domain.root_domain}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">前缀</label>
+                <input
+                  value={allocationDraft.prefix}
+                  disabled={allocationDraft.mode === 'edit'}
+                  onChange={(event) => setAllocationDraft({ ...allocationDraft, prefix: event.target.value })}
+                  className="w-full rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/20 disabled:bg-slate-100 disabled:text-slate-500 dark:border-slate-700 dark:bg-black/35 dark:text-white dark:disabled:bg-slate-800 dark:disabled:text-slate-400"
+                />
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">来源标记</label>
+                <input
+                  value={allocationDraft.source}
+                  onChange={(event) => setAllocationDraft({ ...allocationDraft, source: event.target.value })}
+                  className="w-full rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
+                />
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">状态</label>
+                <select
+                  value={allocationDraft.status}
+                  onChange={(event) =>
+                    setAllocationDraft({
+                      ...allocationDraft,
+                      status: event.target.value as AllocationStatus,
+                      is_primary: event.target.value === 'disabled' ? false : allocationDraft.is_primary,
+                    })
+                  }
+                  className="w-full rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
+                >
+                  <option value="active">active</option>
+                  <option value="disabled">disabled</option>
+                </select>
+              </div>
+              <label className="sm:col-span-2 flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 text-sm text-slate-700 dark:border-slate-700 dark:bg-black/35 dark:text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={allocationDraft.is_primary}
+                  disabled={allocationDraft.status !== 'active'}
+                  onChange={(event) => setAllocationDraft({ ...allocationDraft, is_primary: event.target.checked })}
+                />
+                将此命名空间设置为该用户在本根域名下的主命名空间
+              </label>
+            </div>
+            <div className="mt-6 flex gap-3">
+              <button onClick={() => setAllocationDraft(null)} className="flex-1 rounded-2xl bg-slate-100 px-4 py-3 font-medium text-slate-700 dark:bg-slate-800 dark:text-slate-100">取消</button>
+              <button
+                onClick={() => void saveAllocation()}
+                disabled={saving || allocationDraft.owner_user_id <= 0 || !allocationDraft.root_domain || !allocationDraft.prefix.trim()}
+                className="flex-1 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-500 px-4 py-3 font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {saving ? '保存中...' : '保存'}
+              </button>
             </div>
           </GlassCard>
         </div>

@@ -1,9 +1,17 @@
 ﻿import { useEffect, useMemo, useState } from 'react';
-import { Ban, CheckCircle2, Edit2, Search, Shield, Users } from 'lucide-react';
+import { Ban, CheckCircle2, Edit2, LoaderCircle, Mail, Search, Shield, Users, XCircle } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import { APIError, getAdminUserDetail, listAdminUsers, setUserQuota, updateAdminUser } from '../lib/api';
+import {
+  APIError,
+  getAdminUserDetail,
+  listAdminUserPermissions,
+  listAdminUsers,
+  setAdminUserPermission,
+  setUserQuota,
+  updateAdminUser,
+} from '../lib/api';
 import { GlassCard } from '../components/GlassCard';
-import type { AdminUserDetail, AdminUserRecord, ManagedDomain } from '../types/admin';
+import type { AdminUserDetail, AdminUserPermission, AdminUserRecord, ApplicationStatus, ManagedDomain } from '../types/admin';
 
 interface UsersPageProps {
   csrfToken: string;
@@ -20,6 +28,32 @@ function formatDateTime(value: string): string {
   }).format(new Date(value));
 }
 
+function normalizeEditablePermissionStatus(status: AdminUserPermission['status']): ApplicationStatus {
+  switch (status) {
+    case 'approved':
+      return 'approved';
+    case 'rejected':
+      return 'rejected';
+    case 'pending':
+    case 'not_requested':
+    default:
+      return 'pending';
+  }
+}
+
+function readablePermissionStatus(status: AdminUserPermission['status']): string {
+  switch (status) {
+    case 'approved':
+      return '已通过';
+    case 'pending':
+      return '待审核';
+    case 'rejected':
+      return '已拒绝';
+    default:
+      return '尚未申请';
+  }
+}
+
 export function UsersPage({ csrfToken, managedDomains }: UsersPageProps) {
   const [records, setRecords] = useState<AdminUserRecord[]>([]);
   const [keyword, setKeyword] = useState('');
@@ -31,6 +65,10 @@ export function UsersPage({ csrfToken, managedDomains }: UsersPageProps) {
   const [draftBanned, setDraftBanned] = useState(false);
   const [draftBanNote, setDraftBanNote] = useState('');
   const [draftQuotas, setDraftQuotas] = useState<Record<string, number>>({});
+  const [permissions, setPermissions] = useState<AdminUserPermission[]>([]);
+  const [permissionsLoading, setPermissionsLoading] = useState(false);
+  const [permissionDrafts, setPermissionDrafts] = useState<Record<string, { status: ApplicationStatus; review_note: string; reason: string }>>({});
+  const [savingPermissionKey, setSavingPermissionKey] = useState('');
 
   const filteredRecords = useMemo(() => {
     const search = keyword.trim().toLowerCase();
@@ -67,17 +105,32 @@ export function UsersPage({ csrfToken, managedDomains }: UsersPageProps) {
   async function openEditor(record: AdminUserRecord) {
     try {
       setEditingLoading(true);
-      const detail = await getAdminUserDetail(record.id);
+      setPermissionsLoading(true);
+      const [detail, nextPermissions] = await Promise.all([getAdminUserDetail(record.id), listAdminUserPermissions(record.id)]);
       setEditingDetail(detail);
       setDraftBanned(detail.user.is_banned);
       setDraftBanNote(detail.ban_note);
       setDraftQuotas(
         Object.fromEntries(detail.quotas.map((quota) => [quota.root_domain, quota.effective_quota])),
       );
+      setPermissions(nextPermissions);
+      setPermissionDrafts(
+        Object.fromEntries(
+          nextPermissions.map((permission) => [
+            permission.key,
+            {
+              status: normalizeEditablePermissionStatus(permission.status),
+              review_note: permission.application?.review_note ?? '',
+              reason: permission.application?.reason ?? '管理员手动设置该权限状态。',
+            },
+          ]),
+        ),
+      );
     } catch (loadError) {
       setError(loadError instanceof APIError ? loadError.message : '加载用户详情失败。');
     } finally {
       setEditingLoading(false);
+      setPermissionsLoading(false);
     }
   }
 
@@ -135,6 +188,44 @@ export function UsersPage({ csrfToken, managedDomains }: UsersPageProps) {
       setError(saveError instanceof APIError ? saveError.message : '保存用户设置失败。');
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function savePermission(permission: AdminUserPermission) {
+    if (!editingDetail) {
+      return;
+    }
+
+    const draft = permissionDrafts[permission.key];
+    if (!draft) {
+      return;
+    }
+
+    try {
+      setSavingPermissionKey(permission.key);
+      const updated = await setAdminUserPermission(
+        editingDetail.user.id,
+        permission.key,
+        {
+          status: draft.status,
+          review_note: draft.review_note,
+          reason: draft.reason,
+        },
+        csrfToken,
+      );
+      setPermissions((current) => current.map((item) => (item.key === updated.key ? updated : item)));
+      setPermissionDrafts((current) => ({
+        ...current,
+        [updated.key]: {
+          status: normalizeEditablePermissionStatus(updated.status),
+          review_note: updated.application?.review_note ?? '',
+          reason: updated.application?.reason ?? draft.reason,
+        },
+      }));
+    } catch (saveError) {
+      setError(saveError instanceof APIError ? saveError.message : '保存用户权限失败。');
+    } finally {
+      setSavingPermissionKey('');
     }
   }
 
@@ -344,6 +435,133 @@ export function UsersPage({ csrfToken, managedDomains }: UsersPageProps) {
                   {editingDetail.quotas.length === 0 ? (
                     <div className="rounded-2xl border border-dashed border-slate-300 px-4 py-5 text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">
                       当前还没有可管理的根域名配置。
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="lg:col-span-2">
+                <div className="mb-3 flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-semibold text-slate-900 dark:text-white">高级权限</div>
+                    <div className="text-xs text-slate-500 dark:text-slate-400">管理员可直接为该用户设置当前已接入的特殊权限状态。</div>
+                  </div>
+                  <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                    {permissions.length} 条权限
+                  </div>
+                </div>
+
+                {permissionsLoading ? (
+                  <div className="rounded-2xl border border-slate-200 bg-white/70 px-4 py-4 text-sm text-slate-600 dark:border-slate-700 dark:bg-black/35 dark:text-slate-300">
+                    正在加载用户权限...
+                  </div>
+                ) : null}
+
+                <div className="space-y-4">
+                  {permissions.map((permission) => {
+                    const draft = permissionDrafts[permission.key] ?? {
+                      status: normalizeEditablePermissionStatus(permission.status),
+                      review_note: permission.application?.review_note ?? '',
+                      reason: permission.application?.reason ?? '管理员手动设置该权限状态。',
+                    };
+
+                    return (
+                      <div key={permission.key} className="rounded-2xl border border-slate-200 bg-white/70 p-4 dark:border-slate-700 dark:bg-black/35">
+                        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                          <div className="space-y-3">
+                            <div className="flex flex-wrap items-center gap-3">
+                              <div className="inline-flex items-center gap-2 rounded-full bg-fuchsia-100 px-3 py-1 text-xs font-semibold text-fuchsia-700 dark:bg-fuchsia-900/25 dark:text-fuchsia-300">
+                                <Mail size={14} />
+                                {permission.display_name}
+                              </div>
+                              <span className={`rounded-full px-3 py-1 text-xs font-semibold ${permission.status === 'approved' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-300' : permission.status === 'pending' ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/25 dark:text-amber-300' : permission.status === 'rejected' ? 'bg-red-100 text-red-700 dark:bg-red-900/25 dark:text-red-300' : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'}`}>
+                                {readablePermissionStatus(permission.status)}
+                              </span>
+                            </div>
+                            <div className="font-mono text-sm text-fuchsia-600 dark:text-fuchsia-300">{permission.target}</div>
+                            <div className="text-sm leading-6 text-slate-600 dark:text-slate-300">{permission.description}</div>
+                            {permission.eligibility_reasons.length > 0 ? (
+                              <div className="rounded-2xl border border-amber-300/40 bg-amber-50/80 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/20 dark:bg-amber-950/25 dark:text-amber-200">
+                                {permission.eligibility_reasons.map((reason) => (
+                                  <div key={reason}>- {reason}</div>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+
+                          <div className="grid gap-3 lg:w-[22rem]">
+                            <div>
+                              <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">权限状态</label>
+                              <select
+                                value={draft.status}
+                                onChange={(event) =>
+                                  setPermissionDrafts((current) => ({
+                                    ...current,
+                                    [permission.key]: {
+                                      ...draft,
+                                      status: event.target.value as ApplicationStatus,
+                                    },
+                                  }))
+                                }
+                                className="w-full rounded-2xl border border-slate-200 bg-white/85 px-4 py-3 outline-none focus:border-red-400 focus:ring-2 focus:ring-red-400/20 dark:border-slate-600 dark:bg-slate-900 dark:text-white"
+                              >
+                                <option value="pending">待审核</option>
+                                <option value="approved">已通过</option>
+                                <option value="rejected">已拒绝</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">申请/设置原因</label>
+                              <textarea
+                                rows={3}
+                                value={draft.reason}
+                                onChange={(event) =>
+                                  setPermissionDrafts((current) => ({
+                                    ...current,
+                                    [permission.key]: {
+                                      ...draft,
+                                      reason: event.target.value,
+                                    },
+                                  }))
+                                }
+                                className="w-full rounded-2xl border border-slate-200 bg-white/85 px-4 py-3 outline-none focus:border-red-400 focus:ring-2 focus:ring-red-400/20 dark:border-slate-600 dark:bg-slate-900 dark:text-white"
+                              />
+                            </div>
+                            <div>
+                              <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">审核备注</label>
+                              <textarea
+                                rows={3}
+                                value={draft.review_note}
+                                onChange={(event) =>
+                                  setPermissionDrafts((current) => ({
+                                    ...current,
+                                    [permission.key]: {
+                                      ...draft,
+                                      review_note: event.target.value,
+                                    },
+                                  }))
+                                }
+                                className="w-full rounded-2xl border border-slate-200 bg-white/85 px-4 py-3 outline-none focus:border-red-400 focus:ring-2 focus:ring-red-400/20 dark:border-slate-600 dark:bg-slate-900 dark:text-white"
+                              />
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => void savePermission(permission)}
+                              disabled={savingPermissionKey === permission.key}
+                              className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-fuchsia-500 to-pink-500 px-4 py-3 font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {savingPermissionKey === permission.key ? <LoaderCircle size={16} className="animate-spin" /> : permission.status === 'approved' ? <CheckCircle2 size={16} /> : permission.status === 'rejected' ? <XCircle size={16} /> : <Shield size={16} />}
+                              {savingPermissionKey === permission.key ? '保存中...' : '保存权限状态'}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {!permissionsLoading && permissions.length === 0 ? (
+                    <div className="rounded-2xl border border-dashed border-slate-300 px-4 py-5 text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">
+                      当前没有可直接管理的权限项。
                     </div>
                   ) : null}
                 </div>
