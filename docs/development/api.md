@@ -82,6 +82,11 @@ The current release returns:
 - any extra mailbox aliases already assigned to the user in the database
 - the permission-gated `catch-all@<username>.linuxdo.space` row
 
+Every email-route mutation now syncs the effective forwarding rule into Cloudflare Email Routing.
+Important operational constraints:
+- the target mailbox must already be a verified Cloudflare Email Routing destination address, or Cloudflare will send a verification email and the save will be rejected until verification completes
+- subdomain mailboxes such as `catch-all@<username>.linuxdo.space` require the subdomain to be added under Cloudflare Email Routing settings first
+
 ### `PUT /v1/my/email-routes/default`
 Creates, updates, or clears the current user's default mailbox forwarding target.
 
@@ -273,6 +278,8 @@ Deletes one DNS record inside the selected allocation namespace.
 
 ### `GET /v1/admin/email-routes`
 Returns all administrator-managed email forwarding rules.
+
+Administrator-side create, update, and delete operations also sync the effective route into Cloudflare Email Routing.
 
 ### `POST /v1/admin/email-routes`
 Creates one email forwarding rule.

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"linuxdospace/backend/internal/cloudflare"
 	"linuxdospace/backend/internal/model"
 	"linuxdospace/backend/internal/storage/sqlite"
 )
@@ -36,6 +37,15 @@ type defaultEmailRouteSpec struct {
 	RootDomain string
 	Prefix     string
 	Address    string
+}
+
+// forwardingRuleSnapshot is the small Cloudflare-facing view used to reconcile
+// the public mailbox UI with the actual Email Routing rule when the local
+// database is missing or stale.
+type forwardingRuleSnapshot struct {
+	Found       bool
+	TargetEmail string
+	Enabled     bool
 }
 
 // CheckPublicEmailAvailability powers the public email search box without
@@ -81,12 +91,25 @@ func (s *PermissionService) CheckPublicEmailAvailability(ctx context.Context, ro
 		return EmailRouteAvailabilityResult{}, InternalError("failed to check existing email route conflicts", err)
 	}
 
+	if result.Available {
+		snapshot, err := s.lookupCloudflareForwardingSnapshot(ctx, managedDomain.RootDomain, normalizedPrefix)
+		if err != nil {
+			return EmailRouteAvailabilityResult{}, err
+		}
+		if snapshot.Found {
+			result.Available = false
+			result.Reasons = append(result.Reasons, "existing_email_route")
+		}
+	}
+
 	return result, nil
 }
 
 // UpsertMyDefaultEmailRoute creates, updates, or clears the forwarding target
 // for the always-owned default mailbox <username>@linuxdo.space.
 func (s *PermissionService) UpsertMyDefaultEmailRoute(ctx context.Context, user model.User, request UpsertMyDefaultEmailRouteRequest) (UserEmailRouteView, error) {
+	routing := newEmailRoutingProvisioner(s.cfg, s.cf)
+
 	spec, err := s.resolveDefaultEmailRouteSpec(ctx, user)
 	if err != nil {
 		return UserEmailRouteView{}, err
@@ -97,18 +120,30 @@ func (s *PermissionService) UpsertMyDefaultEmailRoute(ctx context.Context, user 
 		return UserEmailRouteView{}, err
 	}
 
+	beforeState := newDeletedEmailRouteSyncState(spec.RootDomain, spec.Prefix)
 	existingRoute, err := s.db.GetEmailRouteByAddress(ctx, spec.RootDomain, spec.Prefix)
-	if err != nil && !sqlite.IsNotFound(err) {
+	switch {
+	case err == nil:
+		if existingRoute.OwnerUserID != user.ID {
+			return UserEmailRouteView{}, UnavailableError("default mailbox is assigned to another user", fmt.Errorf("route %d belongs to user %d", existingRoute.ID, existingRoute.OwnerUserID))
+		}
+		beforeState = newForwardingEmailRouteSyncState(existingRoute.RootDomain, existingRoute.Prefix, existingRoute.TargetEmail, existingRoute.Enabled)
+	case sqlite.IsNotFound(err):
+		// No persisted default route exists yet, so Cloudflare rollback should
+		// simply delete the exact address if the later database write fails.
+	default:
 		return UserEmailRouteView{}, InternalError("failed to load default email route", err)
-	}
-	if err == nil && existingRoute.OwnerUserID != user.ID {
-		return UserEmailRouteView{}, UnavailableError("default mailbox is assigned to another user", fmt.Errorf("route %d belongs to user %d", existingRoute.ID, existingRoute.OwnerUserID))
 	}
 
 	if targetEmail == "" {
 		if err == nil {
-			if deleteErr := s.db.DeleteEmailRoute(ctx, existingRoute.ID); deleteErr != nil {
-				return UserEmailRouteView{}, InternalError("failed to clear default email route", deleteErr)
+			if err := routing.SyncForwardingState(ctx, beforeState, newDeletedEmailRouteSyncState(spec.RootDomain, spec.Prefix), func() error {
+				if deleteErr := s.db.DeleteEmailRoute(ctx, existingRoute.ID); deleteErr != nil {
+					return InternalError("failed to clear default email route", deleteErr)
+				}
+				return nil
+			}); err != nil {
+				return UserEmailRouteView{}, err
 			}
 
 			metadata, _ := json.Marshal(map[string]any{
@@ -129,15 +164,23 @@ func (s *PermissionService) UpsertMyDefaultEmailRoute(ctx context.Context, user 
 		return s.buildDefaultEmailRouteView(ctx, user)
 	}
 
-	item, err := s.db.UpsertEmailRouteByAddress(ctx, sqlite.UpsertEmailRouteByAddressInput{
-		OwnerUserID: user.ID,
-		RootDomain:  spec.RootDomain,
-		Prefix:      spec.Prefix,
-		TargetEmail: targetEmail,
-		Enabled:     request.Enabled,
-	})
-	if err != nil {
-		return UserEmailRouteView{}, InternalError("failed to save default email route", err)
+	desiredState := newForwardingEmailRouteSyncState(spec.RootDomain, spec.Prefix, targetEmail, request.Enabled)
+	var item model.EmailRoute
+	if err := routing.SyncForwardingState(ctx, beforeState, desiredState, func() error {
+		var persistErr error
+		item, persistErr = s.db.UpsertEmailRouteByAddress(ctx, sqlite.UpsertEmailRouteByAddressInput{
+			OwnerUserID: user.ID,
+			RootDomain:  spec.RootDomain,
+			Prefix:      spec.Prefix,
+			TargetEmail: targetEmail,
+			Enabled:     request.Enabled,
+		})
+		if persistErr != nil {
+			return InternalError("failed to save default email route", persistErr)
+		}
+		return nil
+	}); err != nil {
+		return UserEmailRouteView{}, err
 	}
 
 	metadata, _ := json.Marshal(map[string]any{
@@ -157,8 +200,8 @@ func (s *PermissionService) UpsertMyDefaultEmailRoute(ctx context.Context, user 
 	return userEmailRouteFromModel(
 		item,
 		UserEmailRouteKindDefault,
-		"默认邮箱",
-		"每位用户默认拥有一个与 Linux Do 用户名同名的邮箱转发地址。",
+		defaultEmailRouteDisplayName,
+		defaultEmailRouteDescription,
 		true,
 		false,
 		"",
@@ -241,10 +284,11 @@ func (s *PermissionService) buildDefaultEmailRouteView(ctx context.Context, user
 		return UserEmailRouteView{}, err
 	}
 
+	snapshot, snapshotErr := s.lookupCloudflareForwardingSnapshot(ctx, spec.RootDomain, spec.Prefix)
 	placeholder := UserEmailRouteView{
 		Kind:        UserEmailRouteKindDefault,
-		DisplayName: "默认邮箱",
-		Description: "每位用户默认拥有一个与 Linux Do 用户名同名的邮箱转发地址。",
+		DisplayName: defaultEmailRouteDisplayName,
+		Description: defaultEmailRouteDescription,
 		Address:     spec.Address,
 		Prefix:      spec.Prefix,
 		RootDomain:  spec.RootDomain,
@@ -258,7 +302,12 @@ func (s *PermissionService) buildDefaultEmailRouteView(ctx context.Context, user
 	route, err := s.db.GetEmailRouteByAddress(ctx, spec.RootDomain, spec.Prefix)
 	if err != nil {
 		if sqlite.IsNotFound(err) {
-			return placeholder, nil
+			if snapshotErr == nil && snapshot.Found {
+				placeholder.TargetEmail = snapshot.TargetEmail
+				placeholder.Enabled = snapshot.Enabled
+				placeholder.Configured = strings.TrimSpace(snapshot.TargetEmail) != ""
+			}
+			return normalizeUserEmailRouteCopy(placeholder), nil
 		}
 		return UserEmailRouteView{}, InternalError("failed to load default email route", err)
 	}
@@ -266,15 +315,21 @@ func (s *PermissionService) buildDefaultEmailRouteView(ctx context.Context, user
 		return UserEmailRouteView{}, UnavailableError("default mailbox is assigned to another user", fmt.Errorf("route %d belongs to user %d", route.ID, route.OwnerUserID))
 	}
 
-	return userEmailRouteFromModel(
+	view := userEmailRouteFromModel(
 		route,
 		UserEmailRouteKindDefault,
-		"默认邮箱",
-		"每位用户默认拥有一个与 Linux Do 用户名同名的邮箱转发地址。",
+		defaultEmailRouteDisplayName,
+		defaultEmailRouteDescription,
 		true,
 		false,
 		"",
-	), nil
+	)
+	if snapshotErr == nil && snapshot.Found {
+		view.TargetEmail = snapshot.TargetEmail
+		view.Enabled = snapshot.Enabled
+		view.Configured = strings.TrimSpace(snapshot.TargetEmail) != ""
+	}
+	return normalizeUserEmailRouteCopy(view), nil
 }
 
 // buildCustomEmailRouteView converts one persisted extra mailbox alias into the
@@ -284,19 +339,66 @@ func buildCustomEmailRouteView(route model.EmailRoute) UserEmailRouteView {
 	return userEmailRouteFromModel(
 		route,
 		UserEmailRouteKindCustom,
-		"附加邮箱",
-		"这是已经分配到你名下的额外邮箱地址，当前页面先以只读方式展示。",
+		customEmailRouteDisplayName,
+		customEmailRouteDescription,
 		false,
 		false,
 		"",
 	)
 }
 
+// lookupCloudflareForwardingSnapshot loads the exact Cloudflare Email Routing
+// rule for one visible mailbox address when Email Routing integration is
+// configured. The public page uses this to avoid showing stale local state.
+func (s *PermissionService) lookupCloudflareForwardingSnapshot(ctx context.Context, rootDomain string, prefix string) (forwardingRuleSnapshot, error) {
+	if s.cf == nil || !s.cfg.CloudflareConfigured() {
+		return forwardingRuleSnapshot{}, nil
+	}
+
+	routing := newEmailRoutingProvisioner(s.cfg, s.cf)
+	zoneID, err := routing.resolveZoneID(ctx, rootDomain)
+	if err != nil {
+		return forwardingRuleSnapshot{}, err
+	}
+
+	rules, err := s.cf.ListEmailRoutingRules(ctx, zoneID)
+	if err != nil {
+		return forwardingRuleSnapshot{}, wrapEmailRoutingUnavailable("failed to list cloudflare email routing rules", err)
+	}
+
+	rule, found := findEmailRoutingRuleByAddress(rules, buildEmailRouteAddress(prefix, rootDomain))
+	if !found {
+		return forwardingRuleSnapshot{}, nil
+	}
+
+	return forwardingRuleSnapshot{
+		Found:       true,
+		TargetEmail: extractForwardTargetEmail(rule),
+		Enabled:     rule.Enabled,
+	}, nil
+}
+
+// extractForwardTargetEmail returns the first forwarded destination email from
+// one Cloudflare Email Routing rule. LinuxDoSpace only writes one destination
+// target today, so the first entry is the effective forwarding inbox.
+func extractForwardTargetEmail(rule cloudflare.EmailRoutingRule) string {
+	for _, action := range rule.Actions {
+		if !strings.EqualFold(strings.TrimSpace(action.Type), "forward") {
+			continue
+		}
+		if len(action.Value) == 0 {
+			return ""
+		}
+		return strings.ToLower(strings.TrimSpace(action.Value[0]))
+	}
+	return ""
+}
+
 // userEmailRouteFromModel centralizes the translation from one stored email
 // route row into the public user-facing API model.
 func userEmailRouteFromModel(route model.EmailRoute, kind string, displayName string, description string, canManage bool, canDelete bool, permissionStatus string) UserEmailRouteView {
 	updatedAt := route.UpdatedAt
-	return UserEmailRouteView{
+	return normalizeUserEmailRouteCopy(UserEmailRouteView{
 		ID:               route.ID,
 		Kind:             kind,
 		DisplayName:      displayName,
@@ -311,7 +413,7 @@ func userEmailRouteFromModel(route model.EmailRoute, kind string, displayName st
 		CanManage:        canManage,
 		CanDelete:        canDelete,
 		UpdatedAt:        &updatedAt,
-	}
+	})
 }
 
 // normalizeTargetEmail validates one forwarding target. When allowEmpty is

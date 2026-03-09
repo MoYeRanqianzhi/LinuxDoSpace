@@ -12,23 +12,30 @@ import (
 	"time"
 )
 
-// apiBaseURL 是 Cloudflare v4 API 的固定基础地址。
+// apiBaseURL points to the stable Cloudflare v4 API origin used by both the
+// DNS and Email Routing integrations.
 const apiBaseURL = "https://api.cloudflare.com/client/v4"
 
-// Client 是一个轻量级 Cloudflare API 客户端。
-// 我们使用标准库实现，避免在核心链路里引入不必要的外部框架。
+// Client is a minimal Cloudflare API client built on the standard library so
+// the backend keeps external dependencies small and auditable.
 type Client struct {
 	httpClient *http.Client
 	apiToken   string
 }
 
-// Zone 表示 Cloudflare 返回的 Zone 简要信息。
+// Zone is the compact zone shape returned by Cloudflare when the backend needs
+// to resolve a root domain into its zone identifier.
 type Zone struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+	Account struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"account"`
 }
 
-// DNSRecord 表示 Cloudflare DNS 记录。
+// DNSRecord mirrors the subset of Cloudflare DNS record fields used by the DNS
+// management pages and service layer.
 type DNSRecord struct {
 	ID       string `json:"id"`
 	Type     string `json:"type"`
@@ -40,7 +47,8 @@ type DNSRecord struct {
 	Priority *int   `json:"priority,omitempty"`
 }
 
-// CreateDNSRecordInput 表示创建 DNS 记录时需要的字段。
+// CreateDNSRecordInput describes the payload sent to Cloudflare when the
+// backend creates one DNS record.
 type CreateDNSRecordInput struct {
 	Type     string `json:"type"`
 	Name     string `json:"name"`
@@ -51,16 +59,99 @@ type CreateDNSRecordInput struct {
 	Priority *int   `json:"priority,omitempty"`
 }
 
-// UpdateDNSRecordInput 表示更新 DNS 记录时需要的字段。
+// UpdateDNSRecordInput intentionally reuses the exact same payload as the
+// create flow because Cloudflare expects the full record body on updates.
 type UpdateDNSRecordInput = CreateDNSRecordInput
 
-// listResponse 是 Cloudflare 分页结果的通用包装。
+// EmailRoutingAddress mirrors Cloudflare Email Routing destination addresses.
+// The verified timestamp is nil until the target mailbox owner confirms the
+// verification email sent by Cloudflare.
+type EmailRoutingAddress struct {
+	ID       string     `json:"id"`
+	Created  *time.Time `json:"created,omitempty"`
+	Email    string     `json:"email"`
+	Modified *time.Time `json:"modified,omitempty"`
+	Tag      string     `json:"tag,omitempty"`
+	Verified *time.Time `json:"verified,omitempty"`
+}
+
+// CreateEmailRoutingAddressInput is the documented request body for creating a
+// destination address under one Cloudflare account.
+type CreateEmailRoutingAddressInput struct {
+	Email string `json:"email"`
+}
+
+// EmailRoutingRuleAction mirrors one Email Routing rule action. LinuxDoSpace
+// currently only uses the documented "forward" action.
+type EmailRoutingRuleAction struct {
+	Type  string   `json:"type"`
+	Value []string `json:"value,omitempty"`
+}
+
+// EmailRoutingRuleMatcher mirrors one Email Routing matcher. LinuxDoSpace uses
+// the documented literal matcher on the "to" field so every mailbox address is
+// synced as one exact Cloudflare route.
+type EmailRoutingRuleMatcher struct {
+	Type  string `json:"type"`
+	Field string `json:"field,omitempty"`
+	Value string `json:"value,omitempty"`
+}
+
+// EmailRoutingRule mirrors the Cloudflare rule object returned by the Email
+// Routing rules API.
+type EmailRoutingRule struct {
+	ID       string                    `json:"id"`
+	Actions  []EmailRoutingRuleAction  `json:"actions,omitempty"`
+	Enabled  bool                      `json:"enabled"`
+	Matchers []EmailRoutingRuleMatcher `json:"matchers,omitempty"`
+	Name     string                    `json:"name,omitempty"`
+	Priority int                       `json:"priority,omitempty"`
+	Tag      string                    `json:"tag,omitempty"`
+}
+
+// Identifier returns the stable rule identifier expected by Cloudflare route
+// update and delete endpoints. The API still exposes the legacy tag field on
+// some responses, so the helper falls back to it when needed.
+func (r EmailRoutingRule) Identifier() string {
+	if strings.TrimSpace(r.ID) != "" {
+		return strings.TrimSpace(r.ID)
+	}
+	return strings.TrimSpace(r.Tag)
+}
+
+// CreateEmailRoutingRuleInput is the documented request body for creating one
+// Email Routing rule under a zone.
+type CreateEmailRoutingRuleInput struct {
+	Actions  []EmailRoutingRuleAction  `json:"actions"`
+	Matchers []EmailRoutingRuleMatcher `json:"matchers"`
+	Enabled  bool                      `json:"enabled"`
+	Name     string                    `json:"name,omitempty"`
+	Priority int                       `json:"priority,omitempty"`
+}
+
+// UpdateEmailRoutingRuleInput intentionally matches the create payload because
+// Cloudflare's update API expects the same rule shape.
+type UpdateEmailRoutingRuleInput = CreateEmailRoutingRuleInput
+
+// The aliases below preserve the naming already used by the service layer while
+// keeping the concrete request and response shapes aligned with the Cloudflare
+// API documentation.
+type EmailRoutingDestinationAddress = EmailRoutingAddress
+type EmailRoutingAction = EmailRoutingRuleAction
+type EmailRoutingMatcher = EmailRoutingRuleMatcher
+type UpsertEmailRoutingRuleInput = CreateEmailRoutingRuleInput
+
+// cloudflareAPIError captures the shared Cloudflare error shape used across the
+// DNS and Email Routing endpoints.
+type cloudflareAPIError struct {
+	Message string `json:"message"`
+}
+
+// listResponse is the shared paginated Cloudflare response envelope.
 type listResponse[T any] struct {
-	Result  []T  `json:"result"`
-	Success bool `json:"success"`
-	Errors  []struct {
-		Message string `json:"message"`
-	} `json:"errors"`
+	Result  []T                `json:"result"`
+	Success bool               `json:"success"`
+	Errors  []cloudflareAPIError `json:"errors"`
 	ResultInfo struct {
 		Page       int `json:"page"`
 		PerPage    int `json:"per_page"`
@@ -68,16 +159,44 @@ type listResponse[T any] struct {
 	} `json:"result_info"`
 }
 
-// objectResponse 是 Cloudflare 单对象结果的通用包装。
-type objectResponse[T any] struct {
-	Result  T    `json:"result"`
-	Success bool `json:"success"`
-	Errors  []struct {
-		Message string `json:"message"`
-	} `json:"errors"`
+// cfSuccess lets the generic response envelope participate in unified error
+// handling inside doJSON.
+func (r *listResponse[T]) cfSuccess() bool {
+	return r.Success
 }
 
-// NewClient 创建一个 Cloudflare API 客户端。
+// cfErrors returns the Cloudflare error list from a paginated response.
+func (r *listResponse[T]) cfErrors() []cloudflareAPIError {
+	return r.Errors
+}
+
+// objectResponse is the shared single-result Cloudflare response envelope.
+type objectResponse[T any] struct {
+	Result  T                  `json:"result"`
+	Success bool               `json:"success"`
+	Errors  []cloudflareAPIError `json:"errors"`
+}
+
+// cfSuccess lets the single-object response envelope participate in unified
+// error handling inside doJSON.
+func (r *objectResponse[T]) cfSuccess() bool {
+	return r.Success
+}
+
+// cfErrors returns the Cloudflare error list from a single-object response.
+func (r *objectResponse[T]) cfErrors() []cloudflareAPIError {
+	return r.Errors
+}
+
+// cloudflareResponse is the narrow contract required by doJSON to decode a
+// response and surface API-level errors consistently.
+type cloudflareResponse interface {
+	cfSuccess() bool
+	cfErrors() []cloudflareAPIError
+}
+
+// NewClient creates a Cloudflare API client with a conservative timeout that is
+// reused for both DNS and Email Routing requests.
 func NewClient(apiToken string) *Client {
 	return &Client{
 		httpClient: &http.Client{Timeout: 20 * time.Second},
@@ -85,7 +204,7 @@ func NewClient(apiToken string) *Client {
 	}
 }
 
-// ResolveZoneID 通过根域名查找对应的 Zone ID。
+// ResolveZoneID looks up the Cloudflare zone identifier for one root domain.
 func (c *Client) ResolveZoneID(ctx context.Context, rootDomain string) (string, error) {
 	if strings.TrimSpace(rootDomain) == "" {
 		return "", fmt.Errorf("root domain is required")
@@ -106,8 +225,38 @@ func (c *Client) ResolveZoneID(ctx context.Context, rootDomain string) (string, 
 	return response.Result[0].ID, nil
 }
 
-// ListAllDNSRecords 把指定 Zone 下的所有 DNS 记录全部拉取回来。
-// 该方法会自动分页，适合做命名空间冲突检查和权限校验。
+// ResolveZone returns the first zone that exactly matches the provided root
+// domain. The service layer uses this when it also needs the owning account id.
+func (c *Client) ResolveZone(ctx context.Context, rootDomain string) (Zone, error) {
+	if strings.TrimSpace(rootDomain) == "" {
+		return Zone{}, fmt.Errorf("root domain is required")
+	}
+
+	values := url.Values{}
+	values.Set("name", rootDomain)
+
+	var response listResponse[Zone]
+	if err := c.doJSON(ctx, http.MethodGet, apiBaseURL+"/zones?"+values.Encode(), nil, &response); err != nil {
+		return Zone{}, err
+	}
+	if len(response.Result) == 0 {
+		return Zone{}, fmt.Errorf("zone %q not found", rootDomain)
+	}
+	return response.Result[0], nil
+}
+
+// GetZone returns one zone by its identifier.
+func (c *Client) GetZone(ctx context.Context, zoneID string) (Zone, error) {
+	var response objectResponse[Zone]
+	endpoint := fmt.Sprintf("%s/zones/%s", apiBaseURL, zoneID)
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, &response); err != nil {
+		return Zone{}, err
+	}
+	return response.Result, nil
+}
+
+// ListAllDNSRecords fetches every DNS record in a zone and transparently walks
+// through Cloudflare pagination.
 func (c *Client) ListAllDNSRecords(ctx context.Context, zoneID string) ([]DNSRecord, error) {
 	if strings.TrimSpace(zoneID) == "" {
 		return nil, fmt.Errorf("zone id is required")
@@ -137,7 +286,7 @@ func (c *Client) ListAllDNSRecords(ctx context.Context, zoneID string) ([]DNSRec
 	return all, nil
 }
 
-// GetDNSRecord 根据记录 ID 获取一条具体 DNS 记录。
+// GetDNSRecord returns one DNS record by its Cloudflare identifier.
 func (c *Client) GetDNSRecord(ctx context.Context, zoneID string, recordID string) (DNSRecord, error) {
 	var response objectResponse[DNSRecord]
 	endpoint := fmt.Sprintf("%s/zones/%s/dns_records/%s", apiBaseURL, zoneID, recordID)
@@ -147,7 +296,7 @@ func (c *Client) GetDNSRecord(ctx context.Context, zoneID string, recordID strin
 	return response.Result, nil
 }
 
-// CreateDNSRecord 在 Cloudflare 中创建一条 DNS 记录。
+// CreateDNSRecord creates one DNS record inside the target zone.
 func (c *Client) CreateDNSRecord(ctx context.Context, zoneID string, input CreateDNSRecordInput) (DNSRecord, error) {
 	var response objectResponse[DNSRecord]
 	endpoint := fmt.Sprintf("%s/zones/%s/dns_records", apiBaseURL, zoneID)
@@ -157,7 +306,7 @@ func (c *Client) CreateDNSRecord(ctx context.Context, zoneID string, input Creat
 	return response.Result, nil
 }
 
-// UpdateDNSRecord 在 Cloudflare 中完整更新一条 DNS 记录。
+// UpdateDNSRecord fully replaces one DNS record in Cloudflare.
 func (c *Client) UpdateDNSRecord(ctx context.Context, zoneID string, recordID string, input UpdateDNSRecordInput) (DNSRecord, error) {
 	var response objectResponse[DNSRecord]
 	endpoint := fmt.Sprintf("%s/zones/%s/dns_records/%s", apiBaseURL, zoneID, recordID)
@@ -167,15 +316,134 @@ func (c *Client) UpdateDNSRecord(ctx context.Context, zoneID string, recordID st
 	return response.Result, nil
 }
 
-// DeleteDNSRecord 删除一条 DNS 记录。
+// DeleteDNSRecord removes one DNS record from Cloudflare.
 func (c *Client) DeleteDNSRecord(ctx context.Context, zoneID string, recordID string) error {
 	var response objectResponse[map[string]any]
 	endpoint := fmt.Sprintf("%s/zones/%s/dns_records/%s", apiBaseURL, zoneID, recordID)
 	return c.doJSON(ctx, http.MethodDelete, endpoint, nil, &response)
 }
 
-// doJSON 负责统一处理 Cloudflare API 的认证、JSON 编码与错误判断。
-func (c *Client) doJSON(ctx context.Context, method string, endpoint string, requestBody any, responseBody any) error {
+// ListEmailRoutingAddresses returns every destination address available to the
+// configured Cloudflare account.
+func (c *Client) ListEmailRoutingAddresses(ctx context.Context, accountID string) ([]EmailRoutingAddress, error) {
+	if strings.TrimSpace(accountID) == "" {
+		return nil, fmt.Errorf("account id is required")
+	}
+
+	all := make([]EmailRoutingAddress, 0, 16)
+	page := 1
+
+	for {
+		values := url.Values{}
+		values.Set("page", strconv.Itoa(page))
+		values.Set("per_page", "100")
+
+		var response listResponse[EmailRoutingAddress]
+		endpoint := fmt.Sprintf("%s/accounts/%s/email/routing/addresses?%s", apiBaseURL, accountID, values.Encode())
+		if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, &response); err != nil {
+			return nil, err
+		}
+
+		all = append(all, response.Result...)
+		if page >= response.ResultInfo.TotalPages || response.ResultInfo.TotalPages == 0 {
+			break
+		}
+		page++
+	}
+
+	return all, nil
+}
+
+// CreateEmailRoutingAddress registers one destination address under the target
+// Cloudflare account. Cloudflare sends a verification email when needed.
+func (c *Client) CreateEmailRoutingAddress(ctx context.Context, accountID string, input CreateEmailRoutingAddressInput) (EmailRoutingAddress, error) {
+	var response objectResponse[EmailRoutingAddress]
+	endpoint := fmt.Sprintf("%s/accounts/%s/email/routing/addresses", apiBaseURL, accountID)
+	if err := c.doJSON(ctx, http.MethodPost, endpoint, input, &response); err != nil {
+		return EmailRoutingAddress{}, err
+	}
+	return response.Result, nil
+}
+
+// ListEmailRoutingDestinationAddresses preserves the earlier service-layer name
+// for the same documented Cloudflare destination-address endpoint.
+func (c *Client) ListEmailRoutingDestinationAddresses(ctx context.Context, accountID string) ([]EmailRoutingDestinationAddress, error) {
+	return c.ListEmailRoutingAddresses(ctx, accountID)
+}
+
+// CreateEmailRoutingDestinationAddress preserves the earlier service-layer name
+// while still using the documented Cloudflare request body.
+func (c *Client) CreateEmailRoutingDestinationAddress(ctx context.Context, accountID string, email string) (EmailRoutingDestinationAddress, error) {
+	return c.CreateEmailRoutingAddress(ctx, accountID, CreateEmailRoutingAddressInput{Email: email})
+}
+
+// ListAllEmailRoutingRules returns every Email Routing rule configured under a
+// zone and transparently walks through Cloudflare pagination.
+func (c *Client) ListAllEmailRoutingRules(ctx context.Context, zoneID string) ([]EmailRoutingRule, error) {
+	if strings.TrimSpace(zoneID) == "" {
+		return nil, fmt.Errorf("zone id is required")
+	}
+
+	all := make([]EmailRoutingRule, 0, 16)
+	page := 1
+
+	for {
+		values := url.Values{}
+		values.Set("page", strconv.Itoa(page))
+		values.Set("per_page", "100")
+
+		var response listResponse[EmailRoutingRule]
+		endpoint := fmt.Sprintf("%s/zones/%s/email/routing/rules?%s", apiBaseURL, zoneID, values.Encode())
+		if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, &response); err != nil {
+			return nil, err
+		}
+
+		all = append(all, response.Result...)
+		if page >= response.ResultInfo.TotalPages || response.ResultInfo.TotalPages == 0 {
+			break
+		}
+		page++
+	}
+
+	return all, nil
+}
+
+// ListEmailRoutingRules preserves the service-layer naming already used by the
+// Email Routing synchronization helper.
+func (c *Client) ListEmailRoutingRules(ctx context.Context, zoneID string) ([]EmailRoutingRule, error) {
+	return c.ListAllEmailRoutingRules(ctx, zoneID)
+}
+
+// CreateEmailRoutingRule creates one Email Routing rule under the target zone.
+func (c *Client) CreateEmailRoutingRule(ctx context.Context, zoneID string, input CreateEmailRoutingRuleInput) (EmailRoutingRule, error) {
+	var response objectResponse[EmailRoutingRule]
+	endpoint := fmt.Sprintf("%s/zones/%s/email/routing/rules", apiBaseURL, zoneID)
+	if err := c.doJSON(ctx, http.MethodPost, endpoint, input, &response); err != nil {
+		return EmailRoutingRule{}, err
+	}
+	return response.Result, nil
+}
+
+// UpdateEmailRoutingRule replaces one existing Email Routing rule.
+func (c *Client) UpdateEmailRoutingRule(ctx context.Context, zoneID string, ruleID string, input UpdateEmailRoutingRuleInput) (EmailRoutingRule, error) {
+	var response objectResponse[EmailRoutingRule]
+	endpoint := fmt.Sprintf("%s/zones/%s/email/routing/rules/%s", apiBaseURL, zoneID, ruleID)
+	if err := c.doJSON(ctx, http.MethodPut, endpoint, input, &response); err != nil {
+		return EmailRoutingRule{}, err
+	}
+	return response.Result, nil
+}
+
+// DeleteEmailRoutingRule removes one Email Routing rule from the target zone.
+func (c *Client) DeleteEmailRoutingRule(ctx context.Context, zoneID string, ruleID string) error {
+	var response objectResponse[map[string]any]
+	endpoint := fmt.Sprintf("%s/zones/%s/email/routing/rules/%s", apiBaseURL, zoneID, ruleID)
+	return c.doJSON(ctx, http.MethodDelete, endpoint, nil, &response)
+}
+
+// doJSON centralizes authentication, request encoding, response decoding, and
+// Cloudflare API error translation.
+func (c *Client) doJSON(ctx context.Context, method string, endpoint string, requestBody any, responseBody cloudflareResponse) error {
 	var bodyReader *bytes.Reader
 	if requestBody == nil {
 		bodyReader = bytes.NewReader(nil)
@@ -205,34 +473,16 @@ func (c *Client) doJSON(ctx context.Context, method string, endpoint string, req
 		return fmt.Errorf("decode cloudflare response: %w", err)
 	}
 
-	switch typed := responseBody.(type) {
-	case *listResponse[Zone]:
-		if !typed.Success {
-			return fmt.Errorf("cloudflare api error: %s", firstCloudflareError(typed.Errors))
-		}
-	case *listResponse[DNSRecord]:
-		if !typed.Success {
-			return fmt.Errorf("cloudflare api error: %s", firstCloudflareError(typed.Errors))
-		}
-	case *objectResponse[DNSRecord]:
-		if !typed.Success {
-			return fmt.Errorf("cloudflare api error: %s", firstCloudflareError(typed.Errors))
-		}
-	case *objectResponse[map[string]any]:
-		if !typed.Success {
-			return fmt.Errorf("cloudflare api error: %s", firstCloudflareError(typed.Errors))
-		}
-	default:
-		return fmt.Errorf("unsupported cloudflare response type")
+	if !responseBody.cfSuccess() {
+		return fmt.Errorf("cloudflare api error: %s", firstCloudflareError(responseBody.cfErrors()))
 	}
 
 	return nil
 }
 
-// firstCloudflareError 把 Cloudflare 错误列表收敛成一条便于日志和 API 返回的消息。
-func firstCloudflareError(errors []struct {
-	Message string `json:"message"`
-}) string {
+// firstCloudflareError turns the first Cloudflare API error entry into a stable
+// plain-text message for logs and upstream HTTP responses.
+func firstCloudflareError(errors []cloudflareAPIError) string {
 	if len(errors) == 0 {
 		return "unknown error"
 	}

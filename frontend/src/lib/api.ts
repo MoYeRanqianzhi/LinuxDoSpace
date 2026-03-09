@@ -18,8 +18,8 @@ import type {
 } from '../types/api';
 
 // resolveAPIBaseURL keeps local development simple while still protecting the
-// deployed Pages frontend from accidentally talking to itself and parsing the
-// returned HTML as JSON.
+// deployed frontend from accidentally talking to itself and parsing HTML as if
+// it were an API response.
 function resolveAPIBaseURL(): string {
   const configuredBaseURL = import.meta.env.VITE_API_BASE_URL?.trim();
   if (configuredBaseURL) {
@@ -61,9 +61,12 @@ export class APIError extends Error {
 }
 
 // request wraps fetch so every page consistently gets cookies, JSON decoding,
-// and clearer messages when the deployment accidentally returns HTML instead of API data.
+// and clearer deployment diagnostics when a proxy returns HTML instead of the
+// documented JSON envelope.
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${apiBaseURL}${path}`, {
+  const requestMethod = (init.method ?? 'GET').toUpperCase();
+  const requestURL = `${apiBaseURL}${path}`;
+  const response = await fetch(requestURL, {
     credentials: 'include',
     ...init,
     headers: {
@@ -86,23 +89,52 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       }
     }
 
+    if (!isJSONResponse) {
+      throw await buildNonJSONAPIError(path, requestMethod, response);
+    }
+
     throw new APIError(
-      errorBody?.error.message ?? `Request failed with status ${response.status}`,
+      errorBody?.error.message ?? `请求失败：${requestMethod} ${path}（HTTP ${response.status}）`,
       errorBody?.error.code ?? 'http_error',
       response.status,
     );
   }
 
   if (!isJSONResponse) {
+    throw await buildNonJSONAPIError(path, requestMethod, response);
+  }
+
+  try {
+    const envelope = (await response.json()) as APIEnvelope<T>;
+    return envelope.data;
+  } catch {
     throw new APIError(
-      '后端返回了非 JSON 响应，请检查 VITE_API_BASE_URL 或反向代理配置。',
-      'invalid_response_content_type',
+      `后端返回了无法解析的 JSON 数据：${requestMethod} ${path}（HTTP ${response.status}）。`,
+      'invalid_json',
       response.status,
     );
   }
+}
 
-  const envelope = (await response.json()) as APIEnvelope<T>;
-  return envelope.data;
+// buildNonJSONAPIError adds deployment-facing context when the backend returns
+// HTML or another unexpected payload instead of the documented JSON envelope.
+async function buildNonJSONAPIError(path: string, method: string, response: Response): Promise<APIError> {
+  let responsePreview = '';
+  try {
+    responsePreview = (await response.text()).trim().slice(0, 120).toLowerCase();
+  } catch {
+    responsePreview = '';
+  }
+
+  const responseURL = response.url || `${apiBaseURL}${path}`;
+  const looksLikeHTML = responsePreview.startsWith('<!doctype html') || responsePreview.startsWith('<html');
+  const htmlHint = looksLikeHTML ? ' 返回内容看起来像 HTML 页面。' : '';
+
+  return new APIError(
+    `后端返回了非 JSON 响应，请检查 VITE_API_BASE_URL 或反向代理配置。请求：${method} ${path}；响应地址：${responseURL}；状态码：${response.status}。这通常表示 API 请求被转发到了错误的页面。${htmlHint}`,
+    'invalid_response_content_type',
+    response.status,
+  );
 }
 
 // getAuthLoginURL builds the public Linux Do OAuth entrypoint.

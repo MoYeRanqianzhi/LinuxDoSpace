@@ -579,6 +579,8 @@ func (s *AdminService) ListEmailRoutes(ctx context.Context) ([]model.EmailRoute,
 
 // CreateEmailRoute inserts one administrator-managed email forwarding rule.
 func (s *AdminService) CreateEmailRoute(ctx context.Context, actor model.User, request UpsertEmailRouteRequest) (model.EmailRoute, error) {
+	routing := newEmailRoutingProvisioner(s.cfg, s.cf)
+
 	if _, err := s.db.GetUserByID(ctx, request.OwnerUserID); err != nil {
 		if sqlite.IsNotFound(err) {
 			return model.EmailRoute{}, NotFoundError("email route owner not found")
@@ -600,18 +602,32 @@ func (s *AdminService) CreateEmailRoute(ctx context.Context, actor model.User, r
 		return model.EmailRoute{}, ValidationError("target_email must be a valid email address")
 	}
 
-	item, err := s.db.CreateEmailRoute(ctx, sqlite.CreateEmailRouteInput{
-		OwnerUserID: request.OwnerUserID,
-		RootDomain:  request.RootDomain,
-		Prefix:      normalizedPrefix,
-		TargetEmail: request.TargetEmail,
-		Enabled:     request.Enabled,
-	})
-	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "unique") {
-			return model.EmailRoute{}, ConflictError("the requested email route already exists")
+	if _, err := s.db.GetEmailRouteByAddress(ctx, request.RootDomain, normalizedPrefix); err == nil {
+		return model.EmailRoute{}, ConflictError("the requested email route already exists")
+	} else if !sqlite.IsNotFound(err) {
+		return model.EmailRoute{}, InternalError("failed to check for an existing email route", err)
+	}
+
+	desiredState := newForwardingEmailRouteSyncState(request.RootDomain, normalizedPrefix, request.TargetEmail, request.Enabled)
+	var item model.EmailRoute
+	if err := routing.SyncForwardingState(ctx, newDeletedEmailRouteSyncState(request.RootDomain, normalizedPrefix), desiredState, func() error {
+		var persistErr error
+		item, persistErr = s.db.CreateEmailRoute(ctx, sqlite.CreateEmailRouteInput{
+			OwnerUserID: request.OwnerUserID,
+			RootDomain:  request.RootDomain,
+			Prefix:      normalizedPrefix,
+			TargetEmail: request.TargetEmail,
+			Enabled:     request.Enabled,
+		})
+		if persistErr != nil {
+			if strings.Contains(strings.ToLower(persistErr.Error()), "unique") {
+				return ConflictError("the requested email route already exists")
+			}
+			return InternalError("failed to create email route", persistErr)
 		}
-		return model.EmailRoute{}, InternalError("failed to create email route", err)
+		return nil
+	}); err != nil {
+		return model.EmailRoute{}, err
 	}
 
 	metadata, _ := json.Marshal(map[string]any{"email_route_id": item.ID, "address": item.Prefix + "@" + item.RootDomain})
@@ -629,16 +645,43 @@ func (s *AdminService) CreateEmailRoute(ctx context.Context, actor model.User, r
 
 // UpdateEmailRoute updates the mutable fields of one email forwarding rule.
 func (s *AdminService) UpdateEmailRoute(ctx context.Context, actor model.User, routeID int64, request UpsertEmailRouteRequest) (model.EmailRoute, error) {
+	routing := newEmailRoutingProvisioner(s.cfg, s.cf)
+
 	if _, err := mail.ParseAddress(strings.TrimSpace(request.TargetEmail)); err != nil {
 		return model.EmailRoute{}, ValidationError("target_email must be a valid email address")
 	}
 
-	item, err := s.db.UpdateEmailRoute(ctx, sqlite.UpdateEmailRouteInput{ID: routeID, TargetEmail: request.TargetEmail, Enabled: request.Enabled})
+	existingRoutes, err := s.db.ListEmailRoutes(ctx)
 	if err != nil {
-		if sqlite.IsNotFound(err) {
-			return model.EmailRoute{}, NotFoundError("email route not found")
+		return model.EmailRoute{}, InternalError("failed to load email routes before update", err)
+	}
+
+	var existing *model.EmailRoute
+	for index := range existingRoutes {
+		if existingRoutes[index].ID == routeID {
+			existing = &existingRoutes[index]
+			break
 		}
-		return model.EmailRoute{}, InternalError("failed to update email route", err)
+	}
+	if existing == nil {
+		return model.EmailRoute{}, NotFoundError("email route not found")
+	}
+
+	beforeState := newForwardingEmailRouteSyncState(existing.RootDomain, existing.Prefix, existing.TargetEmail, existing.Enabled)
+	desiredState := newForwardingEmailRouteSyncState(existing.RootDomain, existing.Prefix, request.TargetEmail, request.Enabled)
+	var item model.EmailRoute
+	if err := routing.SyncForwardingState(ctx, beforeState, desiredState, func() error {
+		var persistErr error
+		item, persistErr = s.db.UpdateEmailRoute(ctx, sqlite.UpdateEmailRouteInput{ID: routeID, TargetEmail: request.TargetEmail, Enabled: request.Enabled})
+		if persistErr != nil {
+			if sqlite.IsNotFound(persistErr) {
+				return NotFoundError("email route not found")
+			}
+			return InternalError("failed to update email route", persistErr)
+		}
+		return nil
+	}); err != nil {
+		return model.EmailRoute{}, err
 	}
 
 	metadata, _ := json.Marshal(map[string]any{"email_route_id": item.ID, "address": item.Prefix + "@" + item.RootDomain})
@@ -656,11 +699,36 @@ func (s *AdminService) UpdateEmailRoute(ctx context.Context, actor model.User, r
 
 // DeleteEmailRoute removes one stored email forwarding rule.
 func (s *AdminService) DeleteEmailRoute(ctx context.Context, actor model.User, routeID int64) error {
-	if err := s.db.DeleteEmailRoute(ctx, routeID); err != nil {
-		if sqlite.IsNotFound(err) {
-			return NotFoundError("email route not found")
+	routing := newEmailRoutingProvisioner(s.cfg, s.cf)
+
+	routes, err := s.db.ListEmailRoutes(ctx)
+	if err != nil {
+		return InternalError("failed to load email routes before delete", err)
+	}
+
+	var route *model.EmailRoute
+	for index := range routes {
+		if routes[index].ID == routeID {
+			route = &routes[index]
+			break
 		}
-		return InternalError("failed to delete email route", err)
+	}
+	if route == nil {
+		return NotFoundError("email route not found")
+	}
+
+	beforeState := newForwardingEmailRouteSyncState(route.RootDomain, route.Prefix, route.TargetEmail, route.Enabled)
+	afterState := newDeletedEmailRouteSyncState(route.RootDomain, route.Prefix)
+	if err := routing.SyncForwardingState(ctx, beforeState, afterState, func() error {
+		if persistErr := s.db.DeleteEmailRoute(ctx, routeID); persistErr != nil {
+			if sqlite.IsNotFound(persistErr) {
+				return NotFoundError("email route not found")
+			}
+			return InternalError("failed to delete email route", persistErr)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 
 	metadata, _ := json.Marshal(map[string]any{"email_route_id": routeID})
@@ -744,13 +812,22 @@ func (s *AdminService) disableCatchAllEmailRouteForApplication(ctx context.Conte
 		return nil
 	}
 
-	updated, err := s.db.UpdateEmailRoute(ctx, sqlite.UpdateEmailRouteInput{
-		ID:          route.ID,
-		TargetEmail: route.TargetEmail,
-		Enabled:     false,
-	})
-	if err != nil {
-		return InternalError("failed to disable catch-all email route", err)
+	beforeState := newForwardingEmailRouteSyncState(route.RootDomain, route.Prefix, route.TargetEmail, route.Enabled)
+	afterState := newForwardingEmailRouteSyncState(route.RootDomain, route.Prefix, route.TargetEmail, false)
+	updated := route
+	if err := newEmailRoutingProvisioner(s.cfg, s.cf).SyncForwardingState(ctx, beforeState, afterState, func() error {
+		var persistErr error
+		updated, persistErr = s.db.UpdateEmailRoute(ctx, sqlite.UpdateEmailRouteInput{
+			ID:          route.ID,
+			TargetEmail: route.TargetEmail,
+			Enabled:     false,
+		})
+		if persistErr != nil {
+			return InternalError("failed to disable catch-all email route", persistErr)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 
 	metadata, _ := json.Marshal(map[string]any{

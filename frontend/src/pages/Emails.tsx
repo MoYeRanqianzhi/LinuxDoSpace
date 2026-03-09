@@ -1,9 +1,27 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
-import { motion } from 'motion/react';
-import { AlertCircle, ArrowRight, CheckCircle2, LoaderCircle, Mail, Search, ShieldCheck, XCircle } from 'lucide-react';
+import { AnimatePresence, motion } from 'motion/react';
+import {
+  AlertCircle,
+  ArrowRight,
+  CheckCircle2,
+  LoaderCircle,
+  Mail,
+  Search,
+  ShieldCheck,
+  Sparkles,
+  X,
+} from 'lucide-react';
 import { GlassCard } from '../components/GlassCard';
-import { APIError, checkPublicEmailRouteAvailability, listMyEmailRoutes, listMyPermissions, submitPermissionApplication, upsertCatchAllEmailRoute, upsertDefaultEmailRoute } from '../lib/api';
-import type { EmailRouteAvailabilityResult, User, UserEmailRoute, UserPermission } from '../types/api';
+import {
+  APIError,
+  checkPublicEmailRouteAvailability,
+  listMyEmailRoutes,
+  listMyPermissions,
+  submitPermissionApplication,
+  upsertCatchAllEmailRoute,
+  upsertDefaultEmailRoute,
+} from '../lib/api';
+import type { EmailRouteAvailabilityResult, PermissionStatus, User, UserEmailRoute, UserPermission } from '../types/api';
 
 interface EmailsProps {
   authenticated: boolean;
@@ -14,134 +32,241 @@ interface EmailsProps {
 }
 
 type SearchStatus = 'idle' | 'checking' | 'available' | 'taken' | 'error';
+type NoticeTone = 'error' | 'success' | 'info';
+
+interface SectionNotice {
+  tone: NoticeTone;
+  message: string;
+}
+
+interface ChipDescriptor {
+  label: string;
+  className: string;
+}
 
 const catchAllPermissionKey = 'email_catch_all';
 const fallbackRootDomain = 'linuxdo.space';
 
+// Emails keeps public search open while separating authenticated mailbox
+// management into independent sections with their own loading and error states.
 export function Emails({ authenticated, sessionLoading, user, csrfToken, onLogin }: EmailsProps) {
   const [permission, setPermission] = useState<UserPermission | null>(null);
   const [routes, setRoutes] = useState<UserEmailRoute[]>([]);
   const [loading, setLoading] = useState(false);
-  const [savingDefault, setSavingDefault] = useState(false);
-  const [savingCatchAll, setSavingCatchAll] = useState(false);
-  const [applying, setApplying] = useState(false);
-  const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
+  const [permissionError, setPermissionError] = useState('');
+  const [routeError, setRouteError] = useState('');
+
   const [searchPrefix, setSearchPrefix] = useState('');
   const [searchStatus, setSearchStatus] = useState<SearchStatus>('idle');
   const [searchResult, setSearchResult] = useState<EmailRouteAvailabilityResult | null>(null);
   const [searchMessage, setSearchMessage] = useState('');
+
   const [defaultTarget, setDefaultTarget] = useState('');
   const [defaultEnabled, setDefaultEnabled] = useState(false);
+  const [savingDefault, setSavingDefault] = useState(false);
+  const [defaultNotice, setDefaultNotice] = useState<SectionNotice | null>(null);
+
   const [catchAllTarget, setCatchAllTarget] = useState('');
   const [catchAllEnabled, setCatchAllEnabled] = useState(false);
+  const [savingCatchAll, setSavingCatchAll] = useState(false);
+  const [catchAllNotice, setCatchAllNotice] = useState<SectionNotice | null>(null);
+  const [applyingPermission, setApplyingPermission] = useState(false);
+  const [pledgeModalOpen, setPledgeModalOpen] = useState(false);
 
-  const defaultRoute = useMemo(() => routes.find((item) => item.kind === 'default') ?? null, [routes]);
+  const normalizedUsername = useMemo(() => normalizePrefix(user?.username ?? ''), [user?.username]);
+  const defaultRoute = useMemo(() => {
+    const existingRoute = routes.find((item) => item.kind === 'default');
+    return existingRoute ?? (user ? buildImplicitDefaultRoute(user) : null);
+  }, [routes, user]);
   const catchAllRoute = useMemo(() => routes.find((item) => item.kind === 'catch_all') ?? null, [routes]);
-  const searchRootDomain = defaultRoute?.root_domain ?? searchResult?.root_domain ?? fallbackRootDomain;
-  const normalizedUsername = normalizePrefix(user?.username ?? '');
+  const customRoutes = useMemo(() => routes.filter((item) => item.kind === 'custom'), [routes]);
   const tableRows = useMemo(() => {
-    const items: UserEmailRoute[] = [];
-    if (defaultRoute) items.push(defaultRoute);
-    items.push(...routes.filter((item) => item.kind === 'custom'));
-    if (catchAllRoute) items.push(catchAllRoute);
-    return items;
-  }, [catchAllRoute, defaultRoute, routes]);
+    const nextRows: UserEmailRoute[] = [];
+    if (defaultRoute) nextRows.push(defaultRoute);
+    nextRows.push(...customRoutes);
+    if (catchAllRoute) nextRows.push(catchAllRoute);
+    return nextRows;
+  }, [catchAllRoute, customRoutes, defaultRoute]);
+
+  const defaultAddress = defaultRoute?.address ?? (normalizedUsername ? `${normalizedUsername}@${fallbackRootDomain}` : '');
+  const catchAllAddress = useMemo(() => {
+    if (catchAllRoute?.address) return catchAllRoute.address;
+    if (permission?.target?.trim()) return permission.target.trim();
+    return normalizedUsername ? `catch-all@${normalizedUsername}.${fallbackRootDomain}` : `catch-all@<用户名>.${fallbackRootDomain}`;
+  }, [catchAllRoute?.address, normalizedUsername, permission?.target]);
+  const searchRootDomain = defaultRoute?.root_domain ?? searchResult?.root_domain ?? fallbackRootDomain;
+  const pledgeText = permission?.pledge_text?.trim() ?? '';
 
   useEffect(() => {
     if (!authenticated) {
       setPermission(null);
       setRoutes([]);
+      setLoading(false);
+      setPermissionError('');
+      setRouteError('');
       setDefaultTarget('');
       setDefaultEnabled(false);
       setCatchAllTarget('');
       setCatchAllEnabled(false);
+      setDefaultNotice(null);
+      setCatchAllNotice(null);
+      setPledgeModalOpen(false);
       return;
     }
-    void loadData();
-  }, [authenticated]);
+
+    void loadAuthenticatedData();
+  }, [authenticated, user?.id]);
 
   useEffect(() => {
     setDefaultTarget(defaultRoute?.target_email ?? '');
     setDefaultEnabled(defaultRoute?.enabled ?? false);
-  }, [defaultRoute?.id, defaultRoute?.target_email, defaultRoute?.enabled]);
+  }, [defaultRoute?.address, defaultRoute?.target_email, defaultRoute?.enabled]);
 
   useEffect(() => {
     setCatchAllTarget(catchAllRoute?.target_email ?? '');
     setCatchAllEnabled(catchAllRoute?.enabled ?? false);
-  }, [catchAllRoute?.id, catchAllRoute?.target_email, catchAllRoute?.enabled]);
+  }, [catchAllRoute?.address, catchAllRoute?.target_email, catchAllRoute?.enabled]);
 
-  async function loadData(): Promise<void> {
-    try {
-      setLoading(true);
-      const [permissions, nextRoutes] = await Promise.all([listMyPermissions(), listMyEmailRoutes()]);
-      setPermission(permissions.find((item) => item.key === catchAllPermissionKey) ?? null);
-      setRoutes(nextRoutes);
-      setError('');
-    } catch (loadError) {
-      setError(readableErrorMessage(loadError, '无法加载邮箱分发数据。'));
-    } finally {
-      setLoading(false);
+  async function loadAuthenticatedData(): Promise<void> {
+    setLoading(true);
+    setPermissionError('');
+    setRouteError('');
+
+    const [permissionResult, routeResult] = await Promise.allSettled([listMyPermissions(), listMyEmailRoutes()]);
+
+    if (permissionResult.status === 'fulfilled') {
+      setPermission(permissionResult.value.find((item) => item.key === catchAllPermissionKey) ?? null);
+      setPermissionError('');
+    } else {
+      setPermission(null);
+      setPermissionError(readableErrorMessage(permissionResult.reason, '无法加载 catch-all 权限数据。'));
     }
+
+    if (routeResult.status === 'fulfilled') {
+      setRoutes(routeResult.value);
+      setRouteError('');
+    } else {
+      setRoutes([]);
+      setRouteError(readableErrorMessage(routeResult.reason, '无法加载我的邮箱列表。'));
+    }
+
+    setLoading(false);
   }
 
-  async function handleSearch(event: FormEvent): Promise<void> {
+  async function handleSearch(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    if (!searchPrefix.trim()) return;
+    const normalizedPrefix = normalizePrefix(searchPrefix);
+    if (!normalizedPrefix) {
+      setSearchResult(null);
+      setSearchStatus('error');
+      setSearchMessage('请输入合法的邮箱前缀，只支持字母、数字和连字符。');
+      return;
+    }
+
     try {
       setSearchStatus('checking');
-      const result = await checkPublicEmailRouteAvailability(searchRootDomain, searchPrefix);
+      setSearchResult(null);
+      setSearchMessage('');
+      setSearchPrefix(normalizedPrefix);
+      const result = await checkPublicEmailRouteAvailability(fallbackRootDomain, normalizedPrefix);
       setSearchResult(result);
       setSearchStatus(result.available ? 'available' : 'taken');
       setSearchMessage(buildSearchMessage(result, normalizedUsername, authenticated));
-    } catch (searchError) {
+    } catch (error) {
       setSearchResult(null);
       setSearchStatus('error');
-      setSearchMessage(readableErrorMessage(searchError, '邮箱前缀可用性检查失败。'));
+      setSearchMessage(readableErrorMessage(error, '邮箱查询失败，请稍后重试。'));
     }
   }
+  async function handleSaveDefault(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (!csrfToken) {
+      setDefaultNotice({ tone: 'error', message: '当前会话缺少 CSRF Token，请重新登录后再试。' });
+      return;
+    }
 
-  async function saveDefault(targetEmail: string, enabled: boolean): Promise<void> {
-    if (!csrfToken) return setError('当前会话缺少 CSRF Token，请刷新后重试。');
+    const nextTarget = defaultTarget.trim();
+    if (defaultEnabled && !nextTarget) {
+      setDefaultNotice({ tone: 'error', message: '开启默认邮箱转发前，请先填写目标邮箱。' });
+      return;
+    }
+
     try {
       setSavingDefault(true);
-      const nextRoute = await upsertDefaultEmailRoute({ target_email: targetEmail, enabled }, csrfToken);
-      setRoutes((current) => upsertRoute(current, nextRoute));
-      setNotice(nextRoute.configured ? '默认邮箱转发设置已保存。' : '默认邮箱转发已清空。');
-      setError('');
-    } catch (saveError) {
-      setError(readableErrorMessage(saveError, '保存默认邮箱转发失败。'));
+      setDefaultNotice(null);
+      const savedRoute = await upsertDefaultEmailRoute(
+        { target_email: nextTarget, enabled: nextTarget !== '' ? defaultEnabled : false },
+        csrfToken,
+      );
+      setRoutes((currentRoutes) => upsertRoute(currentRoutes, savedRoute));
+      setDefaultNotice({
+        tone: 'success',
+        message: savedRoute.configured
+          ? '默认邮箱已更新。若你刚绑定新的收件邮箱，请注意查收 Cloudflare 的验证邮件。'
+          : '默认邮箱已清空，当前不会继续转发邮件。',
+      });
+    } catch (error) {
+      setDefaultNotice({ tone: 'error', message: readableErrorMessage(error, '保存默认邮箱失败。') });
     } finally {
       setSavingDefault(false);
     }
   }
 
-  async function handleApplyCatchAll(): Promise<void> {
-    if (!csrfToken) return setError('当前会话缺少 CSRF Token，请刷新后重试。');
+  async function handleApplyCatchAllPermission(): Promise<void> {
+    if (!csrfToken || !permission?.can_apply) return;
+
     try {
-      setApplying(true);
+      setApplyingPermission(true);
+      setCatchAllNotice(null);
       const nextPermission = await submitPermissionApplication({ key: catchAllPermissionKey }, csrfToken);
       setPermission(nextPermission);
-      await loadData();
-      setNotice(nextPermission.status === 'approved' ? '邮箱泛解析权限已自动通过。' : '邮箱泛解析权限申请已提交。');
-      setError('');
-    } catch (applyError) {
-      setError(readableErrorMessage(applyError, '提交邮箱泛解析申请失败。'));
+      setPledgeModalOpen(false);
+      setCatchAllNotice({
+        tone: 'success',
+        message: nextPermission.status === 'approved'
+          ? 'catch-all 权限申请已记录并自动通过，现在可以继续配置邮箱转发。'
+          : 'catch-all 权限申请已提交，等待管理员处理。',
+      });
+    } catch (error) {
+      setCatchAllNotice({ tone: 'error', message: readableErrorMessage(error, '提交 catch-all 权限申请失败。') });
     } finally {
-      setApplying(false);
+      setApplyingPermission(false);
     }
   }
 
-  async function handleSaveCatchAll(): Promise<void> {
-    if (!csrfToken) return setError('当前会话缺少 CSRF Token，请刷新后重试。');
+  async function handleSaveCatchAll(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (!csrfToken) {
+      setCatchAllNotice({ tone: 'error', message: '当前会话缺少 CSRF Token，请重新登录后再试。' });
+      return;
+    }
+    if (!permission?.can_manage_route) {
+      setCatchAllNotice({ tone: 'error', message: '当前尚未获得 catch-all 配置权限。' });
+      return;
+    }
+
+    const nextTarget = catchAllTarget.trim();
+    if (catchAllEnabled && !nextTarget) {
+      setCatchAllNotice({ tone: 'error', message: '开启 catch-all 转发前，请先填写目标邮箱。' });
+      return;
+    }
+
     try {
       setSavingCatchAll(true);
-      const nextRoute = await upsertCatchAllEmailRoute({ target_email: catchAllTarget, enabled: catchAllEnabled }, csrfToken);
-      setRoutes((current) => upsertRoute(current, nextRoute));
-      setNotice('邮箱泛解析转发设置已保存。');
-      setError('');
-    } catch (saveError) {
-      setError(readableErrorMessage(saveError, '保存邮箱泛解析转发失败。'));
+      setCatchAllNotice(null);
+      const savedRoute = await upsertCatchAllEmailRoute(
+        { target_email: nextTarget, enabled: nextTarget !== '' ? catchAllEnabled : false },
+        csrfToken,
+      );
+      setRoutes((currentRoutes) => upsertRoute(currentRoutes, savedRoute));
+      setCatchAllNotice({
+        tone: 'success',
+        message: savedRoute.configured
+          ? 'catch-all 邮箱已更新。若使用新的收件邮箱，请先完成 Cloudflare 的目标邮箱验证。'
+          : 'catch-all 邮箱已清空，当前不会继续转发邮件。',
+      });
+    } catch (error) {
+      setCatchAllNotice({ tone: 'error', message: readableErrorMessage(error, '保存 catch-all 邮箱失败。') });
     } finally {
       setSavingCatchAll(false);
     }
@@ -149,44 +274,472 @@ export function Emails({ authenticated, sessionLoading, user, csrfToken, onLogin
 
   return (
     <div className="mx-auto max-w-6xl px-6 pb-24 pt-32">
-      <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className="mb-12 text-center">
-        <div className="mb-4 inline-flex rounded-full bg-teal-100 p-3 text-teal-600 dark:bg-teal-900/30 dark:text-teal-300"><Mail size={32} /></div>
-        <h1 className="mb-4 text-4xl font-extrabold text-gray-900 dark:text-white md:text-5xl">邮箱分发</h1>
-        <p className="mx-auto max-w-3xl text-lg text-gray-700 dark:text-gray-300">默认邮箱是主功能，每位用户自动拥有一个与用户名同名的邮箱；邮箱泛解析只是附加权限。</p>
+      <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className="mb-8 flex flex-col gap-6">
+        <div className="text-center">
+          <div className="inline-flex items-center gap-2 rounded-full border border-white/30 bg-white/35 px-4 py-2 text-sm font-semibold text-teal-700 backdrop-blur-md dark:border-white/10 dark:bg-black/30 dark:text-teal-300">
+            <Mail size={16} />
+            邮箱分发
+          </div>
+          <h1 className="mt-5 text-4xl font-extrabold text-gray-900 dark:text-white md:text-5xl">搜索、保留并管理你的 LinuxDoSpace 邮箱</h1>
+          <p className="mx-auto mt-4 max-w-4xl text-lg leading-relaxed text-gray-700 dark:text-gray-200">
+            搜索功能对所有访客开放。登录后，你可以管理默认邮箱
+            <span className="font-semibold text-gray-900 dark:text-white"> {defaultAddress || '<用户名>@linuxdo.space'}</span>
+            ，并在获得权限后配置
+            <span className="font-semibold text-gray-900 dark:text-white"> {catchAllAddress}</span>。
+          </p>
+        </div>
+
+        <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+          <GlassCard className="overflow-hidden p-0">
+            <div className="border-b border-white/15 bg-white/15 px-6 py-5 dark:border-white/10 dark:bg-black/10">
+              <div className="flex items-center gap-3">
+                <div className="rounded-2xl bg-sky-500/15 p-3 text-sky-700 dark:text-sky-300"><Search size={20} /></div>
+                <div>
+                  <h2 className="text-xl font-bold text-gray-900 dark:text-white">邮箱搜索</h2>
+                  <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">查询某个邮箱前缀是否已被占用。搜索始终开放，但普通自定义邮箱注册入口暂未开放。</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-5 p-6">
+              <form className="space-y-4" onSubmit={(event) => void handleSearch(event)}>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300" htmlFor="email-prefix-search">邮箱前缀</label>
+                <div className="flex flex-col gap-3 md:flex-row">
+                  <div className="flex min-w-0 flex-1 items-center rounded-2xl border border-white/20 bg-white/55 px-4 py-3 shadow-inner dark:border-white/10 dark:bg-black/35">
+                    <input
+                      id="email-prefix-search"
+                      type="text"
+                      value={searchPrefix}
+                      onChange={(event) => setSearchPrefix(event.target.value)}
+                      placeholder="例如 alice"
+                      className="min-w-0 flex-1 bg-transparent text-base text-gray-900 outline-none placeholder:text-gray-400 dark:text-white dark:placeholder:text-gray-500"
+                    />
+                    <span className="ml-3 shrink-0 text-sm font-medium text-gray-500 dark:text-gray-400">@{searchRootDomain}</span>
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={searchStatus === 'checking'}
+                    className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-sky-500 to-cyan-500 px-5 py-3 font-semibold text-white shadow-lg transition hover:from-sky-600 hover:to-cyan-600 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {searchStatus === 'checking' ? <LoaderCircle className="animate-spin" size={18} /> : <Search size={18} />}
+                    立即搜索
+                  </button>
+                </div>
+              </form>
+
+              <div className="rounded-3xl border border-white/20 bg-white/45 p-5 dark:border-white/10 dark:bg-black/30">
+                <div className="flex flex-wrap items-center gap-3">
+                  <StatusChip {...describeSearchStatus(searchStatus)} />
+                  {searchResult?.address ? <span className="rounded-full bg-white/70 px-3 py-1 text-sm font-medium text-gray-700 dark:bg-black/35 dark:text-gray-200">{searchResult.address}</span> : null}
+                </div>
+                <p className="mt-4 text-sm leading-7 text-gray-700 dark:text-gray-200">{searchMessage || '输入邮箱前缀后即可查询。若前缀与你的用户名一致，登录后可直接在下方管理默认邮箱。'}</p>
+              </div>
+            </div>
+          </GlassCard>
+
+          <GlassCard className="space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="rounded-2xl bg-emerald-500/15 p-3 text-emerald-700 dark:text-emerald-300"><ShieldCheck size={20} /></div>
+              <div>
+                <h2 className="text-xl font-bold text-gray-900 dark:text-white">使用说明</h2>
+                <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">邮箱能力分成公开搜索、默认邮箱和权限邮箱三部分。</p>
+              </div>
+            </div>
+
+            <InfoBlock title="默认邮箱" description={normalizedUsername ? `每位用户默认保留 ${normalizedUsername}@${fallbackRootDomain}，你只需要填写转发目标邮箱。` : '每位用户都会默认保留一个与用户名同名的邮箱地址。'} />
+            <InfoBlock title="我的邮箱列表" description="这里会展示当前账号已经存在或默认保留的邮箱行，包括默认邮箱、已存在的自定义邮箱以及已配置的 catch-all。" />
+            <InfoBlock title="catch-all 权限" description="catch-all 不是默认开放功能。只有满足权限条件的用户才可以申请，并在通过后配置转发目标。" />
+            <InfoBlock title="Cloudflare 目标邮箱验证" description="首次把某个新邮箱设置为转发目标时，Cloudflare 可能会发验证邮件到该目标邮箱。完成验证后，再回到这里保存即可。" />
+          </GlassCard>
+        </div>
       </motion.div>
-      {error ? <NoticeCard tone="error" message={error} /> : null}
-      {notice ? <NoticeCard tone="success" message={notice} /> : null}
-      <GlassCard className="mb-8">
-        <div className="mb-5 flex items-center gap-3"><Search className="text-teal-500" size={22} /><div><h2 className="text-2xl font-bold text-gray-900 dark:text-white">邮箱搜索</h2><p className="text-sm text-gray-600 dark:text-gray-300">搜索功能持续开放，可直接检查邮箱前缀是否已被占用。</p></div></div>
-        <form onSubmit={handleSearch} className="flex flex-col gap-4 sm:flex-row"><div className="relative flex-1"><input value={searchPrefix} onChange={(event) => { setSearchPrefix(event.target.value); setSearchStatus('idle'); setSearchResult(null); setSearchMessage(''); }} placeholder="输入你想查询的邮箱前缀" className="w-full rounded-2xl border border-white/40 bg-white/50 px-4 py-4 pr-40 text-gray-900 outline-none focus:ring-2 focus:ring-teal-500 dark:border-white/20 dark:bg-black/50 dark:text-white" /><div className="absolute right-4 top-1/2 -translate-y-1/2 text-sm text-gray-500">@{searchRootDomain}</div></div><button type="submit" disabled={searchStatus === 'checking' || searchPrefix.trim() === ''} className="rounded-2xl bg-gradient-to-r from-teal-500 to-emerald-500 px-8 py-4 font-bold text-white shadow-lg disabled:cursor-not-allowed disabled:opacity-60">{searchStatus === 'checking' ? '查询中...' : '查询'}</button></form>
-        {searchStatus !== 'idle' ? <div className="mt-6 rounded-3xl border border-white/20 bg-white/35 p-5 dark:bg-black/25"><div className="flex items-start gap-3">{searchStatus === 'available' ? <CheckCircle2 className="mt-0.5 text-emerald-500" size={20} /> : searchStatus === 'taken' ? <XCircle className="mt-0.5 text-red-500" size={20} /> : searchStatus === 'error' ? <AlertCircle className="mt-0.5 text-amber-500" size={20} /> : <LoaderCircle className="mt-0.5 animate-spin text-teal-500" size={20} />}<div><div className="font-mono text-teal-700 dark:text-teal-300">{searchResult?.address ?? `${searchPrefix.trim()}@${searchRootDomain}`}</div><div className="mt-1 text-sm text-gray-600 dark:text-gray-300">{searchMessage}</div></div></div></div> : null}
-      </GlassCard>
-      {!authenticated && !sessionLoading ? <GlassCard className="mb-8 border-amber-300/35 bg-amber-100/70 dark:border-amber-500/20 dark:bg-amber-950/30"><div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between"><div><h2 className="text-2xl font-bold text-amber-950 dark:text-amber-100">登录后管理你的邮箱分发</h2><p className="mt-2 text-sm leading-7 text-amber-900 dark:text-amber-200">登录后可直接配置默认邮箱 <span className="font-semibold">{user?.username ?? '<你的用户名>'}@{searchRootDomain}</span> 的转发目标，并申请邮箱泛解析权限。</p></div><button type="button" onClick={onLogin} className="rounded-2xl bg-gradient-to-r from-amber-500 to-orange-500 px-6 py-3 font-semibold text-white shadow-lg">使用 Linux Do 登录</button></div></GlassCard> : null}
-      {sessionLoading ? <GlassCard><div className="flex items-center gap-3 text-gray-600 dark:text-gray-300"><LoaderCircle size={20} className="animate-spin" />正在确认你的登录状态与邮箱数据...</div></GlassCard> : null}
-      {authenticated ? <div className="grid gap-6 xl:grid-cols-[1.8fr_1fr]"><div className="space-y-6"><GlassCard><div className="mb-5 flex items-center justify-between gap-4"><div><h2 className="text-2xl font-bold text-gray-900 dark:text-white">我的邮箱</h2><p className="mt-1 text-sm text-gray-600 dark:text-gray-300">默认邮箱会自动保留；数据库里已有的附加邮箱也会一并展示。</p></div>{loading ? <LoaderCircle size={20} className="animate-spin text-teal-500" /> : null}</div><div className="overflow-hidden rounded-3xl border border-white/20"><div className="overflow-x-auto"><table className="min-w-full text-sm"><thead className="bg-white/45 text-left text-gray-600 dark:bg-white/5 dark:text-gray-300"><tr><th className="px-5 py-4 font-semibold">邮箱地址</th><th className="px-5 py-4 font-semibold">类型</th><th className="px-5 py-4 font-semibold">转发到</th><th className="px-5 py-4 font-semibold">状态</th><th className="px-5 py-4 font-semibold">说明</th></tr></thead><tbody>{tableRows.map((route) => { const state = routeBadge(route); return <tr key={`${route.kind}-${route.address}`} className="border-t border-white/10 text-gray-700 dark:text-gray-200"><td className="px-5 py-4 font-mono text-teal-700 dark:text-teal-300">{route.address}</td><td className="px-5 py-4">{route.display_name}</td><td className="px-5 py-4">{route.target_email ? <span className="inline-flex items-center gap-2 break-all"><ArrowRight size={15} /> {route.target_email}</span> : <span className="text-gray-500 dark:text-gray-400">尚未设置</span>}</td><td className="px-5 py-4"><span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${state.className}`}>{state.label}</span></td><td className="px-5 py-4 text-gray-600 dark:text-gray-300"><div>{route.description}</div>{route.updated_at ? <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">最近更新：{formatDate(route.updated_at)}</div> : null}</td></tr>; })}</tbody></table></div></div></GlassCard><GlassCard><div className="mb-5 flex items-center gap-3"><Mail className="text-teal-500" size={22} /><div><h2 className="text-2xl font-bold text-gray-900 dark:text-white">默认邮箱设置</h2><p className="text-sm text-gray-600 dark:text-gray-300">你的默认邮箱始终保留为 <span className="font-mono">{defaultRoute?.address ?? `${user?.username ?? 'username'}@${searchRootDomain}`}</span>。</p></div></div><div className="space-y-4"><input type="email" value={defaultTarget} onChange={(event) => setDefaultTarget(event.target.value)} placeholder="例如：yourname@gmail.com" className="w-full rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 outline-none focus:border-teal-400 focus:ring-2 focus:ring-teal-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white" /><label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 text-sm text-slate-700 dark:border-slate-700 dark:bg-black/35 dark:text-slate-200"><input type="checkbox" checked={defaultEnabled} onChange={(event) => setDefaultEnabled(event.target.checked)} disabled={defaultTarget.trim() === ''} />启用默认邮箱转发</label><div className="flex flex-wrap gap-3"><button type="button" onClick={() => void saveDefault(defaultTarget, defaultTarget.trim() !== '' ? defaultEnabled : false)} disabled={savingDefault} className="rounded-2xl bg-gradient-to-r from-teal-500 to-emerald-500 px-5 py-3 font-semibold text-white shadow-lg disabled:cursor-not-allowed disabled:opacity-60">{savingDefault ? '保存中...' : '保存默认邮箱'}</button><button type="button" onClick={() => void saveDefault('', false)} disabled={savingDefault || (!defaultRoute?.configured && defaultTarget.trim() === '')} className="rounded-2xl bg-slate-100 px-5 py-3 font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-slate-800 dark:text-slate-100">清空转发</button></div></div></GlassCard></div><GlassCard><div className="mb-5 flex items-center gap-3"><ShieldCheck className="text-amber-500" size={22} /><div><h2 className="text-2xl font-bold text-gray-900 dark:text-white">邮箱泛解析</h2><p className="text-sm text-gray-600 dark:text-gray-300">附加权限功能，不影响默认邮箱分发。</p></div></div><div className="mb-4 flex items-center justify-between gap-3"><span className={`inline-flex rounded-full px-3 py-1 text-sm font-semibold ${permissionBadge(permission?.status ?? 'not_requested').className}`}>{permissionBadge(permission?.status ?? 'not_requested').label}</span><span className="font-mono text-sm text-teal-700 dark:text-teal-300">{catchAllRoute?.address ?? permission?.target ?? 'catch-all@<username>.linuxdo.space'}</span></div>{permission?.eligibility_reasons?.length ? <div className="mb-4 rounded-2xl border border-amber-300/40 bg-amber-100/70 p-4 text-sm text-amber-900 dark:border-amber-500/20 dark:bg-amber-950/30 dark:text-amber-100">{permission.eligibility_reasons.map((item) => <div key={item} className="mb-2 last:mb-0">{item}</div>)}</div> : null}{!permission?.can_manage_route ? <div className="space-y-4"><div className="rounded-2xl border border-white/20 bg-white/35 p-4 text-sm leading-7 text-gray-600 dark:bg-black/25 dark:text-gray-300">提交申请前请阅读承诺书。系统会记录你的申请痕迹，权限通过后才可配置 catch-all 转发。</div><div className="rounded-2xl border border-amber-300/40 bg-amber-50/80 p-4 text-sm leading-7 text-amber-900 dark:border-amber-500/20 dark:bg-amber-950/25 dark:text-amber-100">{permission?.pledge_text ?? '当前暂无法加载承诺书。'}</div><button type="button" onClick={() => void handleApplyCatchAll()} disabled={!permission?.can_apply || applying} className="w-full rounded-2xl bg-gradient-to-r from-amber-500 to-orange-500 px-4 py-3 font-semibold text-white shadow-lg disabled:cursor-not-allowed disabled:opacity-60">{applying ? '提交中...' : permission?.status === 'pending' ? '申请审核中' : '申请邮箱泛解析权限'}</button></div> : <div className="space-y-4"><input type="email" value={catchAllTarget} onChange={(event) => setCatchAllTarget(event.target.value)} placeholder="例如：yourname@gmail.com" className="w-full rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white" /><label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 text-sm text-slate-700 dark:border-slate-700 dark:bg-black/35 dark:text-slate-200"><input type="checkbox" checked={catchAllEnabled} onChange={(event) => setCatchAllEnabled(event.target.checked)} />启用邮箱泛解析转发</label><button type="button" onClick={() => void handleSaveCatchAll()} disabled={savingCatchAll} className="w-full rounded-2xl bg-gradient-to-r from-amber-500 to-orange-500 px-4 py-3 font-semibold text-white shadow-lg disabled:cursor-not-allowed disabled:opacity-60">{savingCatchAll ? '保存中...' : '保存邮箱泛解析'}</button></div>}</GlassCard></div> : null}
+      {!authenticated ? (
+        <GlassCard className="space-y-4">
+          <div className="flex items-start gap-3">
+            <div className="rounded-2xl bg-amber-500/15 p-3 text-amber-700 dark:text-amber-300">
+              {sessionLoading ? <LoaderCircle className="animate-spin" size={20} /> : <Mail size={20} />}
+            </div>
+            <div>
+              <h2 className="text-xl font-bold text-gray-900 dark:text-white">{sessionLoading ? '正在检查登录状态' : '登录后管理我的邮箱'}</h2>
+              <p className="mt-2 text-sm leading-7 text-gray-700 dark:text-gray-200">
+                {sessionLoading
+                  ? '你现在仍可使用上方搜索功能。待登录状态加载完成后，再进入默认邮箱和 catch-all 配置。'
+                  : '搜索功能无需登录，但默认邮箱配置、我的邮箱列表和 catch-all 权限申请都需要使用 Linux Do 账号登录。'}
+              </p>
+            </div>
+          </div>
+
+          {!sessionLoading ? (
+            <button
+              type="button"
+              onClick={onLogin}
+              className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-teal-500 to-emerald-600 px-5 py-3 font-semibold text-white shadow-lg transition hover:from-teal-600 hover:to-emerald-700"
+            >
+              使用 Linux Do 登录
+              <ArrowRight size={18} />
+            </button>
+          ) : null}
+        </GlassCard>
+      ) : (
+        <div className="space-y-6">
+          <GlassCard className="overflow-hidden p-0">
+            <div className="flex flex-col gap-4 border-b border-white/15 bg-white/15 px-6 py-5 dark:border-white/10 dark:bg-black/10 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h2 className="text-xl font-bold text-gray-900 dark:text-white">我的邮箱列表</h2>
+                <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">展示当前账号已保留或已配置的邮箱。默认邮箱始终展示，便于你直接开始配置。</p>
+              </div>
+              <div className="inline-flex items-center gap-2 rounded-full bg-white/60 px-4 py-2 text-sm font-medium text-gray-700 dark:bg-black/30 dark:text-gray-200">
+                {loading ? <LoaderCircle className="animate-spin" size={16} /> : <Mail size={16} />}
+                共 {tableRows.length} 项
+              </div>
+            </div>
+
+            <div className="space-y-4 p-6">
+              {routeError ? <InlineNotice tone="error" message={`邮箱列表加载失败：${routeError}`} /> : null}
+
+              <div className="overflow-x-auto rounded-3xl border border-white/15 bg-white/35 dark:border-white/10 dark:bg-black/20">
+                <table className="w-full min-w-[720px] border-collapse text-left">
+                  <thead>
+                    <tr className="border-b border-white/15 text-sm text-gray-600 dark:border-white/10 dark:text-gray-300">
+                      <th className="px-5 py-4 font-semibold">邮箱地址</th>
+                      <th className="px-5 py-4 font-semibold">类型</th>
+                      <th className="px-5 py-4 font-semibold">转发目标</th>
+                      <th className="px-5 py-4 font-semibold">状态</th>
+                      <th className="px-5 py-4 font-semibold">更新时间</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tableRows.map((route) => {
+                      const status = describeRouteStatus(route);
+                      return (
+                        <tr key={`${route.kind}:${route.address}:${route.id ?? 'implicit'}`} className="border-b border-white/10 last:border-b-0 hover:bg-white/30 dark:border-white/5 dark:hover:bg-white/5">
+                          <td className="px-5 py-4 align-top">
+                            <div className="font-semibold text-gray-900 dark:text-white">{route.address}</div>
+                            <div className="mt-1 text-sm text-gray-500 dark:text-gray-400">{route.description}</div>
+                          </td>
+                          <td className="px-5 py-4 align-top text-sm text-gray-700 dark:text-gray-200">{describeRouteKind(route.kind)}</td>
+                          <td className="px-5 py-4 align-top text-sm text-gray-700 dark:text-gray-200">{route.target_email || '尚未设置转发目标'}</td>
+                          <td className="px-5 py-4 align-top"><StatusChip {...status} /></td>
+                          <td className="px-5 py-4 align-top text-sm text-gray-600 dark:text-gray-300">{formatDate(route.updated_at)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </GlassCard>
+
+          <div className="grid gap-6 xl:grid-cols-2">
+            <GlassCard className="space-y-5">
+              <div className="flex items-center gap-3">
+                <div className="rounded-2xl bg-teal-500/15 p-3 text-teal-700 dark:text-teal-300"><Mail size={20} /></div>
+                <div>
+                  <h2 className="text-xl font-bold text-gray-900 dark:text-white">默认邮箱设置</h2>
+                  <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">默认邮箱始终为 <span className="font-semibold">{defaultAddress || '<用户名>@linuxdo.space'}</span>。</p>
+                </div>
+              </div>
+
+              {defaultNotice ? <InlineNotice tone={defaultNotice.tone} message={defaultNotice.message} /> : null}
+
+              <form className="space-y-4" onSubmit={(event) => void handleSaveDefault(event)}>
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300" htmlFor="default-target-email">转发到的邮箱</label>
+                  <input
+                    id="default-target-email"
+                    type="email"
+                    value={defaultTarget}
+                    onChange={(event) => setDefaultTarget(event.target.value)}
+                    placeholder="例如 you@example.com"
+                    className="w-full rounded-2xl border border-white/20 bg-white/55 px-4 py-3 text-gray-900 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-400/40 dark:border-white/10 dark:bg-black/35 dark:text-white"
+                  />
+                </div>
+
+                <ToggleRow title="启用默认邮箱转发" description="关闭后会保留邮箱地址，但暂时不再转发邮件。" enabled={defaultEnabled} onToggle={() => setDefaultEnabled((currentValue) => !currentValue)} />
+                <div className="rounded-2xl border border-white/15 bg-white/35 p-4 text-sm leading-7 text-gray-700 dark:border-white/10 dark:bg-black/20 dark:text-gray-200">每个用户都会自动保留一个与用户名同名的邮箱地址。填写目标邮箱并保存后，邮件会按你的配置进行转发。</div>
+
+                <button
+                  type="submit"
+                  disabled={savingDefault}
+                  className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-teal-500 to-emerald-600 px-5 py-3 font-semibold text-white shadow-lg transition hover:from-teal-600 hover:to-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {savingDefault ? <LoaderCircle className="animate-spin" size={18} /> : <Sparkles size={18} />}
+                  保存默认邮箱
+                </button>
+              </form>
+            </GlassCard>
+            <GlassCard className="space-y-5">
+              <div className="flex items-center gap-3">
+                <div className="rounded-2xl bg-violet-500/15 p-3 text-violet-700 dark:text-violet-300"><ShieldCheck size={20} /></div>
+                <div>
+                  <h2 className="text-xl font-bold text-gray-900 dark:text-white">catch-all 权限与配置</h2>
+                  <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">当前目标地址：<span className="font-semibold">{catchAllAddress}</span></p>
+                </div>
+              </div>
+
+              {permissionError ? <InlineNotice tone="error" message={`权限数据加载失败：${permissionError}`} /> : null}
+              {catchAllNotice ? <InlineNotice tone={catchAllNotice.tone} message={catchAllNotice.message} /> : null}
+              {!permission && !permissionError ? <InlineNotice tone="info" message="当前后端没有返回 catch-all 权限配置，因此暂时无法申请或管理此功能。" /> : null}
+
+              {permission ? (
+                <>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <InfoStat title="权限状态" value={describePermissionStatus(permission.status).label} />
+                    <InfoStat title="自动审批" value={permission.auto_approve ? '是' : '否'} />
+                    <InfoStat title="最低等级要求" value={`TL ${permission.min_trust_level}`} />
+                    <InfoStat title="当前等级" value={user ? `TL ${user.trust_level}` : '未登录'} />
+                  </div>
+
+                  <div className="rounded-2xl border border-white/15 bg-white/35 p-4 dark:border-white/10 dark:bg-black/20">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <StatusChip {...describePermissionStatus(permission.status)} />
+                      <StatusChip
+                        label={permission.eligible ? '当前满足申请条件' : '当前不满足申请条件'}
+                        className={permission.eligible ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-900/25 dark:text-amber-300'}
+                      />
+                    </div>
+                    <p className="mt-4 text-sm leading-7 text-gray-700 dark:text-gray-200">{permission.description}</p>
+                    {permission.eligibility_reasons.length > 0 ? <div className="mt-4 rounded-2xl border border-amber-300/35 bg-amber-100/60 p-4 text-sm leading-7 text-amber-900 dark:border-amber-700/35 dark:bg-amber-950/25 dark:text-amber-100">{permission.eligibility_reasons.map((reason) => formatEligibilityReason(reason, permission)).join('；')}</div> : null}
+                    {permission.application ? <div className="mt-4 text-sm text-gray-600 dark:text-gray-300">最近一次申请时间：{formatDate(permission.application.created_at)}</div> : null}
+                  </div>
+
+                  <div className="rounded-2xl border border-white/15 bg-white/35 p-4 dark:border-white/10 dark:bg-black/20">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                      <div>
+                        <div className="text-sm font-semibold text-gray-900 dark:text-white">承诺书</div>
+                        <div className="mt-1 text-sm text-gray-600 dark:text-gray-300">{pledgeText ? '点击按钮以弹窗形式查看承诺书，并在确认后提交申请。' : '当前无承诺书。你仍然可以打开弹窗查看空状态提示。'}</div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setPledgeModalOpen(true)}
+                        className="inline-flex items-center gap-2 rounded-2xl border border-white/20 bg-white/60 px-4 py-2.5 font-medium text-gray-900 transition hover:bg-white/80 dark:border-white/10 dark:bg-black/30 dark:text-white dark:hover:bg-black/45"
+                      >
+                        查看承诺书
+                        <ArrowRight size={16} />
+                      </button>
+                    </div>
+                  </div>
+
+                  <form className="space-y-4" onSubmit={(event) => void handleSaveCatchAll(event)}>
+                    <fieldset disabled={!permission.can_manage_route || savingCatchAll} className={!permission.can_manage_route ? 'cursor-not-allowed opacity-70' : ''}>
+                      <div className="space-y-4">
+                        <div>
+                          <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300" htmlFor="catch-all-target-email">转发到的邮箱</label>
+                          <input
+                            id="catch-all-target-email"
+                            type="email"
+                            value={catchAllTarget}
+                            onChange={(event) => setCatchAllTarget(event.target.value)}
+                            placeholder="例如 you@example.com"
+                            className="w-full rounded-2xl border border-white/20 bg-white/55 px-4 py-3 text-gray-900 outline-none transition focus:border-violet-400 focus:ring-2 focus:ring-violet-400/40 dark:border-white/10 dark:bg-black/35 dark:text-white disabled:cursor-not-allowed"
+                          />
+                        </div>
+
+                        <ToggleRow title="启用 catch-all 转发" description="关闭后会保留权限与配置入口，但暂时不再转发邮件。" enabled={catchAllEnabled} onToggle={() => setCatchAllEnabled((currentValue) => !currentValue)} />
+                      </div>
+                    </fieldset>
+
+                    <div className="rounded-2xl border border-white/15 bg-white/35 p-4 text-sm leading-7 text-gray-700 dark:border-white/10 dark:bg-black/20 dark:text-gray-200">
+                      {permission.can_manage_route
+                        ? '你已经拥有配置权限，可以直接填写目标邮箱并保存。'
+                        : permission.can_apply
+                          ? '你还没有该权限。请先阅读承诺书并提交申请，申请通过后才能配置转发。'
+                          : '当前不能直接管理此邮箱。若状态为待审核或未通过，请等待管理员处理。'}
+                    </div>
+
+                    <div className="flex flex-wrap gap-3">
+                      <button
+                        type="submit"
+                        disabled={!permission.can_manage_route || savingCatchAll}
+                        className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-violet-500 to-fuchsia-600 px-5 py-3 font-semibold text-white shadow-lg transition hover:from-violet-600 hover:to-fuchsia-700 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {savingCatchAll ? <LoaderCircle className="animate-spin" size={18} /> : <Sparkles size={18} />}
+                        保存 catch-all 配置
+                      </button>
+
+                      {permission.can_apply ? (
+                        <button
+                          type="button"
+                          onClick={() => setPledgeModalOpen(true)}
+                          className="inline-flex items-center gap-2 rounded-2xl border border-white/20 bg-white/60 px-4 py-3 font-medium text-gray-900 transition hover:bg-white/80 dark:border-white/10 dark:bg-black/30 dark:text-white dark:hover:bg-black/45"
+                        >
+                          申请 catch-all 权限
+                          <ArrowRight size={16} />
+                        </button>
+                      ) : null}
+                    </div>
+                  </form>
+                </>
+              ) : null}
+            </GlassCard>
+          </div>
+        </div>
+      )}
+
+      <AnimatePresence>
+        {pledgeModalOpen && permission ? (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-6 backdrop-blur-sm" onClick={() => setPledgeModalOpen(false)}>
+            <motion.div
+              initial={{ opacity: 0, y: 24, scale: 0.96 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 24, scale: 0.96 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-2xl rounded-[2rem] border border-white/20 bg-white/80 p-6 shadow-2xl backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/85"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="inline-flex items-center gap-2 rounded-full bg-white/70 px-3 py-1 text-xs font-semibold text-slate-700 dark:bg-black/30 dark:text-slate-200"><ShieldCheck size={14} />catch-all 权限承诺书</div>
+                  <h3 className="mt-3 text-2xl font-bold text-gray-900 dark:text-white">{permission.display_name}</h3>
+                  <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">目标权限：{permission.target || catchAllAddress}</p>
+                </div>
+                <button type="button" onClick={() => setPledgeModalOpen(false)} className="rounded-2xl border border-white/20 bg-white/70 p-2 text-gray-700 transition hover:bg-white dark:border-white/10 dark:bg-black/35 dark:text-gray-200 dark:hover:bg-black/50"><X size={18} /></button>
+              </div>
+
+              <div className="mt-6 rounded-3xl border border-white/15 bg-white/45 p-5 dark:border-white/10 dark:bg-black/25">
+                {pledgeText ? <div className="whitespace-pre-wrap text-sm leading-8 text-gray-700 dark:text-gray-200">{pledgeText}</div> : <div className="rounded-2xl border border-amber-300/35 bg-amber-100/65 p-4 text-sm leading-7 text-amber-900 dark:border-amber-700/35 dark:bg-amber-950/25 dark:text-amber-100">当前无承诺书。页面已明确区分“权限数据加载失败”和“当前无承诺书”，当前属于后者。</div>}
+              </div>
+
+              <div className="mt-6 flex flex-wrap justify-end gap-3">
+                <button type="button" onClick={() => setPledgeModalOpen(false)} className="rounded-2xl border border-white/20 bg-white/70 px-4 py-3 font-medium text-gray-900 transition hover:bg-white dark:border-white/10 dark:bg-black/35 dark:text-white dark:hover:bg-black/50">关闭</button>
+                <button
+                  type="button"
+                  disabled={!permission.can_apply || applyingPermission}
+                  onClick={() => void handleApplyCatchAllPermission()}
+                  className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-sky-500 to-cyan-500 px-5 py-3 font-semibold text-white shadow-lg transition hover:from-sky-600 hover:to-cyan-600 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {applyingPermission ? <LoaderCircle className="animate-spin" size={18} /> : <Sparkles size={18} />}
+                  {permission.can_apply ? '确认承诺并提交申请' : '当前不可提交申请'}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+    </div>
+  );
+}
+interface InfoBlockProps {
+  title: string;
+  description: string;
+}
+
+function InfoBlock({ title, description }: InfoBlockProps) {
+  return (
+    <div className="rounded-2xl border border-white/15 bg-white/35 p-4 dark:border-white/10 dark:bg-black/20">
+      <div className="text-sm font-semibold text-gray-900 dark:text-white">{title}</div>
+      <div className="mt-2 text-sm leading-7 text-gray-700 dark:text-gray-200">{description}</div>
     </div>
   );
 }
 
-function NoticeCard({ tone, message }: { tone: 'error' | 'success'; message: string }) {
-  const toneClassName = tone === 'error'
-    ? 'mb-6 border-red-300/35 bg-red-100/70 text-red-900 dark:border-red-500/20 dark:bg-red-950/35 dark:text-red-100'
-    : 'mb-6 border-emerald-300/35 bg-emerald-100/70 text-emerald-900 dark:border-emerald-500/20 dark:bg-emerald-950/35 dark:text-emerald-100';
-  const Icon = tone === 'error' ? AlertCircle : CheckCircle2;
-  return <GlassCard className={toneClassName}><div className="flex items-start gap-3"><Icon className="mt-0.5" size={18} /><div>{message}</div></div></GlassCard>;
+interface InfoStatProps {
+  title: string;
+  value: string;
+}
+
+function InfoStat({ title, value }: InfoStatProps) {
+  return (
+    <div className="rounded-2xl border border-white/15 bg-white/35 p-4 dark:border-white/10 dark:bg-black/20">
+      <div className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">{title}</div>
+      <div className="mt-2 text-base font-semibold text-gray-900 dark:text-white">{value}</div>
+    </div>
+  );
+}
+
+interface InlineNoticeProps {
+  tone: NoticeTone;
+  message: string;
+}
+
+function InlineNotice({ tone, message }: InlineNoticeProps) {
+  const palette = describeNoticePalette(tone);
+  const Icon = tone === 'success' ? CheckCircle2 : AlertCircle;
+
+  return (
+    <div className={`rounded-2xl border px-4 py-3 text-sm leading-7 ${palette}`}>
+      <div className="flex items-start gap-3">
+        <Icon className="mt-1 shrink-0" size={18} />
+        <div>{message}</div>
+      </div>
+    </div>
+  );
+}
+
+function StatusChip({ label, className }: ChipDescriptor) {
+  return <span className={`inline-flex rounded-full px-3 py-1 text-sm font-semibold ${className}`}>{label}</span>;
+}
+
+interface ToggleRowProps {
+  title: string;
+  description: string;
+  enabled: boolean;
+  onToggle: () => void;
+}
+
+function ToggleRow({ title, description, enabled, onToggle }: ToggleRowProps) {
+  return (
+    <div className="flex items-center justify-between gap-4 rounded-2xl border border-white/15 bg-white/35 p-4 dark:border-white/10 dark:bg-black/20">
+      <div>
+        <div className="text-sm font-semibold text-gray-900 dark:text-white">{title}</div>
+        <div className="mt-1 text-sm text-gray-600 dark:text-gray-300">{description}</div>
+      </div>
+      <button type="button" onClick={onToggle} className={`relative h-7 w-14 shrink-0 rounded-full transition-colors ${enabled ? 'bg-teal-500' : 'bg-slate-300 dark:bg-slate-700'}`}>
+        <span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition-transform ${enabled ? 'translate-x-8' : 'translate-x-1'}`} />
+      </button>
+    </div>
+  );
+}
+
+function buildImplicitDefaultRoute(user: User): UserEmailRoute {
+  const prefix = normalizePrefix(user.username);
+  return {
+    kind: 'default',
+    display_name: '默认邮箱',
+    description: '每位用户自动保留一个与用户名同名的邮箱地址。',
+    address: `${prefix}@${fallbackRootDomain}`,
+    prefix,
+    root_domain: fallbackRootDomain,
+    target_email: '',
+    enabled: false,
+    configured: false,
+    can_manage: true,
+    can_delete: false,
+  };
 }
 
 function upsertRoute(routes: UserEmailRoute[], nextRoute: UserEmailRoute): UserEmailRoute[] {
-  const remainingRoutes = routes.filter((item) => item.kind !== nextRoute.kind);
-  if (nextRoute.kind === 'default') {
-    return [nextRoute, ...remainingRoutes];
+  if (nextRoute.kind === 'custom' && nextRoute.id) {
+    const customIndex = routes.findIndex((item) => item.kind === 'custom' && item.id === nextRoute.id);
+    if (customIndex >= 0) {
+      return routes.map((item, index) => (index === customIndex ? nextRoute : item));
+    }
+    return [...routes, nextRoute];
   }
-  const defaultRoute = remainingRoutes.find((item) => item.kind === 'default');
-  const others = remainingRoutes.filter((item) => item.kind !== 'default');
-  return defaultRoute ? [defaultRoute, ...others, nextRoute] : [...others, nextRoute];
+
+  const filteredRoutes = routes.filter((item) => item.kind !== nextRoute.kind);
+  if (nextRoute.kind === 'default') return [nextRoute, ...filteredRoutes];
+
+  const currentDefaultRoute = filteredRoutes.find((item) => item.kind === 'default');
+  const otherRoutes = filteredRoutes.filter((item) => item.kind !== 'default');
+  return currentDefaultRoute ? [currentDefaultRoute, ...otherRoutes, nextRoute] : [...otherRoutes, nextRoute];
 }
 
-function permissionBadge(status: UserPermission['status']) {
+function describeSearchStatus(status: SearchStatus): ChipDescriptor {
+  switch (status) {
+    case 'checking':
+      return { label: '正在查询', className: 'bg-sky-100 text-sky-700 dark:bg-sky-900/25 dark:text-sky-300' };
+    case 'available':
+      return { label: '当前可用', className: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-300' };
+    case 'taken':
+      return { label: '已被占用', className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/25 dark:text-amber-300' };
+    case 'error':
+      return { label: '查询失败', className: 'bg-red-100 text-red-700 dark:bg-red-900/25 dark:text-red-300' };
+    default:
+      return { label: '等待查询', className: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300' };
+  }
+}
+function describePermissionStatus(status: PermissionStatus): ChipDescriptor {
   switch (status) {
     case 'approved':
       return { label: '已通过', className: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-300' };
@@ -199,59 +752,90 @@ function permissionBadge(status: UserPermission['status']) {
   }
 }
 
-function routeBadge(route: UserEmailRoute) {
+function describeRouteStatus(route: UserEmailRoute): ChipDescriptor {
   if (route.kind === 'catch_all' && route.permission_status && route.permission_status !== 'approved') {
-    return permissionBadge(route.permission_status);
+    return describePermissionStatus(route.permission_status);
   }
   if (!route.configured) {
     return { label: '未配置', className: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300' };
   }
   if (!route.enabled) {
-    return { label: '已暂停', className: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300' };
+    return { label: '已停用', className: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300' };
   }
   return { label: '已启用', className: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-300' };
 }
 
+function describeRouteKind(kind: UserEmailRoute['kind']): string {
+  switch (kind) {
+    case 'default':
+      return '默认邮箱';
+    case 'catch_all':
+      return 'catch-all';
+    default:
+      return '自定义邮箱';
+  }
+}
+
+function describeNoticePalette(tone: NoticeTone): string {
+  switch (tone) {
+    case 'success':
+      return 'border-emerald-300/35 bg-emerald-100/70 text-emerald-900 dark:border-emerald-700/35 dark:bg-emerald-950/30 dark:text-emerald-100';
+    case 'error':
+      return 'border-red-300/35 bg-red-100/70 text-red-900 dark:border-red-700/35 dark:bg-red-950/30 dark:text-red-100';
+    default:
+      return 'border-sky-300/35 bg-sky-100/70 text-sky-900 dark:border-sky-700/35 dark:bg-sky-950/30 dark:text-sky-100';
+  }
+}
+
 function buildSearchMessage(result: EmailRouteAvailabilityResult, normalizedUsername: string, authenticated: boolean): string {
   if (result.available) {
-    if (authenticated && result.normalized_prefix === normalizedUsername) {
-      return '这是你默认保留的邮箱地址，直接在下方配置转发即可。';
+    if (authenticated && normalizedUsername && result.normalized_prefix === normalizedUsername) {
+      return '这个前缀与你的用户名一致。登录后可直接在下方配置默认邮箱转发。';
     }
-    return '当前前缀未被占用。搜索功能已恢复，默认邮箱和既有邮箱分发已可正常管理。';
+    return '当前邮箱前缀未被占用。搜索功能公开开放，但新的普通邮箱注册入口暂未开放。';
   }
-  if (authenticated && result.normalized_prefix === normalizedUsername) {
-    return '这是你的默认邮箱地址，搜索结果显示为已占用是正常现象。';
+
+  if (authenticated && normalizedUsername && result.normalized_prefix === normalizedUsername) {
+    return '这是你的默认邮箱地址，查询结果显示已被占用属于正常现象。';
   }
-  if (result.reasons.includes('reserved_by_existing_user')) {
-    return '该邮箱前缀已经被现有用户的默认邮箱保留。';
-  }
-  if (result.reasons.includes('existing_email_route')) {
-    return '该邮箱地址已经存在转发配置。';
-  }
-  if (result.reasons.includes('reserved_system_prefix')) {
-    return '该邮箱前缀属于系统保留地址，无法使用。';
-  }
+  if (result.reasons.includes('reserved_by_existing_user')) return '该邮箱前缀已经被现有用户的默认邮箱保留。';
+  if (result.reasons.includes('existing_email_route')) return '该邮箱地址已经存在转发配置。';
+  if (result.reasons.includes('reserved_system_prefix')) return '该邮箱前缀属于系统保留地址，无法使用。';
   return '该邮箱前缀当前不可用。';
 }
 
+function formatEligibilityReason(reason: string, permission: UserPermission): string {
+  switch (reason) {
+    case 'trust_level_below_minimum':
+      return `当前信任等级不足，需要至少达到 TL ${permission.min_trust_level}`;
+    case 'policy_disabled':
+      return '当前管理员已关闭该权限策略';
+    case 'already_has_permission':
+      return '你已经拥有该权限';
+    case 'already_has_pending_application':
+      return '你已经提交过申请，请等待审核';
+    default:
+      return reason;
+  }
+}
+
 function readableErrorMessage(error: unknown, fallback: string): string {
-  if (error instanceof APIError) {
-    return error.message;
-  }
-  if (error instanceof Error && error.message.trim() !== '') {
-    return error.message;
-  }
+  if (error instanceof APIError) return error.message;
+  if (error instanceof Error && error.message.trim() !== '') return error.message;
   return fallback;
 }
 
-function formatDate(value: string): string {
+function formatDate(value?: string): string {
+  if (!value) return '尚未保存';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat('zh-CN', {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
-  }).format(new Date(value));
+  }).format(date);
 }
 
 function normalizePrefix(value: string): string {

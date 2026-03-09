@@ -1,69 +1,68 @@
-# LinuxDoSpace 开发运行手册
+﻿# LinuxDoSpace Runbook
 
-## 本地启动后端
+## Local backend startup
 
-1. 进入 `backend/` 目录。
-2. 参考 `.env.example` 设置环境变量。
-3. 执行 `go run ./cmd/linuxdospace`。
-4. 访问 `http://localhost:8080/healthz` 进行健康检查。
-5. 访问 `GET /v1/public/domains` 检查默认根域名是否已经自动引导。
+1. Enter `backend/`.
+2. Copy or reference [backend/.env.example](/G:/ClaudeProjects/LinuxDoSpace/backend/.env.example) and fill real values.
+3. Run `go run ./cmd/linuxdospace`.
+4. Open `http://localhost:8080/healthz` and confirm the service is healthy.
+5. Call `GET /v1/public/domains` to verify the default managed root domain is available.
 
-## 本地启动前端
+## Local frontend startup
 
-1. 进入 `frontend/` 目录。
-2. 参考 `.env.example` 设置 `VITE_API_BASE_URL`，默认值为 `http://localhost:8080`。
-3. 执行 `npm install`。
-4. 执行 `npm run dev`。
-5. 浏览器访问 `http://localhost:3000`。
-6. 点击登录按钮时，前端会跳转到 `${VITE_API_BASE_URL}/v1/auth/login`。
+1. Enter `frontend/`.
+2. Set `VITE_API_BASE_URL`, usually `http://localhost:8080` for local development.
+3. Run `npm install`.
+4. Run `npm run dev`.
+5. Open `http://localhost:3000`.
+6. The login button should redirect to `${VITE_API_BASE_URL}/v1/auth/login`.
 
-## 本地构建 Docker 镜像
+## Local Docker build
 
-在仓库根目录执行：
+From the repository root:
 
 ```powershell
 docker build -t linuxdospace:local --build-arg VERSION=local .
 ```
 
-运行容器：
+Run the container with:
 
 ```powershell
 docker run --rm -p 8080:8080 --env-file deploy/linuxdospace.env.example linuxdospace:local
 ```
 
-## 当前关键依赖
+## Required dependencies
 
 - Go 1.25.x
+- Node.js and npm
 - SQLite
-- Cloudflare API Token
-- Linux Do OAuth Client
+- Cloudflare API token
+- Linux Do OAuth client credentials
 
-## 本地开发建议环境变量
+## Key environment variables
 
 - `APP_SESSION_SECRET`
+- `CLOUDFLARE_ACCOUNT_ID`
 - `CLOUDFLARE_API_TOKEN`
 - `LINUXDO_OAUTH_CLIENT_ID`
 - `LINUXDO_OAUTH_CLIENT_SECRET`
 - `LINUXDO_OAUTH_REDIRECT_URL`
 
-## Cloudflare 集成测试
+Cloudflare Email Routing also requires the API token to include Email Routing Addresses and Email Routing Rules permissions in addition to the existing DNS permissions.
 
-执行真实集成测试前，设置：
+## Verification checklist
 
-- `LINUXDOSPACE_CF_API_TOKEN`
-- `LINUXDOSPACE_CF_ZONE_ID`
-- 可选：`LINUXDOSPACE_CF_ROOT_DOMAIN`
+After local startup, verify:
 
-然后执行：
+- `GET /healthz` returns `200`
+- `GET /v1/me` returns an anonymous session payload when not logged in
+- the public frontend can load domains and email search data
+- Linux Do OAuth redirects back to the configured backend callback
+- saving a mailbox forward returns JSON, not an HTML error page
 
-```powershell
-go test ./internal/cloudflare -run TestClientIntegrationCreateGetDelete -v
-```
+## Troubleshooting notes
 
-## 说明
-
-- 当前代码允许在开发环境未配置 OAuth 的情况下先启动；这时认证接口会返回 `503`。
-- 默认根域名支持自动引导，如果未显式配置 `CLOUDFLARE_DEFAULT_ZONE_ID`，服务会尝试通过 Cloudflare API 查询。
-- 前端已接入登录态、域名查询、命名空间申请和 DNS 记录管理接口。
-- 为了支持 OAuth 回跳，前端当前通过浏览器 URL 和内部 tab 状态双向同步。
-- Docker 单镜像部署时，前端静态资源会被嵌入 Go 二进制，由后端统一提供。
+- When OAuth is not configured, authentication endpoints should fail closed instead of pretending to work.
+- If `CLOUDFLARE_DEFAULT_ZONE_ID` is empty, the backend will resolve the zone through the Cloudflare API.
+- If the frontend reports a non-JSON API response, check `VITE_API_BASE_URL` and reverse-proxy routing first.
+- If mailbox forwarding save fails, verify that the target mailbox has already completed Cloudflare destination-address verification.

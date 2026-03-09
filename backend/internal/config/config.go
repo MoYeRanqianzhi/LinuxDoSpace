@@ -59,6 +59,7 @@ type LinuxDOConfig struct {
 
 // CloudflareConfig stores Cloudflare API and domain defaults.
 type CloudflareConfig struct {
+	AccountID           string
 	APIToken            string
 	DefaultRootDomain   string
 	DefaultZoneID       string
@@ -102,6 +103,7 @@ func Load() (Config, error) {
 			EnablePKCE:   mustParseBool(getEnv("LINUXDO_OAUTH_ENABLE_PKCE", "false")),
 		},
 		Cloudflare: CloudflareConfig{
+			AccountID:           strings.TrimSpace(os.Getenv("CLOUDFLARE_ACCOUNT_ID")),
 			APIToken:            strings.TrimSpace(os.Getenv("CLOUDFLARE_API_TOKEN")),
 			DefaultRootDomain:   getEnv("CLOUDFLARE_DEFAULT_ROOT_DOMAIN", "linuxdo.space"),
 			DefaultZoneID:       strings.TrimSpace(os.Getenv("CLOUDFLARE_DEFAULT_ZONE_ID")),

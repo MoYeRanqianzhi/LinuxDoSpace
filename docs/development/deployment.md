@@ -1,67 +1,93 @@
-﻿# LinuxDoSpace 閮ㄧ讲璇存槑
+﻿# LinuxDoSpace Deployment Guide
 
-## 閮ㄧ讲褰㈡€?
-褰撳墠浠撳簱閲囩敤鍗曢暅鍍忛儴缃叉柟妗堬細
+## Recommended production architecture
 
-- GitHub Actions 鏋勫缓鍓嶇闈欐€佽祫婧?- Go 鍚庣鎶婂墠绔瀯寤轰骇鐗╁祵鍏ヤ簩杩涘埗
-- Debian 鏈嶅姟鍣ㄥ彧闇€瑕佽繍琛屼竴涓鍣?
-杩欐牱鍙互閬垮厤鍓嶅悗绔媶鍒嗛儴缃插甫鏉ョ殑璺ㄥ煙銆佸洖璋冨湴鍧€鍜岄潤鎬佽祫婧愬悓姝ラ棶棰樸€?
-## Docker 闀滃儚
+The current recommended production layout is split deployment:
 
-- Dockerfile锛氫粨搴撴牴鐩綍 [Dockerfile](/G:/ClaudeProjects/LinuxDoSpace/Dockerfile)
-- 杩愯鏃堕暅鍍忛粯璁ょ洃鍚鍣ㄥ唴 `8080`
-- SQLite 鏁版嵁搴撻粯璁ゆ寕杞藉埌 `/app/data/linuxdospace.sqlite`
+- public frontend on Cloudflare Pages, for example `https://app.example.com`
+- admin frontend on Cloudflare Pages, for example `https://admin.example.com`
+- backend API on Debian with Docker, for example `https://api.example.com`
 
-## Debian 鏈嶅姟鍣ㄥ噯澶?
-闇€瑕佸畨瑁咃細
+The repository still supports single-image self-hosting because the Go backend can embed the frontend build output, but the main production path used by this project is the split frontend/backend model above.
+
+## Docker image
+
+- Dockerfile: [Dockerfile](/G:/ClaudeProjects/LinuxDoSpace/Dockerfile)
+- The container listens on `8080` internally.
+- SQLite data is stored at `/app/data/linuxdospace.sqlite` by default.
+
+## Debian server preparation
+
+Required software:
 
 - Docker Engine
-- Docker Compose Plugin
+- Docker Compose plugin
 
-鎺ㄨ崘閮ㄧ讲鐩綍锛?
+Recommended deployment directory:
+
 - `/opt/linuxdospace`
 
-## 鏈嶅姟鍣ㄦ枃浠?
-浠撳簱鎻愪緵锛?
-- Compose 鏂囦欢锛歔deploy/docker-compose.yml](/G:/ClaudeProjects/LinuxDoSpace/deploy/docker-compose.yml)
-- 鐜鍙橀噺妯℃澘锛歔deploy/linuxdospace.env.example](/G:/ClaudeProjects/LinuxDoSpace/deploy/linuxdospace.env.example)
+## Server files
 
-鍦?Debian 鏈嶅姟鍣ㄤ笂锛岄€氬父闇€瑕侊細
+The repository provides:
 
-1. 鍒涘缓 `/opt/linuxdospace`
-2. 鏀惧叆 `docker-compose.yml`
-3. 鏀惧叆 `.env`
-4. 鎵ц `docker compose pull`
-5. 鎵ц `docker compose up -d`
+- Compose file: [deploy/docker-compose.yml](/G:/ClaudeProjects/LinuxDoSpace/deploy/docker-compose.yml)
+- Environment template: [deploy/linuxdospace.env.example](/G:/ClaudeProjects/LinuxDoSpace/deploy/linuxdospace.env.example)
 
-## GitHub Actions 宸ヤ綔娴?
-宸ヤ綔娴佹枃浠讹細
+Typical Debian deployment steps:
 
-- [container-release.yml](/G:/ClaudeProjects/LinuxDoSpace/.github/workflows/container-release.yml)
+1. Create `/opt/linuxdospace`.
+2. Place `docker-compose.yml` there.
+3. Place a real `.env` file there.
+4. Run `docker compose pull`.
+5. Run `docker compose up -d`.
 
-鍔熻兘锛?
-- push 鍒?`main` 鏃惰嚜鍔ㄦ瀯寤哄苟鎺ㄩ€侀暅鍍忓埌 GHCR
-- push 鐗堟湰 tag 鏃惰嚜鍔ㄦ瀯寤哄苟鎺ㄩ€佸搴?tag 闀滃儚
-- `workflow_dispatch` 鎵嬪姩瑙﹀彂鏃跺彲閫夌洿鎺ラ儴缃插埌 Debian 鏈嶅姟鍣?
-## 闇€瑕侀厤缃殑 GitHub Secrets
+## Environment variable guidance
 
-鏋勫缓鎺ㄩ€佸埌 GHCR锛?
-- 榛樿浣跨敤 `GITHUB_TOKEN`锛屾棤闇€棰濆 Secrets
+For the split deployment model, the important public URLs are:
 
-鎵嬪姩閮ㄧ讲鍒?Debian 鏈嶅姟鍣ㄦ椂闇€瑕侊細
+- `APP_BASE_URL=https://api.example.com`
+- `APP_FRONTEND_URL=https://app.example.com`
+- `APP_ADMIN_FRONTEND_URL=https://admin.example.com`
+- `LINUXDO_OAUTH_REDIRECT_URL=https://api.example.com/v1/auth/callback`
+
+`APP_ALLOWED_ORIGINS` must include both frontend origins.
+
+## GitHub Actions workflow
+
+Workflow file:
+
+- [.github/workflows/container-release.yml](/G:/ClaudeProjects/LinuxDoSpace/.github/workflows/container-release.yml)
+
+The workflow is designed to:
+
+- build and publish the image to GHCR on pushes that should produce a release image
+- publish versioned images on tag pushes
+- optionally deploy the already-published image to Debian after publication succeeds
+
+## Required GitHub secrets
+
+GHCR publishing normally uses the built-in `GITHUB_TOKEN`.
+
+Server deployment requires these secrets when the workflow is configured to deploy remotely:
 
 - `DEPLOY_HOST`
-- `DEPLOY_PORT`锛堝彲閫夛紝榛樿 `22`锛?- `DEPLOY_USER`
-- `DEPLOY_PATH`锛堝彲閫夛紝榛樿 `/opt/linuxdospace`锛?- `DEPLOY_SSH_PRIVATE_KEY`
+- `DEPLOY_PORT` (optional, default `22`)
+- `DEPLOY_USER`
+- `DEPLOY_PATH` (optional, default `/opt/linuxdospace`)
+- `DEPLOY_SSH_PRIVATE_KEY`
 - `DEPLOY_ENV_FILE`
 - `DEPLOY_GHCR_USERNAME`
 - `DEPLOY_GHCR_TOKEN`
 
-鍏朵腑锛?
-- `DEPLOY_ENV_FILE` 搴旀槸瀹屾暣鐨勫琛?`.env` 鏂囦欢鍐呭
-- `DEPLOY_GHCR_TOKEN` 闇€瑕佸叿澶囪鍙?GHCR 闀滃儚鐨勬潈闄?
-## 閮ㄧ讲鍚庨獙璇?
-鍙互鍦ㄦ湇鍔″櫒涓婃墽琛岋細
+Notes:
+
+- `DEPLOY_ENV_FILE` should contain the full multi-line `.env` file content.
+- `DEPLOY_GHCR_TOKEN` must have permission to pull the GHCR image.
+
+## Post-deploy verification
+
+On the server, verify with:
 
 ```bash
 docker compose ps
@@ -69,37 +95,54 @@ docker compose logs -f
 curl http://127.0.0.1:8080/healthz
 ```
 
-濡傛灉鏈嶅姟瀵瑰缁忚繃鍙嶄唬锛岃繕搴旈獙璇侊細
+When the service is behind Nginx or another reverse proxy, also verify:
 
-- 鍓嶇棣栭〉鏄惁鍙闂?- `/v1/me` 鏄惁鍙繑鍥炴湭鐧诲綍鐘舵€?- Linux Do OAuth 鍥炶皟鍦板潃鏄惁涓庣敓浜у煙鍚嶄竴鑷?
+- the public frontend can call `GET /v1/me` and receive JSON
+- the admin frontend can call `GET /v1/admin/me` and receive JSON
+- the Linux Do OAuth callback URL matches the production API domain exactly
+- CORS allows both configured frontend origins
 
-## OAuth 注意事项
+## Cloudflare Email Routing
 
-- LINUXDO_OAUTH_REDIRECT_URL 必须指向后端回调地址，例如 https://api.linuxdo.space/v1/auth/callback`r
-- LINUXDO_OAUTH_SCOPE 建议保持为 user，与 Linux Do 官方示例一致
+Mailbox forwarding now depends on Cloudflare Email Routing in addition to DNS.
 
+Required backend environment variables:
 
-## Admin Frontend (Cloudflare Pages)
+- `CLOUDFLARE_ACCOUNT_ID`
+- `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_DEFAULT_ROOT_DOMAIN`
+- `CLOUDFLARE_DEFAULT_ZONE_ID` (recommended for deterministic zone resolution)
 
-The administrator frontend is now a real standalone application that talks to the shared backend:
+Required Cloudflare token capabilities:
 
-- [admin-frontend/README.md](/G:/ClaudeProjects/LinuxDoSpace/admin-frontend/README.md)
+- DNS read/write for the managed zone
+- Email Routing Addresses read/write
+- Email Routing Rules read/write
+- Zone read
 
-Recommended Cloudflare Pages settings:
+Operational notes:
+
+- destination mailboxes must be verified in Cloudflare before LinuxDoSpace can activate forwarding rules
+- subdomain mailbox routes such as `catch-all@<username>.linuxdo.space` require the subdomain to be enabled in Cloudflare Email Routing first
+- the zone must already have the Email Routing DNS records in place
+
+## Frontend deployment on Cloudflare Pages
+
+Public frontend recommended settings:
+
+- Root directory: `frontend`
+- Build command: `npm run build`
+- Build output directory: `dist`
+- Required environment variable: `VITE_API_BASE_URL=https://api.example.com`
+
+Admin frontend recommended settings:
 
 - Root directory: `admin-frontend`
 - Build command: `npm run build`
 - Build output directory: `dist`
-- Required env: `VITE_API_BASE_URL=https://api.linuxdo.space`
+- Required environment variable: `VITE_API_BASE_URL=https://api.example.com`
 
-Backend requirements for the admin frontend:
+## Admin security notes
 
-- `APP_ADMIN_FRONTEND_URL` must point to the deployed admin site
-- `APP_ALLOWED_ORIGINS` must include the admin frontend origin
-- `APP_ADMIN_USERNAMES` must list the Linux Do usernames allowed to access the admin console
-- `APP_ADMIN_PASSWORD` is mandatory whenever `APP_ADMIN_USERNAMES` is configured, and production boot now fails if either value is missing
-
-Security notes:
-
-- The admin frontend now requires Linux Do admin OAuth plus one extra backend password verification.
-- All real write operations go through backend sessions, admin authorization, admin second-factor verification, CSRF validation, and audit logging.
+- the admin frontend requires Linux Do OAuth, backend admin authorization, and one extra password verification
+- all real write operations still go through backend sessions, CSRF validation, and audit logging

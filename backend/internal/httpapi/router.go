@@ -85,6 +85,9 @@ func NewRouter(deps RouterDependencies) http.Handler {
 	mux.HandleFunc("GET /v1/admin/redeem-codes", api.handleAdminRedeemCodes)
 	mux.HandleFunc("POST /v1/admin/redeem-codes/batch", api.handleAdminGenerateRedeemCodes)
 	mux.HandleFunc("DELETE /v1/admin/redeem-codes/{redeemCodeID}", api.handleAdminDeleteRedeemCode)
+	mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, service.NotFoundError("api endpoint not found"))
+	})
 	mux.Handle("/", spaHandler)
 
 	return withCORS(deps.Config.App.AllowedOrigins, mux)

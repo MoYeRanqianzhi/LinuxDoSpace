@@ -71,10 +71,18 @@ type OAuthClient interface {
 
 // CloudflareClient abstracts Cloudflare DNS operations.
 type CloudflareClient interface {
+	ResolveZone(ctx context.Context, rootDomain string) (cloudflare.Zone, error)
+	GetZone(ctx context.Context, zoneID string) (cloudflare.Zone, error)
 	ResolveZoneID(ctx context.Context, rootDomain string) (string, error)
 	ListAllDNSRecords(ctx context.Context, zoneID string) ([]cloudflare.DNSRecord, error)
 	GetDNSRecord(ctx context.Context, zoneID string, recordID string) (cloudflare.DNSRecord, error)
 	CreateDNSRecord(ctx context.Context, zoneID string, input cloudflare.CreateDNSRecordInput) (cloudflare.DNSRecord, error)
 	UpdateDNSRecord(ctx context.Context, zoneID string, recordID string, input cloudflare.UpdateDNSRecordInput) (cloudflare.DNSRecord, error)
 	DeleteDNSRecord(ctx context.Context, zoneID string, recordID string) error
+	ListEmailRoutingDestinationAddresses(ctx context.Context, accountID string) ([]cloudflare.EmailRoutingDestinationAddress, error)
+	CreateEmailRoutingDestinationAddress(ctx context.Context, accountID string, email string) (cloudflare.EmailRoutingDestinationAddress, error)
+	ListEmailRoutingRules(ctx context.Context, zoneID string) ([]cloudflare.EmailRoutingRule, error)
+	CreateEmailRoutingRule(ctx context.Context, zoneID string, input cloudflare.UpsertEmailRoutingRuleInput) (cloudflare.EmailRoutingRule, error)
+	UpdateEmailRoutingRule(ctx context.Context, zoneID string, ruleIdentifier string, input cloudflare.UpsertEmailRoutingRuleInput) (cloudflare.EmailRoutingRule, error)
+	DeleteEmailRoutingRule(ctx context.Context, zoneID string, ruleIdentifier string) error
 }

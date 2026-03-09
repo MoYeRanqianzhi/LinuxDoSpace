@@ -38,14 +38,27 @@ const (
 // EmailCatchAllPledgeText is the canonical server-side pledge text recorded on
 // every application. The backend stores this value directly so the audit trail
 // does not depend on client-side wording.
-const EmailCatchAllPledgeText = "我承诺仅将此邮箱泛解析权限用于合法、正当且合理的用途，不实施违法违纪行为，不滥用平台资源；如因本人使用导致任何后果，均由本人自行承担，与开发者无关；若因此获得收益，我也愿意无私回馈 Linux Do 社区。"
+const EmailCatchAllPledgeText = "I promise to use this email catch-all permission only for lawful and reasonable purposes, not to abuse platform resources, and to accept full responsibility for any consequences caused by my own actions. If I benefit from it, I am willing to give back to the Linux Do community."
 
 // PermissionService owns user-facing permission application flows together with
 // the administrator-configurable policy rules that govern those flows.
 type PermissionService struct {
 	cfg config.Config
 	db  Store
+	cf  CloudflareClient
 }
+
+const (
+	emailCatchAllPermissionDisplayName = "Catch-all forwarding"
+	emailCatchAllPermissionDescription = "Enable one catch-all forwarding entry for the default subdomain that matches your username."
+	emailCatchAllPledgeTextClean       = "I promise to use this email catch-all permission only for lawful and reasonable purposes, not to abuse platform resources, and to accept full responsibility for any consequences caused by my own actions. If I benefit from it, I am willing to give back to the Linux Do community."
+	defaultEmailRouteDisplayName       = "Default mailbox"
+	defaultEmailRouteDescription       = "Each user automatically owns one mailbox that matches the Linux Do username."
+	customEmailRouteDisplayName        = "Additional mailbox"
+	customEmailRouteDescription        = "This mailbox was already assigned to your account and is currently shown as read-only on the public page."
+	catchAllEmailRouteDisplayName      = "Catch-all forwarding"
+	catchAllEmailRouteDescription      = "Receives mail sent to catch-all@<username>.linuxdo.space."
+)
 
 // PermissionApplicationSummary is the normalized subset of one application row
 // exposed to the user-facing frontend.
@@ -155,8 +168,8 @@ type catchAllNamespace struct {
 
 // NewPermissionService constructs the service instance responsible for the new
 // user-side permission and email-routing flows.
-func NewPermissionService(cfg config.Config, db Store) *PermissionService {
-	return &PermissionService{cfg: cfg, db: db}
+func NewPermissionService(cfg config.Config, db Store, cf CloudflareClient) *PermissionService {
+	return &PermissionService{cfg: cfg, db: db, cf: cf}
 }
 
 // ListMyPermissions returns the single currently supported permission card for
@@ -200,7 +213,7 @@ func (s *PermissionService) SubmitPermissionApplication(ctx context.Context, use
 		ApplicantUserID: user.ID,
 		Type:            PermissionKeyEmailCatchAll,
 		Target:          permission.Target,
-		Reason:          EmailCatchAllPledgeText,
+		Reason:          emailCatchAllPledgeTextClean,
 		Status:          status,
 	})
 	if err != nil {
@@ -273,6 +286,8 @@ func (s *PermissionService) ListMyEmailRoutes(ctx context.Context, user model.Us
 // UpsertMyCatchAllEmailRoute creates or updates the user's forwarding target
 // after the catch-all permission has been approved.
 func (s *PermissionService) UpsertMyCatchAllEmailRoute(ctx context.Context, user model.User, request UpsertMyCatchAllEmailRouteRequest) (UserEmailRouteView, error) {
+	routing := newEmailRoutingProvisioner(s.cfg, s.cf)
+
 	permission, err := s.loadEmailCatchAllPermission(ctx, user)
 	if err != nil {
 		return UserEmailRouteView{}, err
@@ -291,15 +306,37 @@ func (s *PermissionService) UpsertMyCatchAllEmailRoute(ctx context.Context, user
 		return UserEmailRouteView{}, err
 	}
 
-	item, err := s.db.UpsertEmailRouteByAddress(ctx, sqlite.UpsertEmailRouteByAddressInput{
-		OwnerUserID: user.ID,
-		RootDomain:  namespace.RootDomain,
-		Prefix:      emailCatchAllPrefix,
-		TargetEmail: targetEmail,
-		Enabled:     request.Enabled,
-	})
-	if err != nil {
-		return UserEmailRouteView{}, InternalError("failed to save catch-all email route", err)
+	beforeState := newDeletedEmailRouteSyncState(namespace.RootDomain, emailCatchAllPrefix)
+	existingRoute, routeErr := s.db.GetEmailRouteByAddress(ctx, namespace.RootDomain, emailCatchAllPrefix)
+	switch {
+	case routeErr == nil:
+		if existingRoute.OwnerUserID != user.ID {
+			return UserEmailRouteView{}, UnavailableError("catch-all mailbox is assigned to another user", fmt.Errorf("route %d belongs to user %d", existingRoute.ID, existingRoute.OwnerUserID))
+		}
+		beforeState = newForwardingEmailRouteSyncState(existingRoute.RootDomain, existingRoute.Prefix, existingRoute.TargetEmail, existingRoute.Enabled)
+	case sqlite.IsNotFound(routeErr):
+		// No existing catch-all route is stored yet.
+	default:
+		return UserEmailRouteView{}, InternalError("failed to load catch-all email route before update", routeErr)
+	}
+
+	desiredState := newForwardingEmailRouteSyncState(namespace.RootDomain, emailCatchAllPrefix, targetEmail, request.Enabled)
+	var item model.EmailRoute
+	if err := routing.SyncForwardingState(ctx, beforeState, desiredState, func() error {
+		var persistErr error
+		item, persistErr = s.db.UpsertEmailRouteByAddress(ctx, sqlite.UpsertEmailRouteByAddressInput{
+			OwnerUserID: user.ID,
+			RootDomain:  namespace.RootDomain,
+			Prefix:      emailCatchAllPrefix,
+			TargetEmail: targetEmail,
+			Enabled:     request.Enabled,
+		})
+		if persistErr != nil {
+			return InternalError("failed to save catch-all email route", persistErr)
+		}
+		return nil
+	}); err != nil {
+		return UserEmailRouteView{}, err
 	}
 
 	metadata, _ := json.Marshal(map[string]any{
@@ -318,7 +355,7 @@ func (s *PermissionService) UpsertMyCatchAllEmailRoute(ctx context.Context, user
 	}
 
 	updatedAt := item.UpdatedAt
-	return UserEmailRouteView{
+	return normalizeUserEmailRouteCopy(UserEmailRouteView{
 		ID:               item.ID,
 		Kind:             UserEmailRouteKindCatchAll,
 		PermissionKey:    PermissionKeyEmailCatchAll,
@@ -334,7 +371,7 @@ func (s *PermissionService) UpsertMyCatchAllEmailRoute(ctx context.Context, user
 		CanManage:        true,
 		CanDelete:        false,
 		UpdatedAt:        &updatedAt,
-	}, nil
+	}), nil
 }
 
 // ListPermissionPolicies returns the administrator-visible configuration rows
@@ -443,7 +480,7 @@ func (s *PermissionService) SetPermissionForUser(ctx context.Context, actor mode
 		if permission.Application != nil && strings.TrimSpace(permission.Application.Reason) != "" {
 			reason = permission.Application.Reason
 		} else {
-			reason = "管理员手动设置该权限状态。"
+			reason = "Administrator manually set this permission state."
 		}
 	}
 
@@ -507,7 +544,7 @@ func (s *PermissionService) loadEmailCatchAllPermission(ctx context.Context, use
 	}
 
 	application := findPermissionApplication(applications, PermissionKeyEmailCatchAll, namespace.Address)
-	reasons := evaluateCatchAllEligibility(user, policy, namespace)
+	reasons := buildCatchAllEligibilityReasons(user, policy, namespace)
 	status := "not_requested"
 	var summary *PermissionApplicationSummary
 	if application != nil {
@@ -518,12 +555,12 @@ func (s *PermissionService) loadEmailCatchAllPermission(ctx context.Context, use
 	canApply := len(reasons) == 0 && status != "pending" && status != "approved"
 	canManageRoute := status == "approved"
 
-	return UserPermissionView{
+	return normalizeCatchAllPermissionCopy(UserPermissionView{
 		Key:                PermissionKeyEmailCatchAll,
-		DisplayName:        itemDisplayName(policy.DisplayName, "catch-all@<username>.linuxdo.space"),
-		Description:        itemDisplayName(policy.Description, "为与你用户名同名的默认二级域名开启一个 catch-all 邮箱转发入口。"),
+		DisplayName:        itemDisplayName(policy.DisplayName, emailCatchAllPermissionDisplayName),
+		Description:        itemDisplayName(policy.Description, emailCatchAllPermissionDescription),
 		Target:             namespace.Address,
-		PledgeText:         EmailCatchAllPledgeText,
+		PledgeText:         emailCatchAllPledgeTextClean,
 		PolicyEnabled:      policy.Enabled,
 		AutoApprove:        policy.AutoApprove,
 		MinTrustLevel:      policy.MinTrustLevel,
@@ -533,17 +570,18 @@ func (s *PermissionService) loadEmailCatchAllPermission(ctx context.Context, use
 		CanApply:           canApply,
 		CanManageRoute:     canManageRoute,
 		Application:        summary,
-	}, nil
+	}), nil
 }
 
 // buildCatchAllEmailRouteView loads the persisted catch-all route when it
 // exists and otherwise returns the placeholder row required by the public page.
 func (s *PermissionService) buildCatchAllEmailRouteView(ctx context.Context, user model.User, permission UserPermissionView, namespace catchAllNamespace) (UserEmailRouteView, error) {
+	snapshot, snapshotErr := s.lookupCloudflareForwardingSnapshot(ctx, namespace.RootDomain, emailCatchAllPrefix)
 	item := UserEmailRouteView{
 		Kind:             UserEmailRouteKindCatchAll,
 		PermissionKey:    PermissionKeyEmailCatchAll,
-		DisplayName:      "邮箱泛解析",
-		Description:      "用于接收 catch-all@<username>.linuxdo.space 的泛解析邮件转发。",
+		DisplayName:      catchAllEmailRouteDisplayName,
+		Description:      catchAllEmailRouteDescription,
 		Address:          namespace.Address,
 		Prefix:           emailCatchAllPrefix,
 		RootDomain:       namespace.RootDomain,
@@ -558,7 +596,12 @@ func (s *PermissionService) buildCatchAllEmailRouteView(ctx context.Context, use
 	route, err := s.db.GetEmailRouteByAddress(ctx, namespace.RootDomain, emailCatchAllPrefix)
 	if err != nil {
 		if sqlite.IsNotFound(err) {
-			return item, nil
+			if snapshotErr == nil && snapshot.Found {
+				item.TargetEmail = snapshot.TargetEmail
+				item.Enabled = snapshot.Enabled
+				item.Configured = strings.TrimSpace(snapshot.TargetEmail) != ""
+			}
+			return normalizeUserEmailRouteCopy(item), nil
 		}
 		return UserEmailRouteView{}, InternalError("failed to load catch-all email route", err)
 	}
@@ -572,7 +615,12 @@ func (s *PermissionService) buildCatchAllEmailRouteView(ctx context.Context, use
 	item.Enabled = route.Enabled
 	item.Configured = strings.TrimSpace(route.TargetEmail) != ""
 	item.UpdatedAt = &updatedAt
-	return item, nil
+	if snapshotErr == nil && snapshot.Found {
+		item.TargetEmail = snapshot.TargetEmail
+		item.Enabled = snapshot.Enabled
+		item.Configured = strings.TrimSpace(snapshot.TargetEmail) != ""
+	}
+	return normalizeUserEmailRouteCopy(item), nil
 }
 
 // resolveCatchAllNamespace derives the fixed catch-all mailbox address from the
@@ -621,23 +669,6 @@ func (s *PermissionService) resolveCatchAllNamespace(ctx context.Context, user m
 		Address:            emailCatchAllPrefix + "@" + namespaceRoot,
 		HasOwnedAllocation: hasOwnedAllocation,
 	}, nil
-}
-
-// evaluateCatchAllEligibility converts the current policy and user profile into
-// human-readable reasons that explain why the permission can or cannot be
-// requested right now.
-func evaluateCatchAllEligibility(user model.User, policy model.PermissionPolicy, namespace catchAllNamespace) []string {
-	reasons := make([]string, 0, 3)
-	if !policy.Enabled {
-		reasons = append(reasons, "管理员当前已暂时关闭该权限申请。")
-	}
-	if !namespace.HasOwnedAllocation {
-		reasons = append(reasons, "你当前尚未持有与用户名同名的默认子域名，暂时无法申请该邮箱泛解析权限。")
-	}
-	if user.TrustLevel < policy.MinTrustLevel {
-		reasons = append(reasons, fmt.Sprintf("你的 Linux Do 信任等级需要至少达到 %d，当前为 %d。", policy.MinTrustLevel, user.TrustLevel))
-	}
-	return reasons
 }
 
 // findPermissionApplication picks the latest application row that matches the
@@ -689,6 +720,52 @@ func itemDisplayName(value string, fallback string) string {
 	return trimmed
 }
 
+// normalizeCatchAllPermissionCopy replaces any damaged legacy copy with the
+// canonical public wording used by the current frontend.
+func normalizeCatchAllPermissionCopy(item UserPermissionView) UserPermissionView {
+	if item.Key != PermissionKeyEmailCatchAll {
+		return item
+	}
+	item.DisplayName = itemDisplayName(item.DisplayName, emailCatchAllPermissionDisplayName)
+	item.Description = emailCatchAllPermissionDescription
+	item.PledgeText = emailCatchAllPledgeTextClean
+	return item
+}
+
+// normalizeUserEmailRouteCopy keeps user-visible mailbox labels and
+// descriptions stable even when older database rows or source strings contain
+// damaged text.
+func normalizeUserEmailRouteCopy(item UserEmailRouteView) UserEmailRouteView {
+	switch item.Kind {
+	case UserEmailRouteKindDefault:
+		item.DisplayName = defaultEmailRouteDisplayName
+		item.Description = defaultEmailRouteDescription
+	case UserEmailRouteKindCustom:
+		item.DisplayName = customEmailRouteDisplayName
+		item.Description = customEmailRouteDescription
+	case UserEmailRouteKindCatchAll:
+		item.DisplayName = catchAllEmailRouteDisplayName
+		item.Description = catchAllEmailRouteDescription
+	}
+	return item
+}
+
+// buildCatchAllEligibilityReasons renders the current policy gate into the
+// exact copy returned by the public permission API.
+func buildCatchAllEligibilityReasons(user model.User, policy model.PermissionPolicy, namespace catchAllNamespace) []string {
+	reasons := make([]string, 0, 3)
+	if !policy.Enabled {
+		reasons = append(reasons, "This permission is currently disabled by the administrator.")
+	}
+	if !namespace.HasOwnedAllocation {
+		reasons = append(reasons, "You do not currently own the default subdomain that matches your username, so the catch-all permission cannot be requested yet.")
+	}
+	if user.TrustLevel < policy.MinTrustLevel {
+		reasons = append(reasons, fmt.Sprintf("Your Linux Do trust level must be at least %d, but the current level is %d.", policy.MinTrustLevel, user.TrustLevel))
+	}
+	return reasons
+}
+
 // disableCatchAllEmailRouteForApplication keeps the effective route in sync when
 // an administrator moves a catch-all permission away from approved.
 func (s *PermissionService) disableCatchAllEmailRouteForApplication(ctx context.Context, actor model.User, application model.AdminApplication) error {
@@ -712,13 +789,22 @@ func (s *PermissionService) disableCatchAllEmailRouteForApplication(ctx context.
 		return nil
 	}
 
-	updated, err := s.db.UpdateEmailRoute(ctx, sqlite.UpdateEmailRouteInput{
-		ID:          route.ID,
-		TargetEmail: route.TargetEmail,
-		Enabled:     false,
-	})
-	if err != nil {
-		return InternalError("failed to disable catch-all email route", err)
+	beforeState := newForwardingEmailRouteSyncState(route.RootDomain, route.Prefix, route.TargetEmail, route.Enabled)
+	afterState := newForwardingEmailRouteSyncState(route.RootDomain, route.Prefix, route.TargetEmail, false)
+	updated := route
+	if err := newEmailRoutingProvisioner(s.cfg, s.cf).SyncForwardingState(ctx, beforeState, afterState, func() error {
+		var persistErr error
+		updated, persistErr = s.db.UpdateEmailRoute(ctx, sqlite.UpdateEmailRouteInput{
+			ID:          route.ID,
+			TargetEmail: route.TargetEmail,
+			Enabled:     false,
+		})
+		if persistErr != nil {
+			return InternalError("failed to disable catch-all email route", persistErr)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 
 	metadata, _ := json.Marshal(map[string]any{
