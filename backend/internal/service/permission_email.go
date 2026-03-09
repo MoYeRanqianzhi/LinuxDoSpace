@@ -124,24 +124,17 @@ func (s *PermissionService) UpsertMyDefaultEmailRoute(ctx context.Context, user 
 		return UserEmailRouteView{}, err
 	}
 
-	beforeState := newDeletedEmailRouteSyncState(spec.RootDomain, spec.Prefix)
-	existingRoute, err := s.db.GetEmailRouteByAddress(ctx, spec.RootDomain, spec.Prefix)
-	switch {
-	case err == nil:
-		if existingRoute.OwnerUserID != user.ID {
-			return UserEmailRouteView{}, UnavailableError("default mailbox is assigned to another user", fmt.Errorf("route %d belongs to user %d", existingRoute.ID, existingRoute.OwnerUserID))
-		}
-		beforeState = newForwardingEmailRouteSyncState(existingRoute.RootDomain, existingRoute.Prefix, existingRoute.TargetEmail, existingRoute.Enabled)
-	case sqlite.IsNotFound(err):
-		// No persisted default route exists yet, so Cloudflare rollback should
-		// simply delete the exact address if the later database write fails.
-	default:
-		return UserEmailRouteView{}, InternalError("failed to load default email route", err)
+	beforeState, existingRoute, err := s.resolveDefaultEmailRouteBeforeState(ctx, user, spec)
+	if err != nil {
+		return UserEmailRouteView{}, err
 	}
 
 	if targetEmail == "" {
-		if err == nil {
+		if beforeState.Exists {
 			if err := routing.SyncForwardingState(ctx, beforeState, newDeletedEmailRouteSyncState(spec.RootDomain, spec.Prefix), func() error {
+				if existingRoute == nil {
+					return nil
+				}
 				if deleteErr := s.db.DeleteEmailRoute(ctx, existingRoute.ID); deleteErr != nil {
 					return InternalError("failed to clear default email route", deleteErr)
 				}
@@ -150,17 +143,19 @@ func (s *PermissionService) UpsertMyDefaultEmailRoute(ctx context.Context, user 
 				return UserEmailRouteView{}, err
 			}
 
-			metadata, _ := json.Marshal(map[string]any{
-				"email_route_id": existingRoute.ID,
-				"address":        spec.Address,
-			})
-			logAuditWriteFailure("email_route.default.clear", s.db.WriteAuditLog(ctx, sqlite.AuditLogInput{
-				ActorUserID:  &user.ID,
-				Action:       "email_route.default.clear",
-				ResourceType: "email_route",
-				ResourceID:   strconv.FormatInt(existingRoute.ID, 10),
-				MetadataJSON: string(metadata),
-			}))
+			if existingRoute != nil {
+				metadata, _ := json.Marshal(map[string]any{
+					"email_route_id": existingRoute.ID,
+					"address":        spec.Address,
+				})
+				logAuditWriteFailure("email_route.default.clear", s.db.WriteAuditLog(ctx, sqlite.AuditLogInput{
+					ActorUserID:  &user.ID,
+					Action:       "email_route.default.clear",
+					ResourceType: "email_route",
+					ResourceID:   strconv.FormatInt(existingRoute.ID, 10),
+					MetadataJSON: string(metadata),
+				}))
+			}
 		}
 
 		return s.buildDefaultEmailRouteView(ctx, user)
@@ -206,6 +201,36 @@ func (s *PermissionService) UpsertMyDefaultEmailRoute(ctx context.Context, user 
 		false,
 		"",
 	), nil
+}
+
+// resolveDefaultEmailRouteBeforeState loads the exact Cloudflare-facing state
+// that should be considered the "before" snapshot for one user's implicit
+// default mailbox. The database remains authoritative for ownership checks, but
+// Cloudflare becomes the fallback truth when the local row is missing after a
+// partial failure.
+func (s *PermissionService) resolveDefaultEmailRouteBeforeState(ctx context.Context, user model.User, spec defaultEmailRouteSpec) (emailRouteSyncState, *model.EmailRoute, error) {
+	beforeState := newDeletedEmailRouteSyncState(spec.RootDomain, spec.Prefix)
+
+	existingRoute, err := s.db.GetEmailRouteByAddress(ctx, spec.RootDomain, spec.Prefix)
+	switch {
+	case err == nil:
+		if existingRoute.OwnerUserID != user.ID {
+			return emailRouteSyncState{}, nil, UnavailableError("default mailbox is assigned to another user", fmt.Errorf("route %d belongs to user %d", existingRoute.ID, existingRoute.OwnerUserID))
+		}
+		beforeState = newForwardingEmailRouteSyncState(existingRoute.RootDomain, existingRoute.Prefix, existingRoute.TargetEmail, existingRoute.Enabled)
+		return beforeState, &existingRoute, nil
+	case sqlite.IsNotFound(err):
+		snapshot, snapshotErr := s.lookupCloudflareForwardingSnapshot(ctx, spec.RootDomain, spec.Prefix)
+		if snapshotErr != nil {
+			return emailRouteSyncState{}, nil, snapshotErr
+		}
+		if snapshot.Found {
+			beforeState = newForwardingEmailRouteSyncState(spec.RootDomain, spec.Prefix, snapshot.TargetEmail, snapshot.Enabled)
+		}
+		return beforeState, nil, nil
+	default:
+		return emailRouteSyncState{}, nil, InternalError("failed to load default email route", err)
+	}
 }
 
 // resolveAvailableEmailRootDomain validates one public email root domain. When
