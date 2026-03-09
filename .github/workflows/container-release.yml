@@ -377,6 +377,11 @@ jobs:
               return 1
             fi
 
+            # Drop the existing remote tag reference before loading the new tar
+            # stream so compose cannot accidentally recreate the service from an
+            # older locally-tagged `latest` image during a flaky deployment.
+            ssh $SSH_OPTS -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "docker image rm -f '$TARGET_IMAGE' >/dev/null 2>&1 || true"
+
             timeout "$REMOTE_IMAGE_STREAM_TIMEOUT_SECONDS" bash -lc "docker save '$TARGET_IMAGE' | gzip -1 | ssh $SSH_OPTS -p '$DEPLOY_PORT' '$DEPLOY_USER@$DEPLOY_HOST' 'gzip -d | docker load'"
 
             remote_revision="$(ssh $SSH_OPTS -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "docker image inspect '$TARGET_IMAGE' --format '{{index .Config.Labels \"org.opencontainers.image.revision\"}}'")"
