@@ -410,6 +410,43 @@ func (s *PermissionService) lookupCloudflareForwardingSnapshot(ctx context.Conte
 	}, nil
 }
 
+// lookupCloudflareCatchAllSnapshot loads the Cloudflare catch-all rule for one
+// routed namespace so the public page can stay aligned with the provider even
+// when SQLite is stale or missing.
+func (s *PermissionService) lookupCloudflareCatchAllSnapshot(ctx context.Context, rootDomain string) (forwardingRuleSnapshot, error) {
+	if s.cf == nil || !s.cfg.CloudflareConfigured() {
+		return forwardingRuleSnapshot{}, nil
+	}
+
+	routing := newEmailRoutingProvisioner(s.cfg, s.cf)
+	zoneID, err := routing.resolveZoneID(ctx, rootDomain)
+	if err != nil {
+		return forwardingRuleSnapshot{}, err
+	}
+	zoneRoot, err := routing.resolveZoneRootDomain(ctx, zoneID, rootDomain)
+	if err != nil {
+		return forwardingRuleSnapshot{}, err
+	}
+	subdomain, err := cloudflareEmailRoutingScopedDomain(rootDomain, zoneRoot)
+	if err != nil {
+		return forwardingRuleSnapshot{}, err
+	}
+
+	rule, err := s.cf.GetEmailRoutingCatchAllRule(ctx, zoneID, subdomain)
+	if err != nil {
+		return forwardingRuleSnapshot{}, wrapEmailRoutingUnavailable("failed to load cloudflare catch-all email routing rule", err)
+	}
+	if !isCatchAllForwardingRule(rule) {
+		return forwardingRuleSnapshot{}, nil
+	}
+
+	return forwardingRuleSnapshot{
+		Found:       true,
+		TargetEmail: extractForwardTargetEmail(rule),
+		Enabled:     rule.Enabled,
+	}, nil
+}
+
 // extractForwardTargetEmail returns the first forwarded destination email from
 // one Cloudflare Email Routing rule. LinuxDoSpace only writes one destination
 // target today, so the first entry is the effective forwarding inbox.

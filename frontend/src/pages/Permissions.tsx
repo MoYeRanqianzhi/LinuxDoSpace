@@ -40,13 +40,13 @@ const emailCatchAllPermissionKey = 'email_catch_all';
 const builtinCatalog: CatalogItem[] = [
   {
     key: emailCatchAllPermissionKey,
-    displayName: 'catch-all@<用户名>.linuxdo.space',
+    displayName: '*@<用户名>.linuxdo.space',
     selectLabel: '二级域名邮箱泛解析',
     typeLabel: '邮箱泛解析',
     stage: 'live',
-    description: '为与你用户名同名的默认二级域名开放 catch-all 邮箱入口。真实申请入口位于邮箱页面，因为还需要填写转发邮箱并确认承诺书。',
+    description: '为与你用户名同名的默认二级域名开放整个邮箱命名空间的泛解析能力。真实申请入口位于邮箱页面，因为还需要填写转发邮箱并确认承诺书。',
     hint: '该权限已接入后端，当前权限页只负责恢复总入口设计，不会重复实现邮箱页中的提交逻辑。',
-    target: (user) => `catch-all@${normalizeIdentity(user?.username ?? 'username')}.linuxdo.space`,
+    target: (user) => `*@${normalizeIdentity(user?.username ?? 'username')}.linuxdo.space`,
   },
   {
     key: 'single_allocation',

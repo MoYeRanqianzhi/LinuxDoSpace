@@ -820,8 +820,8 @@ func (s *AdminService) disableCatchAllEmailRouteForApplication(ctx context.Conte
 		return nil
 	}
 
-	beforeState := newForwardingEmailRouteSyncState(route.RootDomain, route.Prefix, route.TargetEmail, route.Enabled)
-	afterState := newForwardingEmailRouteSyncState(route.RootDomain, route.Prefix, route.TargetEmail, false)
+	beforeState := newCatchAllEmailRouteSyncState(route.RootDomain, route.TargetEmail, route.Enabled)
+	afterState := newCatchAllEmailRouteSyncState(route.RootDomain, route.TargetEmail, false)
 	updated := route
 	if err := newEmailRoutingProvisioner(s.cfg, s.cf).SyncForwardingState(ctx, beforeState, afterState, func() error {
 		var persistErr error
@@ -841,7 +841,7 @@ func (s *AdminService) disableCatchAllEmailRouteForApplication(ctx context.Conte
 	metadata, _ := json.Marshal(map[string]any{
 		"email_route_id": updated.ID,
 		"application_id": application.ID,
-		"address":        updated.Prefix + "@" + updated.RootDomain,
+		"address":        buildCatchAllEmailRouteAddress(updated.RootDomain),
 		"status":         application.Status,
 	})
 	logAuditWriteFailure("admin.email_route.disable_on_permission_update", s.db.WriteAuditLog(ctx, sqlite.AuditLogInput{

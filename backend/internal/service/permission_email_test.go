@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"linuxdospace/backend/internal/cloudflare"
 	"linuxdospace/backend/internal/config"
@@ -15,49 +16,129 @@ import (
 // fakeEmailRoutingCloudflare keeps the tests focused on the permission service
 // behavior by emulating only the Email Routing operations exercised here.
 type fakeEmailRoutingCloudflare struct {
-	rulesByZone        map[string][]cloudflare.EmailRoutingRule
-	addressesByAccount map[string][]cloudflare.EmailRoutingDestinationAddress
-	deletedRule        []string
-	createdAddresses   []string
+	zones                      map[string]cloudflare.Zone
+	zoneIDsByRoot              map[string]string
+	rulesByZone                map[string][]cloudflare.EmailRoutingRule
+	catchAllRuleByZone         map[string]map[string]cloudflare.EmailRoutingRule
+	requiredDNSByZoneSubdomain map[string]map[string][]cloudflare.EmailRoutingDNSRecord
+	dnsRecordsByZone           map[string][]cloudflare.DNSRecord
+	addressesByAccount         map[string][]cloudflare.EmailRoutingDestinationAddress
+	deletedRule                []string
+	createdAddresses           []string
+	enabledDNSZones            []string
+	updatedCatchAllSubdomains  []string
 }
 
-// ResolveZone is unused in these tests because the configuration pins a default zone id.
+// ResolveZone returns the configured in-memory zone for the requested root.
 func (f *fakeEmailRoutingCloudflare) ResolveZone(ctx context.Context, rootDomain string) (cloudflare.Zone, error) {
-	return cloudflare.Zone{}, nil
+	normalizedRoot := strings.ToLower(strings.TrimSpace(rootDomain))
+	if zoneID, ok := f.zoneIDsByRoot[normalizedRoot]; ok {
+		return f.GetZone(ctx, zoneID)
+	}
+	return cloudflare.Zone{}, fmt.Errorf("zone %q not found", rootDomain)
 }
 
-// GetZone is unused in these tests because the configuration pins a Cloudflare account id.
+// GetZone returns one configured in-memory zone snapshot.
 func (f *fakeEmailRoutingCloudflare) GetZone(ctx context.Context, zoneID string) (cloudflare.Zone, error) {
-	return cloudflare.Zone{}, nil
+	if zone, ok := f.zones[strings.TrimSpace(zoneID)]; ok {
+		return zone, nil
+	}
+	if strings.TrimSpace(zoneID) == "zone-default" {
+		return cloudflare.Zone{
+			ID:   "zone-default",
+			Name: "linuxdo.space",
+			Account: struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			}{
+				ID:   "account-default",
+				Name: "Test Account",
+			},
+		}, nil
+	}
+	return cloudflare.Zone{}, fmt.Errorf("zone %q not found", zoneID)
 }
 
-// ResolveZoneID is unused in these tests because the configuration pins a default zone id.
+// ResolveZoneID resolves one configured root domain to its in-memory zone id.
 func (f *fakeEmailRoutingCloudflare) ResolveZoneID(ctx context.Context, rootDomain string) (string, error) {
-	return "", nil
+	normalizedRoot := strings.ToLower(strings.TrimSpace(rootDomain))
+	if zoneID, ok := f.zoneIDsByRoot[normalizedRoot]; ok {
+		return zoneID, nil
+	}
+	if normalizedRoot == "linuxdo.space" {
+		return "zone-default", nil
+	}
+	return "", fmt.Errorf("zone %q not found", rootDomain)
 }
 
-// ListAllDNSRecords is outside the scope of the email-routing tests.
+// ListAllDNSRecords returns the in-memory DNS snapshot visible in one zone.
 func (f *fakeEmailRoutingCloudflare) ListAllDNSRecords(ctx context.Context, zoneID string) ([]cloudflare.DNSRecord, error) {
-	return nil, nil
+	records := f.dnsRecordsByZone[strings.TrimSpace(zoneID)]
+	cloned := make([]cloudflare.DNSRecord, len(records))
+	copy(cloned, records)
+	return cloned, nil
 }
 
-// GetDNSRecord is outside the scope of the email-routing tests.
+// GetDNSRecord returns one in-memory DNS record by id.
 func (f *fakeEmailRoutingCloudflare) GetDNSRecord(ctx context.Context, zoneID string, recordID string) (cloudflare.DNSRecord, error) {
-	return cloudflare.DNSRecord{}, nil
+	for _, item := range f.dnsRecordsByZone[strings.TrimSpace(zoneID)] {
+		if item.ID == strings.TrimSpace(recordID) {
+			return item, nil
+		}
+	}
+	return cloudflare.DNSRecord{}, fmt.Errorf("record %q not found", recordID)
 }
 
-// CreateDNSRecord is outside the scope of the email-routing tests.
+// CreateDNSRecord appends one new in-memory DNS record.
 func (f *fakeEmailRoutingCloudflare) CreateDNSRecord(ctx context.Context, zoneID string, input cloudflare.CreateDNSRecordInput) (cloudflare.DNSRecord, error) {
-	return cloudflare.DNSRecord{}, nil
+	record := cloudflare.DNSRecord{
+		ID:       fmt.Sprintf("dns-%d", len(f.dnsRecordsByZone[strings.TrimSpace(zoneID)])+1),
+		Type:     strings.ToUpper(strings.TrimSpace(input.Type)),
+		Name:     strings.ToLower(strings.TrimSpace(input.Name)),
+		Content:  strings.TrimSpace(input.Content),
+		TTL:      input.TTL,
+		Proxied:  input.Proxied,
+		Comment:  strings.TrimSpace(input.Comment),
+		Priority: input.Priority,
+	}
+	if f.dnsRecordsByZone == nil {
+		f.dnsRecordsByZone = make(map[string][]cloudflare.DNSRecord)
+	}
+	f.dnsRecordsByZone[strings.TrimSpace(zoneID)] = append(f.dnsRecordsByZone[strings.TrimSpace(zoneID)], record)
+	return record, nil
 }
 
-// UpdateDNSRecord is outside the scope of the email-routing tests.
+// UpdateDNSRecord replaces the stored payload for one existing in-memory DNS record.
 func (f *fakeEmailRoutingCloudflare) UpdateDNSRecord(ctx context.Context, zoneID string, recordID string, input cloudflare.UpdateDNSRecordInput) (cloudflare.DNSRecord, error) {
-	return cloudflare.DNSRecord{}, nil
+	records := f.dnsRecordsByZone[strings.TrimSpace(zoneID)]
+	for index := range records {
+		if records[index].ID != strings.TrimSpace(recordID) {
+			continue
+		}
+		records[index].Type = strings.ToUpper(strings.TrimSpace(input.Type))
+		records[index].Name = strings.ToLower(strings.TrimSpace(input.Name))
+		records[index].Content = strings.TrimSpace(input.Content)
+		records[index].TTL = input.TTL
+		records[index].Proxied = input.Proxied
+		records[index].Comment = strings.TrimSpace(input.Comment)
+		records[index].Priority = input.Priority
+		f.dnsRecordsByZone[strings.TrimSpace(zoneID)] = records
+		return records[index], nil
+	}
+	return cloudflare.DNSRecord{}, fmt.Errorf("record %q not found", recordID)
 }
 
-// DeleteDNSRecord is outside the scope of the email-routing tests.
+// DeleteDNSRecord removes one in-memory DNS record.
 func (f *fakeEmailRoutingCloudflare) DeleteDNSRecord(ctx context.Context, zoneID string, recordID string) error {
+	records := f.dnsRecordsByZone[strings.TrimSpace(zoneID)]
+	filtered := make([]cloudflare.DNSRecord, 0, len(records))
+	for _, item := range records {
+		if item.ID == strings.TrimSpace(recordID) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	f.dnsRecordsByZone[strings.TrimSpace(zoneID)] = filtered
 	return nil
 }
 
@@ -92,6 +173,21 @@ func (f *fakeEmailRoutingCloudflare) CreateEmailRoutingDestinationAddress(ctx co
 	return created, nil
 }
 
+// EnableEmailRoutingDNS records that Email Routing DNS bootstrap was requested.
+func (f *fakeEmailRoutingCloudflare) EnableEmailRoutingDNS(ctx context.Context, zoneID string) ([]cloudflare.EmailRoutingDNSRecord, error) {
+	f.enabledDNSZones = append(f.enabledDNSZones, strings.TrimSpace(zoneID))
+	return f.ListEmailRoutingDNSRecords(ctx, zoneID, "")
+}
+
+// ListEmailRoutingDNSRecords returns the required DNS records configured for one namespace.
+func (f *fakeEmailRoutingCloudflare) ListEmailRoutingDNSRecords(ctx context.Context, zoneID string, subdomain string) ([]cloudflare.EmailRoutingDNSRecord, error) {
+	requiredBySubdomain := f.requiredDNSByZoneSubdomain[strings.TrimSpace(zoneID)]
+	records := requiredBySubdomain[strings.ToLower(strings.TrimSpace(subdomain))]
+	cloned := make([]cloudflare.EmailRoutingDNSRecord, len(records))
+	copy(cloned, records)
+	return cloned, nil
+}
+
 // ListEmailRoutingRules returns the in-memory rules currently visible in one zone.
 func (f *fakeEmailRoutingCloudflare) ListEmailRoutingRules(ctx context.Context, zoneID string) ([]cloudflare.EmailRoutingRule, error) {
 	rules := f.rulesByZone[zoneID]
@@ -100,14 +196,40 @@ func (f *fakeEmailRoutingCloudflare) ListEmailRoutingRules(ctx context.Context, 
 	return cloned, nil
 }
 
-// CreateEmailRoutingRule is unused by the stale-clear regression tests.
+// CreateEmailRoutingRule appends one new literal in-memory forwarding rule.
 func (f *fakeEmailRoutingCloudflare) CreateEmailRoutingRule(ctx context.Context, zoneID string, input cloudflare.UpsertEmailRoutingRuleInput) (cloudflare.EmailRoutingRule, error) {
-	return cloudflare.EmailRoutingRule{}, nil
+	rule := cloudflare.EmailRoutingRule{
+		ID:       fmt.Sprintf("rule-%d", len(f.rulesByZone[strings.TrimSpace(zoneID)])+1),
+		Name:     input.Name,
+		Enabled:  input.Enabled,
+		Matchers: cloneRuleMatchers(input.Matchers),
+		Actions:  cloneRuleActions(input.Actions),
+		Priority: input.Priority,
+	}
+	if f.rulesByZone == nil {
+		f.rulesByZone = make(map[string][]cloudflare.EmailRoutingRule)
+	}
+	f.rulesByZone[strings.TrimSpace(zoneID)] = append(f.rulesByZone[strings.TrimSpace(zoneID)], rule)
+	return rule, nil
 }
 
-// UpdateEmailRoutingRule is unused by the stale-clear regression tests.
+// UpdateEmailRoutingRule replaces one existing literal in-memory forwarding rule.
 func (f *fakeEmailRoutingCloudflare) UpdateEmailRoutingRule(ctx context.Context, zoneID string, ruleIdentifier string, input cloudflare.UpsertEmailRoutingRuleInput) (cloudflare.EmailRoutingRule, error) {
-	return cloudflare.EmailRoutingRule{}, nil
+	zoneKey := strings.TrimSpace(zoneID)
+	rules := f.rulesByZone[zoneKey]
+	for index := range rules {
+		if rules[index].Identifier() != strings.TrimSpace(ruleIdentifier) {
+			continue
+		}
+		rules[index].Name = input.Name
+		rules[index].Enabled = input.Enabled
+		rules[index].Matchers = cloneRuleMatchers(input.Matchers)
+		rules[index].Actions = cloneRuleActions(input.Actions)
+		rules[index].Priority = input.Priority
+		f.rulesByZone[zoneKey] = rules
+		return rules[index], nil
+	}
+	return f.CreateEmailRoutingRule(ctx, zoneID, input)
 }
 
 // DeleteEmailRoutingRule removes one in-memory rule so later reads observe the cleanup.
@@ -124,6 +246,40 @@ func (f *fakeEmailRoutingCloudflare) DeleteEmailRoutingRule(ctx context.Context,
 	}
 	f.rulesByZone[zoneID] = filtered
 	return nil
+}
+
+// GetEmailRoutingCatchAllRule returns one stored catch-all rule for the target namespace.
+func (f *fakeEmailRoutingCloudflare) GetEmailRoutingCatchAllRule(ctx context.Context, zoneID string, subdomain string) (cloudflare.EmailRoutingRule, error) {
+	rulesBySubdomain := f.catchAllRuleByZone[strings.TrimSpace(zoneID)]
+	if rulesBySubdomain == nil {
+		return cloudflare.EmailRoutingRule{}, nil
+	}
+	return rulesBySubdomain[strings.ToLower(strings.TrimSpace(subdomain))], nil
+}
+
+// UpdateEmailRoutingCatchAllRule stores the catch-all rule under the requested namespace key.
+func (f *fakeEmailRoutingCloudflare) UpdateEmailRoutingCatchAllRule(ctx context.Context, zoneID string, subdomain string, input cloudflare.UpsertEmailRoutingRuleInput) (cloudflare.EmailRoutingRule, error) {
+	zoneKey := strings.TrimSpace(zoneID)
+	subdomainKey := strings.ToLower(strings.TrimSpace(subdomain))
+	if f.catchAllRuleByZone == nil {
+		f.catchAllRuleByZone = make(map[string]map[string]cloudflare.EmailRoutingRule)
+	}
+	if f.catchAllRuleByZone[zoneKey] == nil {
+		f.catchAllRuleByZone[zoneKey] = make(map[string]cloudflare.EmailRoutingRule)
+	}
+
+	rule := f.catchAllRuleByZone[zoneKey][subdomainKey]
+	if strings.TrimSpace(rule.ID) == "" {
+		rule.ID = fmt.Sprintf("catch-all-%s-%d", zoneKey, len(f.catchAllRuleByZone[zoneKey])+1)
+	}
+	rule.Name = input.Name
+	rule.Enabled = input.Enabled
+	rule.Matchers = cloneRuleMatchers(input.Matchers)
+	rule.Actions = cloneRuleActions(input.Actions)
+	rule.Priority = input.Priority
+	f.catchAllRuleByZone[zoneKey][subdomainKey] = rule
+	f.updatedCatchAllSubdomains = append(f.updatedCatchAllSubdomains, subdomainKey)
+	return rule, nil
 }
 
 // TestResolveDefaultEmailRouteBeforeStateFallsBackToCloudflareSnapshot verifies
@@ -233,6 +389,156 @@ func TestUpsertMyDefaultEmailRouteClearsCloudflareWhenDatabaseRowMissing(t *test
 	}
 }
 
+// TestUpsertMyCatchAllEmailRouteUsesCatchAllRuleAndEnsuresEmailRoutingDNS
+// verifies that namespace-wide email forwarding uses Cloudflare's dedicated
+// catch-all rule plus the required Email Routing DNS records, rather than a
+// fake literal mailbox such as catch-all@namespace.
+func TestUpsertMyCatchAllEmailRouteUsesCatchAllRuleAndEnsuresEmailRoutingDNS(t *testing.T) {
+	ctx := context.Background()
+	store := newAuthTestStore(t)
+	user := seedPermissionEmailTestUserWithLinuxDOID(t, ctx, store, 501, "alice")
+	seedPermissionEmailManagedDomain(t, ctx, store)
+	seedPermissionEmailAllocation(t, ctx, store, user, "linuxdo.space", "alice")
+
+	priorityTen := 10
+	cf := newFakeEmailRoutingCloudflare()
+	cf.requiredDNSByZoneSubdomain["zone-default"]["alice.linuxdo.space"] = []cloudflare.EmailRoutingDNSRecord{
+		{
+			Type:     "MX",
+			Name:     "alice.linuxdo.space",
+			Content:  "route1.mx.cloudflare.net",
+			TTL:      1,
+			Priority: &priorityTen,
+		},
+		{
+			Type:    "TXT",
+			Name:    "alice.linuxdo.space",
+			Content: "v=spf1 include:_spf.mx.cloudflare.net ~all",
+			TTL:     1,
+		},
+	}
+
+	service := NewPermissionService(newPermissionEmailTestConfig(), store, cf)
+	target, err := service.CreateMyEmailTarget(ctx, user, CreateMyEmailTargetRequest{Email: "owner@example.com"})
+	if err != nil {
+		t.Fatalf("create owned email target: %v", err)
+	}
+
+	verifiedAt := time.Now().UTC()
+	cf.addressesByAccount["account-default"][0].Verified = &verifiedAt
+
+	if _, err := service.SubmitPermissionApplication(ctx, user, SubmitPermissionApplicationRequest{Key: PermissionKeyEmailCatchAll}); err != nil {
+		t.Fatalf("submit catch-all permission application: %v", err)
+	}
+
+	view, err := service.UpsertMyCatchAllEmailRoute(ctx, user, UpsertMyCatchAllEmailRouteRequest{
+		TargetEmail: target.Email,
+		Enabled:     true,
+	})
+	if err != nil {
+		t.Fatalf("save catch-all email route: %v", err)
+	}
+
+	if view.Address != "*@alice.linuxdo.space" {
+		t.Fatalf("expected canonical catch-all address, got %q", view.Address)
+	}
+	if !view.Configured || !view.Enabled {
+		t.Fatalf("expected configured enabled catch-all view, got %+v", view)
+	}
+	if view.TargetEmail != "owner@example.com" {
+		t.Fatalf("expected saved target email owner@example.com, got %q", view.TargetEmail)
+	}
+
+	if len(cf.enabledDNSZones) == 0 || cf.enabledDNSZones[0] != "zone-default" {
+		t.Fatalf("expected email routing dns bootstrap for zone-default, got %v", cf.enabledDNSZones)
+	}
+
+	zoneDNSRecords := cf.dnsRecordsByZone["zone-default"]
+	if len(zoneDNSRecords) != 2 {
+		t.Fatalf("expected two DNS records required for namespace routing, got %d", len(zoneDNSRecords))
+	}
+	if !hasDNSRecord(zoneDNSRecords, "MX", "alice.linuxdo.space", "route1.mx.cloudflare.net") {
+		t.Fatalf("expected namespace MX record to be created, got %+v", zoneDNSRecords)
+	}
+	if !hasDNSRecord(zoneDNSRecords, "TXT", "alice.linuxdo.space", "v=spf1 include:_spf.mx.cloudflare.net ~all") {
+		t.Fatalf("expected namespace SPF record to be created, got %+v", zoneDNSRecords)
+	}
+
+	catchAllRule := cf.catchAllRuleByZone["zone-default"]["alice.linuxdo.space"]
+	if !catchAllRule.Enabled {
+		t.Fatalf("expected catch-all rule to stay enabled")
+	}
+	if len(catchAllRule.Matchers) != 1 || catchAllRule.Matchers[0].Type != "all" {
+		t.Fatalf("expected catch-all matcher type=all, got %+v", catchAllRule.Matchers)
+	}
+	if targetEmail := extractForwardTargetEmail(catchAllRule); targetEmail != "owner@example.com" {
+		t.Fatalf("expected catch-all forward target owner@example.com, got %q", targetEmail)
+	}
+	if len(cf.rulesByZone["zone-default"]) != 0 {
+		t.Fatalf("expected no literal email routing rule to be created for catch-all, got %+v", cf.rulesByZone["zone-default"])
+	}
+
+	storedRoute, err := store.GetEmailRouteByAddress(ctx, "alice.linuxdo.space", emailCatchAllPrefix)
+	if err != nil {
+		t.Fatalf("load stored catch-all email route: %v", err)
+	}
+	if storedRoute.TargetEmail != "owner@example.com" {
+		t.Fatalf("expected stored catch-all target owner@example.com, got %q", storedRoute.TargetEmail)
+	}
+}
+
+// TestParseCatchAllTargetAddressAcceptsLegacyAndCanonical verifies that the
+// service can still read historical `catch-all@...` targets while exposing the
+// canonical public `*@...` representation everywhere else.
+func TestParseCatchAllTargetAddressAcceptsLegacyAndCanonical(t *testing.T) {
+	testCases := []struct {
+		name           string
+		target         string
+		wantLocalPart  string
+		wantRootDomain string
+		expectError    bool
+	}{
+		{
+			name:           "canonical namespace target",
+			target:         "*@alice.linuxdo.space",
+			wantLocalPart:  "*",
+			wantRootDomain: "alice.linuxdo.space",
+		},
+		{
+			name:           "legacy stored target",
+			target:         "catch-all@alice.linuxdo.space",
+			wantLocalPart:  "catch-all",
+			wantRootDomain: "alice.linuxdo.space",
+		},
+		{
+			name:        "invalid literal target",
+			target:      "alice@linuxdo.space",
+			expectError: true,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			localPart, rootDomain, err := parseCatchAllTargetAddress(testCase.target)
+			if testCase.expectError {
+				if err == nil {
+					t.Fatalf("expected parse error for %q", testCase.target)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parse catch-all target: %v", err)
+			}
+			if localPart != testCase.wantLocalPart {
+				t.Fatalf("expected local-part %q, got %q", testCase.wantLocalPart, localPart)
+			}
+			if rootDomain != testCase.wantRootDomain {
+				t.Fatalf("expected root domain %q, got %q", testCase.wantRootDomain, rootDomain)
+			}
+		})
+	}
+}
+
 // newPermissionEmailTestConfig keeps the email-routing tests independent from
 // environment loading while still exercising the production code paths.
 func newPermissionEmailTestConfig() config.Config {
@@ -247,6 +553,34 @@ func newPermissionEmailTestConfig() config.Config {
 			DefaultZoneID:     "zone-default",
 			DefaultUserQuota:  1,
 		},
+	}
+}
+
+// newFakeEmailRoutingCloudflare initializes the in-memory Cloudflare stub with
+// the default account and zone used by the permission email tests.
+func newFakeEmailRoutingCloudflare() *fakeEmailRoutingCloudflare {
+	return &fakeEmailRoutingCloudflare{
+		zones: map[string]cloudflare.Zone{
+			"zone-default": {
+				ID:   "zone-default",
+				Name: "linuxdo.space",
+				Account: struct {
+					ID   string `json:"id"`
+					Name string `json:"name"`
+				}{
+					ID:   "account-default",
+					Name: "Test Account",
+				},
+			},
+		},
+		zoneIDsByRoot: map[string]string{
+			"linuxdo.space": "zone-default",
+		},
+		rulesByZone:                make(map[string][]cloudflare.EmailRoutingRule),
+		catchAllRuleByZone:         make(map[string]map[string]cloudflare.EmailRoutingRule),
+		requiredDNSByZoneSubdomain: map[string]map[string][]cloudflare.EmailRoutingDNSRecord{"zone-default": {}},
+		dnsRecordsByZone:           make(map[string][]cloudflare.DNSRecord),
+		addressesByAccount:         make(map[string][]cloudflare.EmailRoutingDestinationAddress),
 	}
 }
 
@@ -284,4 +618,76 @@ func seedPermissionEmailManagedDomain(t *testing.T, ctx context.Context, store *
 	}); err != nil {
 		t.Fatalf("seed managed domain: %v", err)
 	}
+}
+
+// seedPermissionEmailAllocation creates the username-matching namespace needed
+// for catch-all permission eligibility.
+func seedPermissionEmailAllocation(t *testing.T, ctx context.Context, store *sqlite.Store, user model.User, rootDomain string, prefix string) model.Allocation {
+	t.Helper()
+
+	managedDomain, err := store.GetManagedDomainByRoot(ctx, rootDomain)
+	if err != nil {
+		t.Fatalf("load managed domain: %v", err)
+	}
+
+	allocation, err := store.CreateAllocation(ctx, sqlite.CreateAllocationInput{
+		UserID:           user.ID,
+		ManagedDomainID:  managedDomain.ID,
+		Prefix:           prefix,
+		NormalizedPrefix: prefix,
+		FQDN:             prefix + "." + rootDomain,
+		IsPrimary:        true,
+		Source:           "test",
+		Status:           "active",
+	})
+	if err != nil {
+		t.Fatalf("seed allocation: %v", err)
+	}
+	return allocation
+}
+
+// cloneRuleMatchers copies one matcher slice so tests can assert later writes
+// without being affected by shared backing arrays.
+func cloneRuleMatchers(input []cloudflare.EmailRoutingMatcher) []cloudflare.EmailRoutingRuleMatcher {
+	cloned := make([]cloudflare.EmailRoutingRuleMatcher, len(input))
+	for index, item := range input {
+		cloned[index] = cloudflare.EmailRoutingRuleMatcher{
+			Type:  item.Type,
+			Field: item.Field,
+			Value: item.Value,
+		}
+	}
+	return cloned
+}
+
+// cloneRuleActions copies one action slice so in-memory rules remain stable.
+func cloneRuleActions(input []cloudflare.EmailRoutingAction) []cloudflare.EmailRoutingRuleAction {
+	cloned := make([]cloudflare.EmailRoutingRuleAction, len(input))
+	for index, item := range input {
+		values := make([]string, len(item.Value))
+		copy(values, item.Value)
+		cloned[index] = cloudflare.EmailRoutingRuleAction{
+			Type:  item.Type,
+			Value: values,
+		}
+	}
+	return cloned
+}
+
+// hasDNSRecord checks whether one in-memory DNS snapshot already contains the
+// expected Cloudflare record content.
+func hasDNSRecord(records []cloudflare.DNSRecord, recordType string, name string, content string) bool {
+	for _, item := range records {
+		if !strings.EqualFold(item.Type, recordType) {
+			continue
+		}
+		if !strings.EqualFold(item.Name, name) {
+			continue
+		}
+		if !strings.EqualFold(item.Content, content) {
+			continue
+		}
+		return true
+	}
+	return false
 }

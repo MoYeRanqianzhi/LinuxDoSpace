@@ -8,7 +8,7 @@
 - Improved admin console resilience by splitting application-list and policy loading, surfacing email-route modal validation errors, and refusing to fake a successful logout when the backend did not confirm it.
 - Added real Cloudflare Email Routing synchronization for user-managed and administrator-managed mailbox forwards, including verified destination-address checks and exact-address rule sync.
 - Documented the new `CLOUDFLARE_ACCOUNT_ID` requirement plus the Email Routing token scopes needed for production deployments.
-- Added the first real user-facing permission flow for `catch-all@<username>.linuxdo.space`, including policy-backed auto-approval, administrator policy controls, and end-to-end frontend integration for the email and permission pages.
+- Added the first real user-facing permission flow for `*@<username>.linuxdo.space`, including policy-backed auto-approval, administrator policy controls, and end-to-end frontend integration for the email and permission pages.
 - Added persistent permission-policy storage plus user-side email-route APIs so catch-all forwarding now has a real backend instead of preview-only UI.
 - Added direct administrator permission controls inside the user management flow so admins can inspect and override `email_catch_all` status per user, with review notes kept alongside the application record.
 - Added administrator allocation lifecycle controls so the admin console can now create namespaces, transfer ownership, disable allocations, and reassign the primary namespace without editing SQLite manually.

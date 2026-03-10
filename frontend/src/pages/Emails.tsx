@@ -132,7 +132,7 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
   const catchAllAddress = useMemo(() => {
     if (catchAllRoute?.address) return catchAllRoute.address;
     if (permission?.target?.trim()) return permission.target.trim();
-    return normalizedUsername ? `catch-all@${normalizedUsername}.${configuredRootDomain}` : `catch-all@<用户名>.${configuredRootDomain}`;
+    return normalizedUsername ? `*@${normalizedUsername}.${configuredRootDomain}` : `*@<用户名>.${configuredRootDomain}`;
   }, [catchAllRoute?.address, configuredRootDomain, normalizedUsername, permission?.target]);
   const searchRootDomain = defaultRoute?.root_domain ?? searchResult?.root_domain ?? configuredRootDomain;
   const pledgeText = permission?.pledge_text?.trim() ?? '';
@@ -208,7 +208,7 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
         setPermissionError('');
       } else {
         setPermission(null);
-        setPermissionError(readableErrorMessage(permissionResult.reason, '无法加载 catch-all 权限数据。'));
+        setPermissionError(readableErrorMessage(permissionResult.reason, '无法加载邮箱泛解析权限数据。'));
       }
     }
 
@@ -360,11 +360,11 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
       setCatchAllNotice({
         tone: 'success',
         message: nextPermission.status === 'approved'
-          ? 'catch-all 权限申请已记录并自动通过，现在可以继续配置邮箱转发。'
-          : 'catch-all 权限申请已提交，等待管理员处理。',
+          ? '邮箱泛解析权限申请已记录并自动通过，现在可以继续配置邮箱转发。'
+          : '邮箱泛解析权限申请已提交，等待管理员处理。',
       });
     } catch (error) {
-      setCatchAllNotice({ tone: 'error', message: readableErrorMessage(error, '提交 catch-all 权限申请失败。') });
+      setCatchAllNotice({ tone: 'error', message: readableErrorMessage(error, '提交邮箱泛解析权限申请失败。') });
     } finally {
       setApplyingPermission(false);
     }
@@ -377,13 +377,13 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
       return;
     }
     if (!permission?.can_manage_route) {
-      setCatchAllNotice({ tone: 'error', message: '当前尚未获得 catch-all 配置权限。' });
+      setCatchAllNotice({ tone: 'error', message: '当前尚未获得邮箱泛解析配置权限。' });
       return;
     }
 
     const nextTarget = normalizeEmail(catchAllTarget);
     if (catchAllEnabled && !nextTarget) {
-      setCatchAllNotice({ tone: 'error', message: '启用 catch-all 转发前，请先选择一个已验证的目标邮箱。' });
+      setCatchAllNotice({ tone: 'error', message: '启用邮箱泛解析转发前，请先选择一个已验证的目标邮箱。' });
       return;
     }
     if (nextTarget && !isVerifiedTargetOwned(nextTarget, verifiedTargets)) {
@@ -401,10 +401,10 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
       setRoutes((currentRoutes) => upsertRoute(currentRoutes, savedRoute));
       setCatchAllNotice({
         tone: 'success',
-        message: savedRoute.configured ? 'catch-all 邮箱已更新。' : 'catch-all 邮箱已清空，当前不会继续转发邮件。',
+        message: savedRoute.configured ? '邮箱泛解析已更新。' : '邮箱泛解析已清空，当前不会继续转发邮件。',
       });
     } catch (error) {
-      setCatchAllNotice({ tone: 'error', message: readableErrorMessage(error, '保存 catch-all 邮箱失败。') });
+      setCatchAllNotice({ tone: 'error', message: readableErrorMessage(error, '保存邮箱泛解析失败。') });
     } finally {
       setSavingCatchAll(false);
     }
@@ -486,8 +486,8 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
 
             <InfoBlock title="默认邮箱" description={normalizedUsername ? `每位用户默认保留 ${normalizedUsername}@${configuredRootDomain}，但必须先绑定自己的目标邮箱后才能转发。` : '每位用户都会默认保留一个与用户名同名的邮箱地址。'} />
             <InfoBlock title="我的转发目标" description="先在“我的转发目标”里绑定目标邮箱。新增后 Cloudflare 会向该邮箱发送确认邮件，验证完成后该目标才会出现在下拉选择器里。" />
-            <InfoBlock title="我的邮箱列表" description="这里会展示当前账号已经存在或默认保留的邮箱行，包括默认邮箱、已存在的自定义邮箱以及已配置的 catch-all。" />
-            <InfoBlock title="catch-all 权限" description="catch-all 不是默认开放功能。只有满足权限条件的用户才可以申请，并在通过后配置转发目标。" />
+            <InfoBlock title="我的邮箱列表" description="这里会展示当前账号已经存在或默认保留的邮箱行，包括默认邮箱、已存在的自定义邮箱以及已配置的邮箱泛解析。" />
+            <InfoBlock title="邮箱泛解析权限" description="邮箱泛解析不是默认开放功能。只有满足权限条件的用户才可以申请，并在通过后配置转发目标。" />
           </GlassCard>
         </div>
       </motion.div>
@@ -502,8 +502,8 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
               <h2 className="text-xl font-bold text-gray-900 dark:text-white">{sessionLoading ? '正在检查登录状态' : '登录后管理我的邮箱'}</h2>
               <p className="mt-2 text-sm leading-7 text-gray-700 dark:text-gray-200">
                 {sessionLoading
-                  ? '你现在仍可使用上方搜索功能。待登录状态加载完成后，再进入目标邮箱绑定、默认邮箱和 catch-all 配置。'
-                  : '搜索功能无需登录，但目标邮箱绑定、默认邮箱配置、我的邮箱列表和 catch-all 权限申请都需要使用 Linux Do 账号登录。'}
+                  ? '你现在仍可使用上方搜索功能。待登录状态加载完成后，再进入目标邮箱绑定、默认邮箱和邮箱泛解析配置。'
+                  : '搜索功能无需登录，但目标邮箱绑定、默认邮箱配置、我的邮箱列表和邮箱泛解析权限申请都需要使用 Linux Do 账号登录。'}
               </p>
             </div>
           </div>
@@ -575,7 +575,7 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
                 <div className="rounded-2xl bg-sky-500/15 p-3 text-sky-700 dark:text-sky-300"><Mail size={20} /></div>
                 <div>
                   <h2 className="text-xl font-bold text-gray-900 dark:text-white">我的转发目标</h2>
-                  <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">先绑定并验证目标邮箱，再把它用于默认邮箱或 catch-all 转发。</p>
+                  <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">先绑定并验证目标邮箱，再把它用于默认邮箱或邮箱泛解析转发。</p>
                 </div>
               </div>
 
@@ -627,7 +627,7 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
 
             {emailTargets.length === 0 ? (
               <div className="rounded-3xl border border-dashed border-white/20 bg-white/25 p-6 text-sm leading-7 text-gray-700 dark:border-white/10 dark:bg-black/15 dark:text-gray-200">
-                你当前还没有绑定任何目标邮箱。先添加一个你自己的邮箱地址，完成 Cloudflare 验证后，它才会出现在默认邮箱和 catch-all 的下拉框里。
+                你当前还没有绑定任何目标邮箱。先添加一个你自己的邮箱地址，完成 Cloudflare 验证后，它才会出现在默认邮箱和邮箱泛解析的下拉框里。
               </div>
             ) : (
               <div className="overflow-x-auto rounded-3xl border border-white/15 bg-white/35 dark:border-white/10 dark:bg-black/20">
@@ -725,7 +725,7 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
               <div className="flex items-center gap-3">
                 <div className="rounded-2xl bg-violet-500/15 p-3 text-violet-700 dark:text-violet-300"><ShieldCheck size={20} /></div>
                 <div>
-                  <h2 className="text-xl font-bold text-gray-900 dark:text-white">catch-all 权限与配置</h2>
+                  <h2 className="text-xl font-bold text-gray-900 dark:text-white">邮箱泛解析权限与配置</h2>
                   <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">当前目标地址：<span className="font-semibold">{catchAllAddress}</span></p>
                 </div>
               </div>
@@ -733,9 +733,9 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
               {permissionError ? <InlineNotice tone="error" message={`权限数据加载失败：${permissionError}`} /> : null}
               {catchAllNotice ? <InlineNotice tone={catchAllNotice.tone} message={catchAllNotice.message} /> : null}
               {catchAllTargetNeedsVerification && catchAllRoute?.target_email ? (
-                <InlineNotice tone="info" message={`当前已保存的 catch-all 目标邮箱 ${catchAllRoute.target_email} 尚未完成验证。完成验证后刷新状态，或改选其他已验证目标邮箱。`} />
+                <InlineNotice tone="info" message={`当前已保存的邮箱泛解析目标邮箱 ${catchAllRoute.target_email} 尚未完成验证。完成验证后刷新状态，或改选其他已验证目标邮箱。`} />
               ) : null}
-              {!permission && !permissionError ? <InlineNotice tone="info" message="当前后端没有返回 catch-all 权限配置，因此暂时无法申请或管理此功能。" /> : null}
+              {!permission && !permissionError ? <InlineNotice tone="info" message="当前后端没有返回邮箱泛解析权限配置，因此暂时无法申请或管理此功能。" /> : null}
 
               {permission ? (
                 <>
@@ -786,12 +786,12 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
                         placeholder={verifiedTargets.length > 0 ? '请选择已验证的目标邮箱' : '暂无已验证的目标邮箱'}
                         disabled={!permission.can_manage_route || savingCatchAll}
                       />
-                      <div className="text-sm leading-7 text-gray-600 dark:text-gray-300">catch-all 只允许使用已经绑定到你账号并完成 Cloudflare 验证的目标邮箱。</div>
+                      <div className="text-sm leading-7 text-gray-600 dark:text-gray-300">邮箱泛解析只允许使用已经绑定到你账号并完成 Cloudflare 验证的目标邮箱。</div>
                     </div>
 
                     <ToggleSwitch
-                      title="启用 catch-all 转发"
-                      description="关闭后会保留权限与配置入口，但暂时不再转发邮件。"
+                      title="启用邮箱泛解析转发"
+                      description="关闭后会保留权限与配置入口，但暂时不再转发当前命名空间下的邮件。"
                       checked={catchAllEnabled}
                       onCheckedChange={setCatchAllEnabled}
                       disabled={!permission.can_manage_route || savingCatchAll}
@@ -799,10 +799,10 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
 
                     <div className="rounded-2xl border border-white/15 bg-white/35 p-4 text-sm leading-7 text-gray-700 dark:border-white/10 dark:bg-black/20 dark:text-gray-200">
                       {permission.can_manage_route
-                        ? '你已经拥有配置权限，现在可以从已验证的目标邮箱中选择一个用于 catch-all 转发。'
+                        ? '你已经拥有配置权限，现在可以从已验证的目标邮箱中选择一个，用于整个命名空间的泛解析转发。'
                         : permission.can_apply
-                          ? '你还没有该权限。请先阅读承诺书并提交申请，申请通过后才能配置转发。'
-                          : '当前不能直接管理此邮箱。若状态为待审核或未通过，请等待管理员处理。'}
+                          ? '你还没有该权限。请先阅读承诺书并提交申请，申请通过后才能配置整个命名空间的转发。'
+                          : '当前不能直接管理此邮箱命名空间。若状态为待审核或未通过，请等待管理员处理。'}
                     </div>
 
                     <div className="flex flex-wrap gap-3">
@@ -812,7 +812,7 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
                         className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-violet-500 to-fuchsia-600 px-5 py-3 font-semibold text-white shadow-lg transition hover:from-violet-600 hover:to-fuchsia-700 disabled:cursor-not-allowed disabled:opacity-60"
                       >
                         {savingCatchAll ? <LoaderCircle className="animate-spin" size={18} /> : <Sparkles size={18} />}
-                        保存 catch-all 配置
+                        保存邮箱泛解析配置
                       </button>
 
                       {permission.can_apply ? (
@@ -821,7 +821,7 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
                           onClick={() => setPledgeModalOpen(true)}
                           className="inline-flex items-center gap-2 rounded-2xl border border-white/20 bg-white/60 px-4 py-3 font-medium text-gray-900 transition hover:bg-white/80 dark:border-white/10 dark:bg-black/30 dark:text-white dark:hover:bg-black/45"
                         >
-                          申请 catch-all 权限
+                          申请邮箱泛解析权限
                           <ArrowRight size={16} />
                         </button>
                       ) : null}
@@ -847,7 +847,7 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
             >
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <div className="inline-flex items-center gap-2 rounded-full bg-white/70 px-3 py-1 text-xs font-semibold text-slate-700 dark:bg-black/30 dark:text-slate-200"><ShieldCheck size={14} />catch-all 权限承诺书</div>
+                  <div className="inline-flex items-center gap-2 rounded-full bg-white/70 px-3 py-1 text-xs font-semibold text-slate-700 dark:bg-black/30 dark:text-slate-200"><ShieldCheck size={14} />邮箱泛解析权限承诺书</div>
                   <h3 className="mt-3 text-2xl font-bold text-gray-900 dark:text-white">{permission.display_name}</h3>
                   <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">目标权限：{permission.target || catchAllAddress}</p>
                 </div>
@@ -1029,7 +1029,7 @@ function describeRouteKind(kind: UserEmailRoute['kind']): string {
     case 'default':
       return '默认邮箱';
     case 'catch_all':
-      return 'catch-all';
+      return '邮箱泛解析';
     default:
       return '自定义邮箱';
   }

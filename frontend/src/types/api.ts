@@ -88,6 +88,7 @@ export type EmailRouteKind = 'default' | 'custom' | 'catch_all';
 // to the public frontend for one permission card.
 export interface PermissionApplicationSummary {
   id: number;
+  target?: string;
   status: Exclude<PermissionStatus, 'not_requested'>;
   reason: string;
   review_note: string;

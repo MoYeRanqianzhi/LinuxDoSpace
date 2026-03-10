@@ -26,8 +26,8 @@ type Client struct {
 // Zone is the compact zone shape returned by Cloudflare when the backend needs
 // to resolve a root domain into its zone identifier.
 type Zone struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
 	Account struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
@@ -109,6 +109,26 @@ type EmailRoutingRule struct {
 	Tag      string                    `json:"tag,omitempty"`
 }
 
+// EmailRoutingDNSRecord mirrors the DNS records Cloudflare requires for Email
+// Routing on either the zone root or one routed subdomain namespace.
+type EmailRoutingDNSRecord struct {
+	ID       string `json:"id,omitempty"`
+	Type     string `json:"type"`
+	Name     string `json:"name"`
+	Content  string `json:"content"`
+	TTL      int    `json:"ttl,omitempty"`
+	Proxied  bool   `json:"proxied,omitempty"`
+	Priority *int   `json:"priority,omitempty"`
+}
+
+// EmailRoutingDNSSettings captures the Email Routing DNS configuration payload
+// returned by Cloudflare when the API includes the required DNS records inline.
+type EmailRoutingDNSSettings struct {
+	Name    string                  `json:"name,omitempty"`
+	Enabled bool                    `json:"enabled,omitempty"`
+	Records []EmailRoutingDNSRecord `json:"records,omitempty"`
+}
+
 // Identifier returns the stable rule identifier expected by Cloudflare route
 // update and delete endpoints. The API still exposes the legacy tag field on
 // some responses, so the helper falls back to it when needed.
@@ -141,6 +161,26 @@ type EmailRoutingAction = EmailRoutingRuleAction
 type EmailRoutingMatcher = EmailRoutingRuleMatcher
 type UpsertEmailRoutingRuleInput = CreateEmailRoutingRuleInput
 
+// emailRoutingDNSResponse is the Cloudflare Email Routing DNS envelope. The
+// API currently returns either a direct record list or an object that embeds
+// the list, so the result is decoded in a second step.
+type emailRoutingDNSResponse struct {
+	Result  json.RawMessage      `json:"result"`
+	Success bool                 `json:"success"`
+	Errors  []cloudflareAPIError `json:"errors"`
+}
+
+// cfSuccess lets the DNS response participate in the shared Cloudflare error
+// handling inside doJSON.
+func (r *emailRoutingDNSResponse) cfSuccess() bool {
+	return r.Success
+}
+
+// cfErrors returns the Cloudflare error list from one Email Routing DNS call.
+func (r *emailRoutingDNSResponse) cfErrors() []cloudflareAPIError {
+	return r.Errors
+}
+
 // cloudflareAPIError captures the shared Cloudflare error shape used across the
 // DNS and Email Routing endpoints.
 type cloudflareAPIError struct {
@@ -149,9 +189,9 @@ type cloudflareAPIError struct {
 
 // listResponse is the shared paginated Cloudflare response envelope.
 type listResponse[T any] struct {
-	Result  []T                `json:"result"`
-	Success bool               `json:"success"`
-	Errors  []cloudflareAPIError `json:"errors"`
+	Result     []T                  `json:"result"`
+	Success    bool                 `json:"success"`
+	Errors     []cloudflareAPIError `json:"errors"`
 	ResultInfo struct {
 		Page       int `json:"page"`
 		PerPage    int `json:"per_page"`
@@ -172,8 +212,8 @@ func (r *listResponse[T]) cfErrors() []cloudflareAPIError {
 
 // objectResponse is the shared single-result Cloudflare response envelope.
 type objectResponse[T any] struct {
-	Result  T                  `json:"result"`
-	Success bool               `json:"success"`
+	Result  T                    `json:"result"`
+	Success bool                 `json:"success"`
 	Errors  []cloudflareAPIError `json:"errors"`
 }
 
@@ -377,6 +417,30 @@ func (c *Client) CreateEmailRoutingDestinationAddress(ctx context.Context, accou
 	return c.CreateEmailRoutingAddress(ctx, accountID, CreateEmailRoutingAddressInput{Email: email})
 }
 
+// EnableEmailRoutingDNS ensures Cloudflare Email Routing is enabled for the
+// zone and returns any root-level DNS records Cloudflare wants present.
+func (c *Client) EnableEmailRoutingDNS(ctx context.Context, zoneID string) ([]EmailRoutingDNSRecord, error) {
+	endpoint := fmt.Sprintf("%s/zones/%s/email/routing/dns", apiBaseURL, zoneID)
+	return c.doEmailRoutingDNSRequest(ctx, http.MethodPost, endpoint)
+}
+
+// ListEmailRoutingDNSRecords returns the DNS records Cloudflare requires for
+// Email Routing on either the root zone or one routed subdomain namespace. For
+// subdomain-scoped reads, Cloudflare expects the full FQDN such as
+// `alice.linuxdo.space`, not only the relative label `alice`.
+func (c *Client) ListEmailRoutingDNSRecords(ctx context.Context, zoneID string, subdomain string) ([]EmailRoutingDNSRecord, error) {
+	values := url.Values{}
+	if strings.TrimSpace(subdomain) != "" {
+		values.Set("subdomain", strings.TrimSpace(subdomain))
+	}
+
+	endpoint := fmt.Sprintf("%s/zones/%s/email/routing/dns", apiBaseURL, zoneID)
+	if encoded := values.Encode(); encoded != "" {
+		endpoint += "?" + encoded
+	}
+	return c.doEmailRoutingDNSRequest(ctx, http.MethodGet, endpoint)
+}
+
 // ListAllEmailRoutingRules returns every Email Routing rule configured under a
 // zone and transparently walks through Cloudflare pagination.
 func (c *Client) ListAllEmailRoutingRules(ctx context.Context, zoneID string) ([]EmailRoutingRule, error) {
@@ -441,6 +505,44 @@ func (c *Client) DeleteEmailRoutingRule(ctx context.Context, zoneID string, rule
 	return c.doJSON(ctx, http.MethodDelete, endpoint, nil, &response)
 }
 
+// GetEmailRoutingCatchAllRule loads the Cloudflare catch-all rule for either
+// the zone root or the provided routed subdomain namespace.
+func (c *Client) GetEmailRoutingCatchAllRule(ctx context.Context, zoneID string, subdomain string) (EmailRoutingRule, error) {
+	var response objectResponse[EmailRoutingRule]
+	values := url.Values{}
+	if strings.TrimSpace(subdomain) != "" {
+		values.Set("subdomain", strings.TrimSpace(subdomain))
+	}
+
+	endpoint := fmt.Sprintf("%s/zones/%s/email/routing/rules/catch_all", apiBaseURL, zoneID)
+	if encoded := values.Encode(); encoded != "" {
+		endpoint += "?" + encoded
+	}
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, &response); err != nil {
+		return EmailRoutingRule{}, err
+	}
+	return response.Result, nil
+}
+
+// UpdateEmailRoutingCatchAllRule replaces the Cloudflare catch-all rule for
+// the zone root or the provided routed subdomain namespace.
+func (c *Client) UpdateEmailRoutingCatchAllRule(ctx context.Context, zoneID string, subdomain string, input UpsertEmailRoutingRuleInput) (EmailRoutingRule, error) {
+	var response objectResponse[EmailRoutingRule]
+	values := url.Values{}
+	if strings.TrimSpace(subdomain) != "" {
+		values.Set("subdomain", strings.TrimSpace(subdomain))
+	}
+
+	endpoint := fmt.Sprintf("%s/zones/%s/email/routing/rules/catch_all", apiBaseURL, zoneID)
+	if encoded := values.Encode(); encoded != "" {
+		endpoint += "?" + encoded
+	}
+	if err := c.doJSON(ctx, http.MethodPut, endpoint, input, &response); err != nil {
+		return EmailRoutingRule{}, err
+	}
+	return response.Result, nil
+}
+
 // doJSON centralizes authentication, request encoding, response decoding, and
 // Cloudflare API error translation.
 func (c *Client) doJSON(ctx context.Context, method string, endpoint string, requestBody any, responseBody cloudflareResponse) error {
@@ -490,4 +592,40 @@ func firstCloudflareError(errors []cloudflareAPIError) string {
 		return "unknown error"
 	}
 	return errors[0].Message
+}
+
+// doEmailRoutingDNSRequest handles the Cloudflare Email Routing DNS endpoints,
+// whose result shape differs slightly between enable and read operations.
+func (c *Client) doEmailRoutingDNSRequest(ctx context.Context, method string, endpoint string) ([]EmailRoutingDNSRecord, error) {
+	var response emailRoutingDNSResponse
+	if err := c.doJSON(ctx, method, endpoint, nil, &response); err != nil {
+		return nil, err
+	}
+	return parseEmailRoutingDNSRecords(response.Result)
+}
+
+// parseEmailRoutingDNSRecords normalizes the Cloudflare Email Routing DNS
+// payload into one flat DNS record slice regardless of the exact envelope form.
+func parseEmailRoutingDNSRecords(raw json.RawMessage) ([]EmailRoutingDNSRecord, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil, nil
+	}
+
+	var direct []EmailRoutingDNSRecord
+	if err := json.Unmarshal(trimmed, &direct); err == nil {
+		return direct, nil
+	}
+
+	var settings EmailRoutingDNSSettings
+	if err := json.Unmarshal(trimmed, &settings); err == nil && settings.Records != nil {
+		return settings.Records, nil
+	}
+
+	var single EmailRoutingDNSRecord
+	if err := json.Unmarshal(trimmed, &single); err == nil && strings.TrimSpace(single.Type) != "" {
+		return []EmailRoutingDNSRecord{single}, nil
+	}
+
+	return nil, fmt.Errorf("unsupported cloudflare email routing dns response shape")
 }
