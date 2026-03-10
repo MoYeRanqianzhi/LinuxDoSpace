@@ -19,12 +19,14 @@ type fakeEmailRoutingCloudflare struct {
 	zones                      map[string]cloudflare.Zone
 	zoneIDsByRoot              map[string]string
 	rulesByZone                map[string][]cloudflare.EmailRoutingRule
+	catchAllRuleByZone         map[string]map[string]cloudflare.EmailRoutingRule
 	requiredDNSByZoneSubdomain map[string]map[string][]cloudflare.EmailRoutingDNSRecord
 	dnsRecordsByZone           map[string][]cloudflare.DNSRecord
 	addressesByAccount         map[string][]cloudflare.EmailRoutingDestinationAddress
 	deletedRule                []string
 	createdAddresses           []string
 	enabledDNSZones            []string
+	updatedCatchAllSubdomains  []string
 }
 
 // ResolveZone returns the configured in-memory zone for the requested root.
@@ -246,6 +248,40 @@ func (f *fakeEmailRoutingCloudflare) DeleteEmailRoutingRule(ctx context.Context,
 	return nil
 }
 
+// GetEmailRoutingCatchAllRule returns one stored catch-all rule for the target namespace.
+func (f *fakeEmailRoutingCloudflare) GetEmailRoutingCatchAllRule(ctx context.Context, zoneID string, subdomain string) (cloudflare.EmailRoutingRule, error) {
+	rulesBySubdomain := f.catchAllRuleByZone[strings.TrimSpace(zoneID)]
+	if rulesBySubdomain == nil {
+		return cloudflare.EmailRoutingRule{}, nil
+	}
+	return rulesBySubdomain[strings.ToLower(strings.TrimSpace(subdomain))], nil
+}
+
+// UpdateEmailRoutingCatchAllRule stores the catch-all rule under the requested namespace key.
+func (f *fakeEmailRoutingCloudflare) UpdateEmailRoutingCatchAllRule(ctx context.Context, zoneID string, subdomain string, input cloudflare.UpsertEmailRoutingRuleInput) (cloudflare.EmailRoutingRule, error) {
+	zoneKey := strings.TrimSpace(zoneID)
+	subdomainKey := strings.ToLower(strings.TrimSpace(subdomain))
+	if f.catchAllRuleByZone == nil {
+		f.catchAllRuleByZone = make(map[string]map[string]cloudflare.EmailRoutingRule)
+	}
+	if f.catchAllRuleByZone[zoneKey] == nil {
+		f.catchAllRuleByZone[zoneKey] = make(map[string]cloudflare.EmailRoutingRule)
+	}
+
+	rule := f.catchAllRuleByZone[zoneKey][subdomainKey]
+	if strings.TrimSpace(rule.ID) == "" {
+		rule.ID = fmt.Sprintf("catch-all-%s-%d", zoneKey, len(f.catchAllRuleByZone[zoneKey])+1)
+	}
+	rule.Name = input.Name
+	rule.Enabled = input.Enabled
+	rule.Matchers = cloneRuleMatchers(input.Matchers)
+	rule.Actions = cloneRuleActions(input.Actions)
+	rule.Priority = input.Priority
+	f.catchAllRuleByZone[zoneKey][subdomainKey] = rule
+	f.updatedCatchAllSubdomains = append(f.updatedCatchAllSubdomains, subdomainKey)
+	return rule, nil
+}
+
 // TestResolveDefaultEmailRouteBeforeStateFallsBackToCloudflareSnapshot verifies
 // that the service treats Cloudflare as the source of truth when the database row
 // is missing after a partial failure.
@@ -353,11 +389,11 @@ func TestUpsertMyDefaultEmailRouteClearsCloudflareWhenDatabaseRowMissing(t *test
 	}
 }
 
-// TestUpsertMyCatchAllEmailRouteUsesLiteralMailboxAndEnsuresEmailRoutingDNS
-// verifies that the permission flow now provisions one exact mailbox
-// `catch-all@<namespace>` plus the required Email Routing DNS records for that
-// namespace, instead of misusing Cloudflare's zone-level catch-all rule API.
-func TestUpsertMyCatchAllEmailRouteUsesLiteralMailboxAndEnsuresEmailRoutingDNS(t *testing.T) {
+// TestUpsertMyCatchAllEmailRouteUsesCatchAllRuleAndEnsuresEmailRoutingDNS
+// verifies that namespace-wide email forwarding uses Cloudflare's dedicated
+// catch-all rule plus the required Email Routing DNS records, rather than a
+// fake literal mailbox such as catch-all@namespace.
+func TestUpsertMyCatchAllEmailRouteUsesCatchAllRuleAndEnsuresEmailRoutingDNS(t *testing.T) {
 	ctx := context.Background()
 	store := newAuthTestStore(t)
 	user := seedPermissionEmailTestUserWithLinuxDOID(t, ctx, store, 501, "alice")
@@ -403,8 +439,8 @@ func TestUpsertMyCatchAllEmailRouteUsesLiteralMailboxAndEnsuresEmailRoutingDNS(t
 		t.Fatalf("save catch-all email route: %v", err)
 	}
 
-	if view.Address != "catch-all@alice.linuxdo.space" {
-		t.Fatalf("expected canonical catch-all mailbox address, got %q", view.Address)
+	if view.Address != "*@alice.linuxdo.space" {
+		t.Fatalf("expected canonical catch-all address, got %q", view.Address)
 	}
 	if !view.Configured || !view.Enabled {
 		t.Fatalf("expected configured enabled catch-all view, got %+v", view)
@@ -428,23 +464,20 @@ func TestUpsertMyCatchAllEmailRouteUsesLiteralMailboxAndEnsuresEmailRoutingDNS(t
 		t.Fatalf("expected namespace SPF record to be created, got %+v", zoneDNSRecords)
 	}
 
-	zoneRules := cf.rulesByZone["zone-default"]
-	if len(zoneRules) != 1 {
-		t.Fatalf("expected exactly one literal email routing rule, got %+v", zoneRules)
-	}
-	catchAllRule := zoneRules[0]
+	catchAllRule := cf.catchAllRuleByZone["zone-default"]["alice.linuxdo.space"]
 	if !catchAllRule.Enabled {
-		t.Fatalf("expected literal catch-all mailbox rule to stay enabled")
+		t.Fatalf("expected catch-all rule to stay enabled")
 	}
-	if len(catchAllRule.Matchers) != 1 {
-		t.Fatalf("expected one literal matcher, got %+v", catchAllRule.Matchers)
-	}
-	if catchAllRule.Matchers[0].Type != "literal" || catchAllRule.Matchers[0].Field != "to" || catchAllRule.Matchers[0].Value != "catch-all@alice.linuxdo.space" {
-		t.Fatalf("expected literal matcher for catch-all@alice.linuxdo.space, got %+v", catchAllRule.Matchers)
+	if len(catchAllRule.Matchers) != 1 || catchAllRule.Matchers[0].Type != "all" {
+		t.Fatalf("expected catch-all matcher type=all, got %+v", catchAllRule.Matchers)
 	}
 	if targetEmail := extractForwardTargetEmail(catchAllRule); targetEmail != "owner@example.com" {
-		t.Fatalf("expected catch-all mailbox forward target owner@example.com, got %q", targetEmail)
+		t.Fatalf("expected catch-all forward target owner@example.com, got %q", targetEmail)
 	}
+	if len(cf.rulesByZone["zone-default"]) != 0 {
+		t.Fatalf("expected no literal email routing rule to be created for catch-all, got %+v", cf.rulesByZone["zone-default"])
+	}
+
 	storedRoute, err := store.GetEmailRouteByAddress(ctx, "alice.linuxdo.space", emailCatchAllPrefix)
 	if err != nil {
 		t.Fatalf("load stored catch-all email route: %v", err)
@@ -455,8 +488,8 @@ func TestUpsertMyCatchAllEmailRouteUsesLiteralMailboxAndEnsuresEmailRoutingDNS(t
 }
 
 // TestParseCatchAllTargetAddressAcceptsLegacyAndCanonical verifies that the
-// service now exposes `catch-all@...` canonically while still being able to
-// read the earlier broken `*@...` application targets.
+// service can still read historical `catch-all@...` targets while exposing the
+// canonical public `*@...` representation everywhere else.
 func TestParseCatchAllTargetAddressAcceptsLegacyAndCanonical(t *testing.T) {
 	testCases := []struct {
 		name           string
@@ -466,15 +499,15 @@ func TestParseCatchAllTargetAddressAcceptsLegacyAndCanonical(t *testing.T) {
 		expectError    bool
 	}{
 		{
-			name:           "canonical dedicated mailbox target",
-			target:         "catch-all@alice.linuxdo.space",
-			wantLocalPart:  "catch-all",
+			name:           "canonical namespace target",
+			target:         "*@alice.linuxdo.space",
+			wantLocalPart:  "*",
 			wantRootDomain: "alice.linuxdo.space",
 		},
 		{
-			name:           "legacy broken wildcard target",
-			target:         "*@alice.linuxdo.space",
-			wantLocalPart:  "*",
+			name:           "legacy stored target",
+			target:         "catch-all@alice.linuxdo.space",
+			wantLocalPart:  "catch-all",
 			wantRootDomain: "alice.linuxdo.space",
 		},
 		{
@@ -544,6 +577,7 @@ func newFakeEmailRoutingCloudflare() *fakeEmailRoutingCloudflare {
 			"linuxdo.space": "zone-default",
 		},
 		rulesByZone:                make(map[string][]cloudflare.EmailRoutingRule),
+		catchAllRuleByZone:         make(map[string]map[string]cloudflare.EmailRoutingRule),
 		requiredDNSByZoneSubdomain: map[string]map[string][]cloudflare.EmailRoutingDNSRecord{"zone-default": {}},
 		dnsRecordsByZone:           make(map[string][]cloudflare.DNSRecord),
 		addressesByAccount:         make(map[string][]cloudflare.EmailRoutingDestinationAddress),

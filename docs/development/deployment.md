@@ -129,7 +129,7 @@ Required Cloudflare token capabilities:
 Operational notes:
 
 - destination mailboxes must be verified in Cloudflare before LinuxDoSpace can activate forwarding rules
-- permission-gated mailbox routes such as `catch-all@<username>.linuxdo.space` now have their required Email Routing MX and SPF records ensured automatically by the backend before the exact mailbox rule is synced
+- namespace catch-all routes such as `*@<username>.linuxdo.space` now have their required Email Routing MX and SPF records ensured automatically by the backend before the rule is synced
 - the zone must already have the Email Routing DNS records in place
 
 ## Frontend deployment on Cloudflare Pages

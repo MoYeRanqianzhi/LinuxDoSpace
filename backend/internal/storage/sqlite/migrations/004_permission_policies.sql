@@ -24,8 +24,8 @@ INSERT OR IGNORE INTO permission_policies (
     updated_at
 ) VALUES (
     'email_catch_all',
-    'catch-all@<username>.linuxdo.space',
-    'Allows one dedicated catch-all mailbox forwarding permission under the user namespace.',
+    '*@<username>.linuxdo.space',
+    'Allows one namespace-wide email catch-all forwarding permission under the user namespace.',
     1,
     1,
     2,

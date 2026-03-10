@@ -80,12 +80,12 @@ Returns the current user's visible email forwarding rows.
 The current release returns:
 - the always-owned default mailbox row for `<username>@linuxdo.space`
 - any extra mailbox aliases already assigned to the user in the database
-- the permission-gated `catch-all@<username>.linuxdo.space` row
+- the permission-gated `*@<username>.linuxdo.space` row
 
 Every email-route mutation now syncs the effective forwarding rule into Cloudflare Email Routing.
 Important operational constraints:
 - the target mailbox must already be a verified Cloudflare Email Routing destination address, or Cloudflare will send a verification email and the save will be rejected until verification completes
-- permission-gated mailbox routes such as `catch-all@<username>.linuxdo.space` automatically trigger the backend to ensure Cloudflare Email Routing MX and SPF records for that namespace before the exact mailbox rule is updated
+- namespace catch-all routes such as `*@<username>.linuxdo.space` automatically trigger the backend to ensure Cloudflare Email Routing MX and SPF records for that namespace before the catch-all rule is updated
 
 ### `PUT /v1/my/email-routes/default`
 Creates, updates, or clears the current user's default mailbox forwarding target.

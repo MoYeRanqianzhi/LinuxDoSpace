@@ -15,6 +15,16 @@ import (
 // already expired while persisting the local database mutation.
 const emailRoutingRollbackTimeout = 20 * time.Second
 
+const (
+	// emailRouteMatchKindExact represents one exact mailbox address such as
+	// `alice@linuxdo.space`.
+	emailRouteMatchKindExact = "exact"
+
+	// emailRouteMatchKindCatchAll represents a namespace catch-all such as
+	// `*@alice.linuxdo.space`.
+	emailRouteMatchKindCatchAll = "catch_all"
+)
+
 // emailRoutingProvisioner centralizes the Cloudflare Email Routing orchestration
 // shared by both the public user flows and the administrator console.
 type emailRoutingProvisioner struct {
@@ -31,6 +41,7 @@ type emailRouteSyncState struct {
 	TargetEmail string
 	Enabled     bool
 	Exists      bool
+	MatchKind   string
 }
 
 // newEmailRoutingProvisioner builds the shared Cloudflare Email Routing helper.
@@ -47,6 +58,7 @@ func newForwardingEmailRouteSyncState(rootDomain string, prefix string, targetEm
 		TargetEmail: strings.ToLower(strings.TrimSpace(targetEmail)),
 		Enabled:     enabled,
 		Exists:      true,
+		MatchKind:   emailRouteMatchKindExact,
 	}
 }
 
@@ -57,29 +69,29 @@ func newDeletedEmailRouteSyncState(rootDomain string, prefix string) emailRouteS
 		RootDomain: strings.ToLower(strings.TrimSpace(rootDomain)),
 		Prefix:     strings.ToLower(strings.TrimSpace(prefix)),
 		Exists:     false,
+		MatchKind:  emailRouteMatchKindExact,
 	}
 }
 
-// newCatchAllEmailRouteSyncState keeps the historical "catch-all permission"
-// terminology while mapping the feature to its real Cloudflare representation:
-// one exact mailbox named `catch-all@<namespace>`.
+// newCatchAllEmailRouteSyncState describes one namespace catch-all that should
+// exist in Cloudflare and forward to the provided target inbox.
 func newCatchAllEmailRouteSyncState(rootDomain string, targetEmail string, enabled bool) emailRouteSyncState {
 	return emailRouteSyncState{
 		RootDomain:  strings.ToLower(strings.TrimSpace(rootDomain)),
-		Prefix:      emailCatchAllPrefix,
 		TargetEmail: strings.ToLower(strings.TrimSpace(targetEmail)),
 		Enabled:     enabled,
 		Exists:      true,
+		MatchKind:   emailRouteMatchKindCatchAll,
 	}
 }
 
-// newDeletedCatchAllEmailRouteSyncState describes the absent state for the same
-// dedicated `catch-all@<namespace>` mailbox.
+// newDeletedCatchAllEmailRouteSyncState describes one namespace catch-all that
+// should not remain active in Cloudflare after the current mutation finishes.
 func newDeletedCatchAllEmailRouteSyncState(rootDomain string) emailRouteSyncState {
 	return emailRouteSyncState{
 		RootDomain: strings.ToLower(strings.TrimSpace(rootDomain)),
-		Prefix:     emailCatchAllPrefix,
 		Exists:     false,
+		MatchKind:  emailRouteMatchKindCatchAll,
 	}
 }
 
@@ -87,6 +99,9 @@ func newDeletedCatchAllEmailRouteSyncState(rootDomain string) emailRouteSyncStat
 // synchronization snapshot. Missing states still keep the address so delete and
 // rollback logs are easy to understand.
 func (s emailRouteSyncState) Address() string {
+	if s.MatchKind == emailRouteMatchKindCatchAll {
+		return buildCatchAllEmailRouteAddress(s.RootDomain)
+	}
 	return buildEmailRouteAddress(s.Prefix, s.RootDomain)
 }
 
@@ -118,10 +133,18 @@ func (p emailRoutingProvisioner) SyncForwardingState(ctx context.Context, before
 // applyForwardingState translates one internal route snapshot into the exact
 // Cloudflare API operation required to reach that state.
 func (p emailRoutingProvisioner) applyForwardingState(ctx context.Context, state emailRouteSyncState) error {
-	if !state.Exists {
-		return p.DeleteForwardingRule(ctx, state.RootDomain, state.Prefix)
+	switch state.MatchKind {
+	case emailRouteMatchKindCatchAll:
+		if !state.Exists {
+			return p.DisableCatchAllRule(ctx, state.RootDomain)
+		}
+		return p.EnsureCatchAllRule(ctx, state.RootDomain, state.TargetEmail, state.Enabled)
+	default:
+		if !state.Exists {
+			return p.DeleteForwardingRule(ctx, state.RootDomain, state.Prefix)
+		}
+		return p.EnsureForwardingRule(ctx, state.RootDomain, state.Prefix, state.TargetEmail, state.Enabled)
 	}
-	return p.EnsureForwardingRule(ctx, state.RootDomain, state.Prefix, state.TargetEmail, state.Enabled)
 }
 
 // EnsureForwardingRule ensures that the exact mailbox address forwards to the
@@ -192,6 +215,57 @@ func (p emailRoutingProvisioner) EnsureForwardingRule(ctx context.Context, rootD
 	return nil
 }
 
+// EnsureCatchAllRule ensures that the namespace catch-all forwards to the
+// desired verified destination after the required Email Routing DNS records
+// exist for that namespace.
+func (p emailRoutingProvisioner) EnsureCatchAllRule(ctx context.Context, rootDomain string, targetEmail string, enabled bool) error {
+	if err := p.ensureConfigured(); err != nil {
+		return err
+	}
+
+	zoneID, err := p.resolveZoneID(ctx, rootDomain)
+	if err != nil {
+		return err
+	}
+	accountID, err := p.resolveAccountID(ctx, zoneID)
+	if err != nil {
+		return err
+	}
+
+	normalizedTarget := strings.ToLower(strings.TrimSpace(targetEmail))
+	if err := p.ensureVerifiedDestinationAddress(ctx, accountID, normalizedTarget); err != nil {
+		return err
+	}
+
+	zoneRoot, err := p.resolveZoneRootDomain(ctx, zoneID, rootDomain)
+	if err != nil {
+		return err
+	}
+	if err := p.ensureEmailRoutingDNS(ctx, zoneID, rootDomain, zoneRoot); err != nil {
+		return err
+	}
+
+	subdomain, err := cloudflareEmailRoutingScopedDomain(rootDomain, zoneRoot)
+	if err != nil {
+		return err
+	}
+
+	payload := cloudflare.UpsertEmailRoutingRuleInput{
+		Name:     buildCatchAllEmailRouteAddress(rootDomain),
+		Enabled:  enabled,
+		Matchers: []cloudflare.EmailRoutingMatcher{{Type: "all"}},
+		Actions: []cloudflare.EmailRoutingAction{{
+			Type:  "forward",
+			Value: []string{normalizedTarget},
+		}},
+	}
+
+	if _, err := p.cf.UpdateEmailRoutingCatchAllRule(ctx, zoneID, subdomain, payload); err != nil {
+		return wrapEmailRoutingUnavailable("failed to update cloudflare catch-all email routing rule", err)
+	}
+	return nil
+}
+
 // DeleteForwardingRule removes the Cloudflare Email Routing rule for one exact
 // mailbox address when the application deletes the corresponding local route.
 func (p emailRoutingProvisioner) DeleteForwardingRule(ctx context.Context, rootDomain string, prefix string) error {
@@ -221,6 +295,47 @@ func (p emailRoutingProvisioner) DeleteForwardingRule(ctx context.Context, rootD
 	}
 	if err := p.cf.DeleteEmailRoutingRule(ctx, zoneID, ruleIdentifier); err != nil {
 		return wrapEmailRoutingUnavailable("failed to delete cloudflare email routing rule", err)
+	}
+	return nil
+}
+
+// DisableCatchAllRule disables the namespace catch-all rule while preserving the
+// last forwarded target when Cloudflare still exposes it.
+func (p emailRoutingProvisioner) DisableCatchAllRule(ctx context.Context, rootDomain string) error {
+	if err := p.ensureConfigured(); err != nil {
+		return err
+	}
+
+	zoneID, err := p.resolveZoneID(ctx, rootDomain)
+	if err != nil {
+		return err
+	}
+	zoneRoot, err := p.resolveZoneRootDomain(ctx, zoneID, rootDomain)
+	if err != nil {
+		return err
+	}
+	subdomain, err := cloudflareEmailRoutingScopedDomain(rootDomain, zoneRoot)
+	if err != nil {
+		return err
+	}
+
+	existingRule, err := p.cf.GetEmailRoutingCatchAllRule(ctx, zoneID, subdomain)
+	if err != nil {
+		return wrapEmailRoutingUnavailable("failed to load cloudflare catch-all email routing rule", err)
+	}
+	if !isCatchAllForwardingRule(existingRule) {
+		return nil
+	}
+
+	payload := cloudflare.UpsertEmailRoutingRuleInput{
+		Name:     buildCatchAllEmailRouteAddress(rootDomain),
+		Enabled:  false,
+		Matchers: []cloudflare.EmailRoutingMatcher{{Type: "all"}},
+		Actions:  buildDisabledCatchAllActions(existingRule),
+	}
+
+	if _, err := p.cf.UpdateEmailRoutingCatchAllRule(ctx, zoneID, subdomain, payload); err != nil {
+		return wrapEmailRoutingUnavailable("failed to disable cloudflare catch-all email routing rule", err)
 	}
 	return nil
 }
@@ -545,14 +660,48 @@ func cloudflareEmailRoutingScopedDomain(routedRoot string, zoneRoot string) (str
 	return normalizedRoutedRoot, nil
 }
 
+// buildDisabledCatchAllActions keeps the previous target when Cloudflare has
+// already stored one; otherwise the rule falls back to the documented `drop`
+// action used by Cloudflare's default disabled catch-all response.
+func buildDisabledCatchAllActions(rule cloudflare.EmailRoutingRule) []cloudflare.EmailRoutingAction {
+	targetEmail := extractForwardTargetEmail(rule)
+	if targetEmail == "" {
+		return []cloudflare.EmailRoutingAction{{Type: "drop"}}
+	}
+	return []cloudflare.EmailRoutingAction{{
+		Type:  "forward",
+		Value: []string{targetEmail},
+	}}
+}
+
+// isCatchAllForwardingRule reports whether the Cloudflare catch-all rule is
+// actively modeling one forwarding target rather than the default disabled drop
+// placeholder returned by the API.
+func isCatchAllForwardingRule(rule cloudflare.EmailRoutingRule) bool {
+	if !hasCatchAllMatcher(rule.Matchers) {
+		return false
+	}
+	return strings.TrimSpace(extractForwardTargetEmail(rule)) != ""
+}
+
+// hasCatchAllMatcher checks whether the Cloudflare rule is a catch-all rule.
+func hasCatchAllMatcher(matchers []cloudflare.EmailRoutingRuleMatcher) bool {
+	for _, matcher := range matchers {
+		if strings.EqualFold(strings.TrimSpace(matcher.Type), "all") {
+			return true
+		}
+	}
+	return false
+}
+
 // buildEmailRouteAddress normalizes the visible mailbox address used by the
 // Cloudflare Email Routing matcher.
 func buildEmailRouteAddress(prefix string, rootDomain string) string {
 	return strings.ToLower(strings.TrimSpace(prefix)) + "@" + strings.ToLower(strings.TrimSpace(rootDomain))
 }
 
-// buildCatchAllEmailRouteAddress renders the canonical public address for the
-// permission-gated mailbox under one user namespace.
+// buildCatchAllEmailRouteAddress renders the visible namespace catch-all form
+// exposed to both the frontend and Cloudflare catch-all rule payloads.
 func buildCatchAllEmailRouteAddress(rootDomain string) string {
-	return emailCatchAllPrefix + "@" + strings.ToLower(strings.TrimSpace(rootDomain))
+	return "*@" + strings.ToLower(strings.TrimSpace(rootDomain))
 }
