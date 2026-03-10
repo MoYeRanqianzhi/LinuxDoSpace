@@ -26,14 +26,12 @@ const (
 	// the current user and loaded from the database.
 	UserEmailRouteKindCustom = "custom"
 
-	// UserEmailRouteKindCatchAll marks the permission-gated catch-all mailbox
-	// that routes *@<username>.<root> to one target inbox.
+	// UserEmailRouteKindCatchAll marks the permission-gated dedicated mailbox
+	// `catch-all@<username>.<root>` managed by the catch-all permission flow.
 	UserEmailRouteKindCatchAll = "catch_all"
 
 	// emailCatchAllPrefix is the stable database key used to store the
-	// permission-gated catch-all route without requiring a schema migration. The
-	// public address is no longer exposed as catch-all@... and instead renders as
-	// *@<username>.<root>.
+	// permission-gated mailbox route without requiring a schema migration.
 	emailCatchAllPrefix = "catch-all"
 )
 
@@ -51,15 +49,15 @@ type PermissionService struct {
 }
 
 const (
-	emailCatchAllPermissionDisplayName = "邮箱泛解析"
-	emailCatchAllPermissionDescription = "为与你用户名同名的默认二级域名开启整个邮件命名空间的泛解析转发。"
+	emailCatchAllPermissionDisplayName = "catch-all@<username>.linuxdo.space"
+	emailCatchAllPermissionDescription = "为与你用户名同名的默认二级域名开启专用邮箱 catch-all@<username>.linuxdo.space 的转发能力。"
 	emailCatchAllPledgeTextClean       = "我承诺仅将此邮箱泛解析权限用于合法、正当且合理的用途，不实施违法违纪行为，不滥用平台资源；如因本人使用导致任何后果，均由本人自行承担，与开发者无关；若因此获得收益，我也愿意无私反馈 Linux Do 社区。"
 	defaultEmailRouteDisplayName       = "默认邮箱"
 	defaultEmailRouteDescription       = "每位用户默认拥有一个与 Linux Do 用户名同名的邮箱转发地址。"
 	customEmailRouteDisplayName        = "附加邮箱"
 	customEmailRouteDescription        = "这是已经分配到你名下的额外邮箱地址，当前页面先以只读方式展示。"
 	catchAllEmailRouteDisplayName      = "邮箱泛解析"
-	catchAllEmailRouteDescription      = "用于接收 *@<username>.linuxdo.space 的整段邮件泛解析转发。"
+	catchAllEmailRouteDescription      = "用于接收 catch-all@<username>.linuxdo.space 的专用邮箱转发。"
 )
 
 // PermissionApplicationSummary is the normalized subset of one application row
@@ -414,7 +412,7 @@ func (s *PermissionService) UpsertMyCatchAllEmailRoute(ctx context.Context, user
 		DisplayName:      catchAllEmailRouteDisplayName,
 		Description:      catchAllEmailRouteDescription,
 		Address:          namespace.Address,
-		Prefix:           "*",
+		Prefix:           emailCatchAllPrefix,
 		RootDomain:       namespace.RootDomain,
 		TargetEmail:      item.TargetEmail,
 		Enabled:          item.Enabled,
@@ -432,6 +430,9 @@ func (s *PermissionService) ListPermissionPolicies(ctx context.Context) ([]model
 	items, err := s.db.ListPermissionPolicies(ctx)
 	if err != nil {
 		return nil, InternalError("failed to list permission policies", err)
+	}
+	for index := range items {
+		items[index] = normalizePermissionPolicyCopy(items[index])
 	}
 	return items, nil
 }
@@ -458,6 +459,7 @@ func (s *PermissionService) UpdatePermissionPolicy(ctx context.Context, actor mo
 		}
 		item.MinTrustLevel = *request.MinTrustLevel
 	}
+	item = normalizePermissionPolicyCopy(item)
 
 	updated, err := s.db.UpsertPermissionPolicy(ctx, sqlite.UpsertPermissionPolicyInput{
 		Key:           item.Key,
@@ -470,6 +472,7 @@ func (s *PermissionService) UpdatePermissionPolicy(ctx context.Context, actor mo
 	if err != nil {
 		return model.PermissionPolicy{}, InternalError("failed to update permission policy", err)
 	}
+	updated = normalizePermissionPolicyCopy(updated)
 
 	metadata, _ := json.Marshal(map[string]any{
 		"policy_key":      updated.Key,
@@ -650,7 +653,7 @@ func (s *PermissionService) buildCatchAllEmailRouteView(ctx context.Context, use
 		DisplayName:      catchAllEmailRouteDisplayName,
 		Description:      catchAllEmailRouteDescription,
 		Address:          namespace.Address,
-		Prefix:           "*",
+		Prefix:           emailCatchAllPrefix,
 		RootDomain:       namespace.RootDomain,
 		TargetEmail:      "",
 		Enabled:          false,
@@ -799,7 +802,7 @@ func normalizeCatchAllPermissionCopy(item UserPermissionView) UserPermissionView
 	if item.Key != PermissionKeyEmailCatchAll {
 		return item
 	}
-	item.DisplayName = itemDisplayName(item.DisplayName, emailCatchAllPermissionDisplayName)
+	item.DisplayName = emailCatchAllPermissionDisplayName
 	item.Description = emailCatchAllPermissionDescription
 	item.PledgeText = emailCatchAllPledgeTextClean
 	if _, rootDomain, err := parseCatchAllTargetAddress(item.Target); err == nil {
@@ -823,6 +826,18 @@ func normalizeUserEmailRouteCopy(item UserEmailRouteView) UserEmailRouteView {
 		item.DisplayName = catchAllEmailRouteDisplayName
 		item.Description = catchAllEmailRouteDescription
 	}
+	return item
+}
+
+// normalizePermissionPolicyCopy keeps the administrator-visible permission
+// policy copy aligned with the current public semantics even when older
+// databases still store the broken `*@<namespace>` wording.
+func normalizePermissionPolicyCopy(item model.PermissionPolicy) model.PermissionPolicy {
+	if item.Key != PermissionKeyEmailCatchAll {
+		return item
+	}
+	item.DisplayName = emailCatchAllPermissionDisplayName
+	item.Description = emailCatchAllPermissionDescription
 	return item
 }
 
@@ -899,9 +914,9 @@ func (s *PermissionService) disableCatchAllEmailRouteForApplication(ctx context.
 	return nil
 }
 
-// buildLegacyCatchAllApplicationTarget preserves compatibility with early
-// stored application rows that used `catch-all@<namespace>` instead of the
-// current public `*@<namespace>` representation.
+// buildLegacyCatchAllApplicationTarget preserves compatibility with the earlier
+// broken `*@<namespace>` application targets so existing rows remain readable
+// after the canonical public address is corrected back to `catch-all@...`.
 func buildLegacyCatchAllApplicationTarget(rootDomain string) string {
-	return emailCatchAllPrefix + "@" + strings.ToLower(strings.TrimSpace(rootDomain))
+	return "*@" + strings.ToLower(strings.TrimSpace(rootDomain))
 }

@@ -506,44 +506,6 @@ func (c *Client) DeleteEmailRoutingRule(ctx context.Context, zoneID string, rule
 	return c.doJSON(ctx, http.MethodDelete, endpoint, nil, &response)
 }
 
-// GetEmailRoutingCatchAllRule loads the Cloudflare catch-all rule for either
-// the zone root or the provided routed subdomain namespace.
-func (c *Client) GetEmailRoutingCatchAllRule(ctx context.Context, zoneID string, subdomain string) (EmailRoutingRule, error) {
-	var response objectResponse[EmailRoutingRule]
-	values := url.Values{}
-	if strings.TrimSpace(subdomain) != "" {
-		values.Set("subdomain", strings.TrimSpace(subdomain))
-	}
-
-	endpoint := fmt.Sprintf("%s/zones/%s/email/routing/rules/catch_all", apiBaseURL, zoneID)
-	if encoded := values.Encode(); encoded != "" {
-		endpoint += "?" + encoded
-	}
-	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, &response); err != nil {
-		return EmailRoutingRule{}, err
-	}
-	return response.Result, nil
-}
-
-// UpdateEmailRoutingCatchAllRule replaces the Cloudflare catch-all rule for
-// the zone root or the provided routed subdomain namespace.
-func (c *Client) UpdateEmailRoutingCatchAllRule(ctx context.Context, zoneID string, subdomain string, input UpsertEmailRoutingRuleInput) (EmailRoutingRule, error) {
-	var response objectResponse[EmailRoutingRule]
-	values := url.Values{}
-	if strings.TrimSpace(subdomain) != "" {
-		values.Set("subdomain", strings.TrimSpace(subdomain))
-	}
-
-	endpoint := fmt.Sprintf("%s/zones/%s/email/routing/rules/catch_all", apiBaseURL, zoneID)
-	if encoded := values.Encode(); encoded != "" {
-		endpoint += "?" + encoded
-	}
-	if err := c.doJSON(ctx, http.MethodPut, endpoint, input, &response); err != nil {
-		return EmailRoutingRule{}, err
-	}
-	return response.Result, nil
-}
-
 // doJSON centralizes authentication, request encoding, response decoding, and
 // Cloudflare API error translation.
 func (c *Client) doJSON(ctx context.Context, method string, endpoint string, requestBody any, responseBody cloudflareResponse) error {
