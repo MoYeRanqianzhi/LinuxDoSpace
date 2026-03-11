@@ -1,0 +1,244 @@
+package mailrelay
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"crypto/tls"
+	"errors"
+	"fmt"
+	"net"
+	stdsmtp "net/smtp"
+	"net/textproto"
+	"strings"
+
+	"linuxdospace/backend/internal/config"
+)
+
+const (
+	// relayMarkerHeader is written to every forwarded message and rejected on
+	// inbound mail so misconfigured routes cannot create infinite forward loops.
+	relayMarkerHeader = "X-LinuxDoSpace-Relay"
+
+	// originalEnvelopeFromHeader preserves the original SMTP MAIL FROM value
+	// because the relay uses its own envelope sender when forwarding outward.
+	originalEnvelopeFromHeader = "X-LinuxDoSpace-Original-Envelope-From"
+
+	// originalEnvelopeToHeader records the accepted SMTP recipients that were
+	// matched to one forwarded target inbox.
+	originalEnvelopeToHeader = "X-LinuxDoSpace-Original-Envelope-To"
+)
+
+var (
+	// ErrRelayLoopDetected means the incoming message already passed through the
+	// LinuxDoSpace relay and must not be forwarded again.
+	ErrRelayLoopDetected = errors.New("message already contains linuxdospace relay marker")
+)
+
+// MessageForwarder delivers one accepted SMTP message to its resolved target
+// inboxes using the configured upstream SMTP relay.
+type MessageForwarder interface {
+	Forward(ctx context.Context, request ForwardRequest) error
+}
+
+// ForwardRequest is the normalized payload sent to the upstream SMTP relay.
+type ForwardRequest struct {
+	OriginalEnvelopeFrom string
+	OriginalEnvelopeTo   []string
+	TargetRecipients     []string
+	RawMessage           []byte
+}
+
+// SMTPForwarder uses one configured upstream SMTP server to deliver the
+// database-resolved mailbox routes to real inboxes.
+type SMTPForwarder struct {
+	addr     string
+	username string
+	password string
+	from     string
+}
+
+// NewSMTPForwarder builds the outbound forwarder from runtime configuration.
+func NewSMTPForwarder(mail config.MailConfig) *SMTPForwarder {
+	return &SMTPForwarder{
+		addr:     strings.TrimSpace(mail.ForwardHost),
+		username: strings.TrimSpace(mail.ForwardUsername),
+		password: strings.TrimSpace(mail.ForwardPassword),
+		from:     strings.TrimSpace(mail.ForwardFrom),
+	}
+}
+
+// Forward writes loop-protection headers and sends the message to the resolved
+// target inboxes through the configured upstream SMTP relay.
+func (f *SMTPForwarder) Forward(ctx context.Context, request ForwardRequest) error {
+	if len(request.TargetRecipients) == 0 {
+		return fmt.Errorf("no target recipients were provided to the forwarder")
+	}
+
+	message, err := buildForwardMessage(request.RawMessage, request.OriginalEnvelopeFrom, request.OriginalEnvelopeTo)
+	if err != nil {
+		return err
+	}
+
+	return f.sendMessage(ctx, uniqueHeaderValues(request.TargetRecipients), message)
+}
+
+// buildForwardMessage validates the original message, blocks relay loops, and
+// prepends the LinuxDoSpace-specific trace headers before forwarding.
+func buildForwardMessage(raw []byte, originalEnvelopeFrom string, originalEnvelopeTo []string) ([]byte, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, fmt.Errorf("smtp message body is empty")
+	}
+
+	header, err := parseMessageHeader(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse smtp message header: %w", err)
+	}
+	if strings.TrimSpace(header.Get(relayMarkerHeader)) != "" {
+		return nil, ErrRelayLoopDetected
+	}
+
+	var builder strings.Builder
+	builder.Grow(len(raw) + 256)
+	builder.WriteString(relayMarkerHeader)
+	builder.WriteString(": 1\r\n")
+	builder.WriteString(originalEnvelopeFromHeader)
+	builder.WriteString(": ")
+	builder.WriteString(sanitizeHeaderValue(displayEnvelopeSender(originalEnvelopeFrom)))
+	builder.WriteString("\r\n")
+	builder.WriteString(originalEnvelopeToHeader)
+	builder.WriteString(": ")
+	builder.WriteString(sanitizeHeaderValue(strings.Join(uniqueHeaderValues(originalEnvelopeTo), ", ")))
+	builder.WriteString("\r\n")
+
+	message := append([]byte(builder.String()), raw...)
+	return message, nil
+}
+
+// parseMessageHeader reads only the header section from one RFC 5322 message
+// without mutating the original body. A malformed header is rejected because
+// the relay would otherwise lose the ability to detect forwarding loops.
+func parseMessageHeader(raw []byte) (textproto.MIMEHeader, error) {
+	reader := textproto.NewReader(bufioReaderFromBytes(raw))
+	header, err := reader.ReadMIMEHeader()
+	if err != nil {
+		return nil, err
+	}
+	return header, nil
+}
+
+// bufioReaderFromBytes converts one raw message buffer into the buffered reader
+// expected by net/textproto without copying the message body multiple times.
+func bufioReaderFromBytes(raw []byte) *bufio.Reader {
+	return bufio.NewReader(bytes.NewReader(raw))
+}
+
+// sendMessage opens one SMTP client connection, upgrades it with STARTTLS when
+// available, performs optional authentication, and sends the final message.
+func (f *SMTPForwarder) sendMessage(ctx context.Context, recipients []string, message []byte) error {
+	if strings.TrimSpace(f.addr) == "" {
+		return fmt.Errorf("upstream smtp relay host is empty")
+	}
+	if strings.TrimSpace(f.from) == "" {
+		return fmt.Errorf("upstream smtp envelope sender is empty")
+	}
+
+	host, _, err := net.SplitHostPort(f.addr)
+	if err != nil {
+		return fmt.Errorf("parse upstream smtp host %q: %w", f.addr, err)
+	}
+
+	dialer := net.Dialer{}
+	conn, err := dialer.DialContext(ctx, "tcp", f.addr)
+	if err != nil {
+		return fmt.Errorf("dial upstream smtp relay %s: %w", f.addr, err)
+	}
+	defer conn.Close()
+
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := conn.SetDeadline(deadline); err != nil {
+			return fmt.Errorf("set upstream smtp deadline: %w", err)
+		}
+	}
+
+	client, err := stdsmtp.NewClient(conn, host)
+	if err != nil {
+		return fmt.Errorf("create upstream smtp client: %w", err)
+	}
+	defer client.Close()
+
+	if ok, _ := client.Extension("STARTTLS"); ok {
+		if err := client.StartTLS(&tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}); err != nil {
+			return fmt.Errorf("starttls with upstream smtp relay: %w", err)
+		}
+	}
+
+	if strings.TrimSpace(f.username) != "" || strings.TrimSpace(f.password) != "" {
+		auth := stdsmtp.PlainAuth("", f.username, f.password, host)
+		if err := client.Auth(auth); err != nil {
+			return fmt.Errorf("authenticate with upstream smtp relay: %w", err)
+		}
+	}
+
+	if err := client.Mail(f.from); err != nil {
+		return fmt.Errorf("set upstream envelope sender %s: %w", f.from, err)
+	}
+	for _, recipient := range recipients {
+		if err := client.Rcpt(recipient); err != nil {
+			return fmt.Errorf("set upstream recipient %s: %w", recipient, err)
+		}
+	}
+
+	writer, err := client.Data()
+	if err != nil {
+		return fmt.Errorf("open upstream smtp data stream: %w", err)
+	}
+	if _, err := writer.Write(message); err != nil {
+		writer.Close()
+		return fmt.Errorf("write message to upstream smtp relay: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("finalize upstream smtp message: %w", err)
+	}
+
+	if err := client.Quit(); err != nil {
+		return fmt.Errorf("quit upstream smtp session: %w", err)
+	}
+	return nil
+}
+
+// displayEnvelopeSender renders the empty MAIL FROM as the visible `<>` bounce
+// sender instead of leaving the forwarded header ambiguous.
+func displayEnvelopeSender(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "<>"
+	}
+	return trimmed
+}
+
+// sanitizeHeaderValue removes CRLF so envelope-derived values cannot break out
+// of the relay's own trace headers.
+func sanitizeHeaderValue(value string) string {
+	replacer := strings.NewReplacer("\r", " ", "\n", " ")
+	return replacer.Replace(strings.TrimSpace(value))
+}
+
+// uniqueHeaderValues removes duplicates while keeping the first-seen order so
+// trace headers remain stable and readable.
+func uniqueHeaderValues(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.ToLower(strings.TrimSpace(value))
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		result = append(result, trimmed)
+	}
+	return result
+}

@@ -13,6 +13,7 @@ import (
 	"linuxdospace/backend/internal/config"
 	"linuxdospace/backend/internal/httpapi"
 	"linuxdospace/backend/internal/linuxdo"
+	"linuxdospace/backend/internal/mailrelay"
 	"linuxdospace/backend/internal/service"
 	"linuxdospace/backend/internal/storage"
 	"linuxdospace/backend/internal/storage/postgres"
@@ -84,18 +85,38 @@ func main() {
 		IdleTimeout:  cfg.App.IdleTimeout,
 	}
 
-	serverErrors := make(chan error, 1)
+	type runtimeServerError struct {
+		name string
+		err  error
+	}
+
+	serverErrors := make(chan runtimeServerError, 2)
 	go func() {
 		log.Printf("linuxdospace backend listening on %s", cfg.App.Addr)
-		serverErrors <- server.ListenAndServe()
+		serverErrors <- runtimeServerError{name: "http", err: server.ListenAndServe()}
 	}()
 
+	var smtpServer *mailrelay.Server
+	if cfg.UsesDatabaseMailRelay() && cfg.Mail.RelayEnabled {
+		smtpServer = mailrelay.NewServer(
+			cfg.Mail,
+			mailrelay.NewDBResolver(store),
+			mailrelay.NewSMTPForwarder(cfg.Mail),
+			log.Default(),
+		)
+		go func() {
+			log.Printf("linuxdospace mail relay listening on %s", cfg.Mail.SMTPAddr)
+			serverErrors <- runtimeServerError{name: "smtp", err: smtpServer.ListenAndServe()}
+		}()
+	}
+
+	var runtimeErr error
 	select {
 	case <-ctx.Done():
 		log.Printf("shutdown signal received")
-	case err := <-serverErrors:
-		if err != nil && err != http.ErrServerClosed {
-			log.Fatalf("http server failed: %v", err)
+	case serverError := <-serverErrors:
+		if serverError.err != nil && serverError.err != http.ErrServerClosed {
+			runtimeErr = fmt.Errorf("%s server failed: %w", serverError.name, serverError.err)
 		}
 	}
 
@@ -104,6 +125,14 @@ func main() {
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Fatalf("shutdown http server: %v", err)
+	}
+	if smtpServer != nil {
+		if err := smtpServer.Shutdown(shutdownCtx); err != nil {
+			log.Fatalf("shutdown smtp server: %v", err)
+		}
+	}
+	if runtimeErr != nil {
+		log.Fatalf("%v", runtimeErr)
 	}
 }
 

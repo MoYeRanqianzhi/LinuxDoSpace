@@ -110,6 +110,10 @@ func (s emailRouteSyncState) Address() string {
 // one best-effort attempt to restore Cloudflare back to the previous state so
 // local storage and the external provider do not silently diverge.
 func (p emailRoutingProvisioner) SyncForwardingState(ctx context.Context, before emailRouteSyncState, after emailRouteSyncState, persist func() error) error {
+	if p.cfg.UsesDatabaseMailRelay() {
+		return persist()
+	}
+
 	if err := p.applyForwardingState(ctx, after); err != nil {
 		return err
 	}

@@ -8,13 +8,15 @@ import (
 // handleHealth 返回服务健康状态。
 func (a *API) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":      "ok",
-		"app":         a.config.App.Name,
-		"version":     a.version,
-		"env":         a.config.App.Env,
-		"oauth_ready": a.config.OAuthConfigured(),
-		"cf_ready":    a.config.CloudflareConfigured(),
-		"time":        time.Now().UTC(),
+		"status":                  "ok",
+		"app":                     a.config.App.Name,
+		"version":                 a.version,
+		"env":                     a.config.App.Env,
+		"oauth_ready":             a.config.OAuthConfigured(),
+		"cf_ready":                a.config.CloudflareConfigured(),
+		"mail_forwarding_backend": a.config.Mail.ForwardingBackend,
+		"mail_relay_enabled":      a.config.Mail.RelayEnabled,
+		"time":                    time.Now().UTC(),
 	})
 }
 
