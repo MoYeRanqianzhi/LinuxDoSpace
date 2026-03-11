@@ -690,12 +690,15 @@ export function DomainsPage({ csrfToken, managedDomains, onManagedDomainsChange 
                 <AdminSelect
                   value={allocationDraft.owner_user_id}
                   onChange={(event) => setAllocationDraft({ ...allocationDraft, owner_user_id: Number(event.target.value) })}
+                  searchable
+                  searchPlaceholder="搜索用户名、昵称或等级"
+                  emptySearchLabel="没有命中的用户"
                   className="w-full rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
                 >
                   <option value={0}>请选择用户</option>
                   {users.map((user) => (
                     <option key={user.id} value={user.id}>
-                      {user.username} · TL {user.trust_level}
+                      {user.username} · {user.display_name || '无昵称'} · TL {user.trust_level}
                     </option>
                   ))}
                 </AdminSelect>

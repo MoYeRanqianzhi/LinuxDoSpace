@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Rebuilt the admin console switch and select controls with the same custom-rendered approach used on the public frontend, fixing native-control rendering glitches across platforms.
+- Added searchable administrator user selectors for long user lists in the admin domain-allocation and email-routing forms.
 - Fixed the public configuration center so `/v1/me` and `/v1/my/allocations` now return every namespace already owned by the user, including administrator-granted namespaces that do not match the Linux Do username.
 - Removed the accidental DNS-management lockout that previously restricted users to the root record of their default same-name namespace; owned namespaces now expose their full in-namespace record set again.
 - Redesigned the public settings page so the default namespace and every extra namespace appear as explicit selectable cards instead of being hidden behind a single implicit default view.
