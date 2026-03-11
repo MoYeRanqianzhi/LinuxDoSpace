@@ -54,10 +54,11 @@ Destroys the current authenticated session.
 Requires a valid session and `X-CSRF-Token`.
 
 ### `GET /v1/me`
-Returns the current public-site session, user payload, CSRF token, and visible allocations.
+Returns the current public-site session, user payload, CSRF token, and every active allocation already owned by the current user.
+The temporary restriction that only allows self-service requests for a username-matching namespace does not hide administrator-granted namespaces from this response.
 
 ### `GET /v1/my/allocations`
-Lists the current user's visible allocation namespaces.
+Lists every active allocation namespace currently owned by the authenticated user.
 
 ### `GET /v1/my/permissions`
 Returns the current authenticated user's visible permission cards.
@@ -126,7 +127,7 @@ Request example:
 ```
 
 ### `GET /v1/my/allocations/{allocationID}/records`
-Lists the current user's DNS records inside the selected allocation namespace.
+Lists the current user's DNS records inside the selected allocation namespace, including both the namespace root record and nested child records such as `www` or `api.v2`.
 
 ### `POST /v1/my/allocations/{allocationID}/records`
 Creates one DNS record inside the selected allocation namespace.

@@ -25,10 +25,6 @@ type DomainService struct {
 	cf  CloudflareClient
 }
 
-// temporaryRecordRelativeName 是当前临时收敛策略允许操作的唯一相对记录名。
-// `@` 对应的绝对记录名正好是 `<username>.<root_domain>`。
-const temporaryRecordRelativeName = "@"
-
 // AvailabilityResult 描述某个前缀在某个根域名下是否可用。
 type AvailabilityResult struct {
 	RootDomain       string   `json:"root_domain"`
@@ -265,26 +261,10 @@ func (s *DomainService) ListAllocationsForUser(ctx context.Context, userID int64
 	return items, nil
 }
 
-// ListVisibleAllocationsForUser 返回当前临时策略下，用户前端真正允许看到和操作的 allocation。
+// ListVisibleAllocationsForUser 返回当前用户已经持有、且前端应展示的全部 allocation。
+// 当前“只开放用户名同名前缀注册”的限制只作用在 CreateAllocation，不应影响管理员已经发放的命名空间展示。
 func (s *DomainService) ListVisibleAllocationsForUser(ctx context.Context, user model.User) ([]model.Allocation, error) {
-	items, err := s.ListAllocationsForUser(ctx, user.ID)
-	if err != nil {
-		return nil, err
-	}
-
-	allowedPrefix, err := normalizedUserPrefix(user.Username)
-	if err != nil {
-		return []model.Allocation{}, nil
-	}
-
-	filtered := make([]model.Allocation, 0, len(items))
-	for _, item := range items {
-		if item.NormalizedPrefix == allowedPrefix {
-			filtered = append(filtered, item)
-		}
-	}
-
-	return filtered, nil
+	return s.ListAllocationsForUser(ctx, user.ID)
 }
 
 // CreateAllocation 创建一条新的用户分配。
@@ -366,9 +346,6 @@ func (s *DomainService) ListRecordsForAllocation(ctx context.Context, user model
 		}
 		return nil, InternalError("failed to load allocation", err)
 	}
-	if err := ensureTemporaryAllocationAccess(user, allocation); err != nil {
-		return nil, err
-	}
 
 	records, err := s.listNamespaceRecords(ctx, allocation)
 	if err != nil {
@@ -387,15 +364,9 @@ func (s *DomainService) CreateRecord(ctx context.Context, user model.User, alloc
 		}
 		return model.DNSRecord{}, InternalError("failed to load allocation", err)
 	}
-	if err := ensureTemporaryAllocationAccess(user, allocation); err != nil {
-		return model.DNSRecord{}, err
-	}
 
 	createInput, relativeName, err := s.buildCloudflareRecordInput(allocation, input)
 	if err != nil {
-		return model.DNSRecord{}, err
-	}
-	if err := ensureTemporaryRootRecordOnly(relativeName); err != nil {
 		return model.DNSRecord{}, err
 	}
 	if s.cf == nil || !s.cfg.CloudflareConfigured() {
@@ -436,9 +407,6 @@ func (s *DomainService) UpdateRecord(ctx context.Context, user model.User, alloc
 		}
 		return model.DNSRecord{}, InternalError("failed to load allocation", err)
 	}
-	if err := ensureTemporaryAllocationAccess(user, allocation); err != nil {
-		return model.DNSRecord{}, err
-	}
 	if s.cf == nil || !s.cfg.CloudflareConfigured() {
 		return model.DNSRecord{}, UnavailableError("cloudflare integration is not configured", nil)
 	}
@@ -447,15 +415,12 @@ func (s *DomainService) UpdateRecord(ctx context.Context, user model.User, alloc
 	if err != nil {
 		return model.DNSRecord{}, UnavailableError("failed to load cloudflare dns record", err)
 	}
-	if strings.TrimSpace(existing.Name) != allocation.FQDN {
-		return model.DNSRecord{}, ForbiddenError("temporary policy only allows editing the root record of your own subdomain")
+	if !BelongsToNamespace(existing.Name, allocation.FQDN) {
+		return model.DNSRecord{}, ForbiddenError("the selected dns record does not belong to your namespace")
 	}
 
 	updateInput, relativeName, err := s.buildCloudflareRecordInput(allocation, input)
 	if err != nil {
-		return model.DNSRecord{}, err
-	}
-	if err := ensureTemporaryRootRecordOnly(relativeName); err != nil {
 		return model.DNSRecord{}, err
 	}
 
@@ -493,9 +458,6 @@ func (s *DomainService) DeleteRecord(ctx context.Context, user model.User, alloc
 		}
 		return InternalError("failed to load allocation", err)
 	}
-	if err := ensureTemporaryAllocationAccess(user, allocation); err != nil {
-		return err
-	}
 	if s.cf == nil || !s.cfg.CloudflareConfigured() {
 		return UnavailableError("cloudflare integration is not configured", nil)
 	}
@@ -504,8 +466,8 @@ func (s *DomainService) DeleteRecord(ctx context.Context, user model.User, alloc
 	if err != nil {
 		return UnavailableError("failed to load cloudflare dns record", err)
 	}
-	if strings.TrimSpace(existing.Name) != allocation.FQDN {
-		return ForbiddenError("temporary policy only allows deleting the root record of your own subdomain")
+	if !BelongsToNamespace(existing.Name, allocation.FQDN) {
+		return ForbiddenError("the selected dns record does not belong to your namespace")
 	}
 
 	if err := s.cf.DeleteDNSRecord(ctx, allocation.CloudflareZoneID, strings.TrimSpace(recordID)); err != nil {
@@ -676,6 +638,7 @@ func (s *DomainService) hasLiveConflict(ctx context.Context, zoneID string, fqdn
 }
 
 // listNamespaceRecords 列出某个分配命名空间中的全部实时 DNS 记录。
+// 这里会返回命名空间根记录以及所有子记录，例如 `@`、`www`、`api.v2`。
 func (s *DomainService) listNamespaceRecords(ctx context.Context, allocation model.Allocation) ([]model.DNSRecord, error) {
 	if s.cf == nil || !s.cfg.CloudflareConfigured() {
 		return nil, UnavailableError("cloudflare integration is not configured", nil)
@@ -688,13 +651,19 @@ func (s *DomainService) listNamespaceRecords(ctx context.Context, allocation mod
 
 	filtered := make([]model.DNSRecord, 0, len(records))
 	for _, record := range records {
-		if strings.TrimSpace(record.Name) != allocation.FQDN {
+		if !BelongsToNamespace(record.Name, allocation.FQDN) {
 			continue
 		}
 		filtered = append(filtered, toModelDNSRecord(record, allocation.FQDN, RelativeNameFromAbsolute(record.Name, allocation.FQDN)))
 	}
 
 	sort.Slice(filtered, func(i int, j int) bool {
+		if filtered[i].RelativeName == "@" && filtered[j].RelativeName != "@" {
+			return true
+		}
+		if filtered[i].RelativeName != "@" && filtered[j].RelativeName == "@" {
+			return false
+		}
 		if filtered[i].Name == filtered[j].Name {
 			return filtered[i].Type < filtered[j].Type
 		}
@@ -798,19 +767,6 @@ func ensureTemporaryUsernameMatch(user model.User, normalizedPrefix string) erro
 	}
 	if normalizedPrefix != allowedPrefix {
 		return ForbiddenError("temporary policy only allows the subdomain that exactly matches your username")
-	}
-	return nil
-}
-
-// ensureTemporaryAllocationAccess 确保用户当前访问的 allocation 就是用户名同名的那个命名空间。
-func ensureTemporaryAllocationAccess(user model.User, allocation model.Allocation) error {
-	return ensureTemporaryUsernameMatch(user, allocation.NormalizedPrefix)
-}
-
-// ensureTemporaryRootRecordOnly 确保当前临时阶段只能操作 `<username>.<root_domain>` 这一条根记录。
-func ensureTemporaryRootRecordOnly(relativeName string) error {
-	if strings.TrimSpace(relativeName) != temporaryRecordRelativeName {
-		return ForbiddenError("temporary policy only allows editing the root record of your own subdomain")
 	}
 	return nil
 }

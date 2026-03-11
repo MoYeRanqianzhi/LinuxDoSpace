@@ -814,13 +814,14 @@ function InfoBlock({ title, description }: InfoBlockProps) {
 interface InfoStatProps {
   title: string;
   value: string;
+  mono?: boolean;
 }
 
-function InfoStat({ title, value }: InfoStatProps) {
+function InfoStat({ title, value, mono = false }: InfoStatProps) {
   return (
     <div className="rounded-2xl border border-white/15 bg-white/35 p-4 dark:border-white/10 dark:bg-black/20">
       <div className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">{title}</div>
-      <div className="mt-2 text-base font-semibold text-gray-900 dark:text-white">{value}</div>
+      <div className={`mt-2 text-base font-semibold text-gray-900 dark:text-white ${mono ? 'font-mono break-all' : ''}`}>{value}</div>
     </div>
   );
 }

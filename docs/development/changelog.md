@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fixed the public configuration center so `/v1/me` and `/v1/my/allocations` now return every namespace already owned by the user, including administrator-granted namespaces that do not match the Linux Do username.
+- Removed the accidental DNS-management lockout that previously restricted users to the root record of their default same-name namespace; owned namespaces now expose their full in-namespace record set again.
+- Redesigned the public settings page so the default namespace and every extra namespace appear as explicit selectable cards instead of being hidden behind a single implicit default view.
 - Hardened OAuth callback completion so per-state browser cookies support concurrent login tabs and SQLite now consumes the OAuth state only when the session insert succeeds.
 - Added live session invalidation hooks for both frontends so expired public or admin sessions are reflected without requiring a full-page reload.
 - Tightened reverse-proxy trust boundaries with configurable `APP_TRUSTED_PROXY_CIDRS`, defaulting to loopback-only forwarding headers for admin password rate limiting.

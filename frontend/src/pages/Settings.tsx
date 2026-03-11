@@ -127,6 +127,8 @@ export function Settings({
 
   // selectedAllocation 方便模板层读取当前选中的 allocation。
   const selectedAllocation = allocations.find((item) => item.id === selectedAllocationID) ?? null;
+  const primaryAllocation = allocations.find((item) => item.is_primary) ?? allocations[0] ?? null;
+  const additionalAllocations = allocations.filter((item) => !item.is_primary);
 
   // loadRecords 从后端读取指定命名空间下的记录列表。
   async function loadRecords(allocationID: number): Promise<void> {
@@ -137,7 +139,7 @@ export function Settings({
       const nextRecords = await listAllocationRecords(allocationID);
       const selected = allocations.find((item) => item.id === allocationID);
       if (nextRecords.length === 0 && selected && user) {
-        setRecords([buildPlaceholderRecord(selected, user)]);
+        setRecords([buildPlaceholderRecord(selected)]);
         return;
       }
       setRecords(nextRecords);
@@ -362,21 +364,70 @@ export function Settings({
 
         <GlassCard className="p-5">
           <div className="flex flex-col gap-4">
-            <div className="flex flex-wrap gap-3">
-              {allocations.map((allocation) => (
-                <button
-                  key={allocation.id}
-                  onClick={() => setSelectedAllocationID(allocation.id)}
-                  className={`rounded-full px-4 py-2 text-sm font-semibold transition-all ${
-                    selectedAllocationID === allocation.id
-                      ? 'bg-teal-500 text-white shadow-lg'
-                      : 'bg-white/45 dark:bg-black/30 text-gray-700 dark:text-gray-200 hover:bg-white/65 dark:hover:bg-black/50'
-                  }`}
-                >
-                  {allocation.fqdn}
-                </button>
-              ))}
+            <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+              <div>
+                <div className="text-sm uppercase tracking-[0.22em] text-teal-600 dark:text-teal-300 font-bold">
+                  Namespace Library
+                </div>
+                <div className="mt-2 text-xl font-extrabold text-gray-900 dark:text-white">
+                  你当前共有 {allocations.length} 个可管理命名空间
+                </div>
+                <div className="mt-2 text-sm text-gray-600 dark:text-gray-300">
+                  默认命名空间与管理员额外发放的命名空间都会出现在这里，你可以随时切换。
+                </div>
+              </div>
+              {primaryAllocation ? (
+                <div className="rounded-2xl bg-white/35 dark:bg-black/30 border border-white/20 px-4 py-3 text-sm text-gray-700 dark:text-gray-200">
+                  <div>默认命名空间：{primaryAllocation.fqdn}</div>
+                  <div>额外命名空间：{Math.max(0, allocations.length - 1)} 个</div>
+                </div>
+              ) : null}
             </div>
+
+            <div className="grid gap-3 xl:grid-cols-2">
+              {allocations.map((allocation) => {
+                const isSelected = selectedAllocationID === allocation.id;
+                return (
+                  <button
+                    key={allocation.id}
+                    type="button"
+                    onClick={() => setSelectedAllocationID(allocation.id)}
+                    className={`rounded-3xl border p-4 text-left transition-all ${
+                      isSelected
+                        ? 'border-teal-400/60 bg-gradient-to-r from-teal-500 to-emerald-500 text-white shadow-xl'
+                        : 'border-white/20 bg-white/40 text-gray-800 hover:bg-white/60 dark:border-white/10 dark:bg-black/25 dark:text-gray-100 dark:hover:bg-black/35'
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${isSelected ? 'bg-white/20 text-white' : 'bg-teal-100 text-teal-700 dark:bg-teal-900/35 dark:text-teal-300'}`}>
+                        {allocation.is_primary ? '默认命名空间' : '额外命名空间'}
+                      </span>
+                      <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${isSelected ? 'bg-white/15 text-white/90' : 'bg-white/70 text-gray-600 dark:bg-white/10 dark:text-gray-300'}`}>
+                        {formatAllocationSource(allocation.source)}
+                      </span>
+                      <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${allocation.status === 'active' ? isSelected ? 'bg-emerald-400/25 text-white' : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/35 dark:text-emerald-300' : isSelected ? 'bg-white/15 text-white/90' : 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300'}`}>
+                        {allocation.status === 'active' ? '启用中' : '已停用'}
+                      </span>
+                    </div>
+                    <div className="mt-3 text-lg font-extrabold break-all">
+                      {allocation.fqdn}
+                    </div>
+                    <div className={`mt-2 text-sm ${isSelected ? 'text-white/90' : 'text-gray-600 dark:text-gray-300'}`}>
+                      根域名：{allocation.root_domain || allocation.fqdn.split('.').slice(1).join('.')}
+                    </div>
+                    <div className={`mt-1 text-sm ${isSelected ? 'text-white/90' : 'text-gray-600 dark:text-gray-300'}`}>
+                      记录空间：支持 `@`、`www`、`api.v2` 等属于该命名空间的记录
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {additionalAllocations.length > 0 ? (
+              <div className="rounded-2xl border border-sky-300/35 bg-sky-100/45 px-4 py-3 text-sm text-sky-900 dark:border-sky-700/35 dark:bg-sky-950/25 dark:text-sky-200">
+                管理员已为你额外分配 {additionalAllocations.length} 个命名空间。它们与默认同名子域一样，会在这里长期显示并可切换管理。
+              </div>
+            ) : null}
 
             {selectedAllocation && (
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -388,14 +439,14 @@ export function Settings({
                     {selectedAllocation.fqdn}
                   </div>
                   <div className="mt-2 text-sm text-gray-600 dark:text-gray-300">
-                    你可以管理 `@`、`www`、`api.v2` 等所有属于该命名空间的记录。
+                    你现在可以管理 `@`、`www`、`api.v2` 等所有属于该命名空间的记录。
                   </div>
                 </div>
 
                 <div className="rounded-2xl bg-white/35 dark:bg-black/30 border border-white/20 px-4 py-3 text-sm text-gray-700 dark:text-gray-200">
-                  <div>来源：{selectedAllocation.source}</div>
-                  <div>主命名空间：{selectedAllocation.is_primary ? '是' : '否'}</div>
-                  <div>状态：{selectedAllocation.status}</div>
+                  <div>来源：{formatAllocationSource(selectedAllocation.source)}</div>
+                  <div>默认命名空间：{selectedAllocation.is_primary ? '是' : '否'}</div>
+                  <div>状态：{selectedAllocation.status === 'active' ? '启用中' : '已停用'}</div>
                 </div>
               </div>
             )}
@@ -693,8 +744,8 @@ function isPlaceholderRecord(record: DNSRecord): boolean {
   return record.is_placeholder === true;
 }
 
-// buildPlaceholderRecord 在真实记录为空时，为 `<username>.<root_domain>` 生成一条前端占位行。
-function buildPlaceholderRecord(allocation: Allocation, user: User): DNSRecord {
+// buildPlaceholderRecord 在真实记录为空时，为当前命名空间生成一条前端占位行。
+function buildPlaceholderRecord(allocation: Allocation): DNSRecord {
   return {
     id: `placeholder:${allocation.id}`,
     type: 'CNAME',
@@ -703,9 +754,24 @@ function buildPlaceholderRecord(allocation: Allocation, user: User): DNSRecord {
     content: '',
     ttl: 1,
     proxied: true,
-    comment: `${user.username} 的默认同名子域占位记录`,
+    comment: `${allocation.fqdn} 的占位记录，表示当前命名空间尚未写入真实解析值`,
     is_placeholder: true,
   };
+}
+
+// formatAllocationSource 将后端来源标记转换成更适合用户阅读的文案。
+function formatAllocationSource(source: string): string {
+  const normalizedSource = source.trim().toLowerCase();
+  switch (normalizedSource) {
+    case 'auto_provision':
+      return '自动发放';
+    case 'manual':
+      return '手动申请';
+    case 'admin_grant':
+      return '管理员发放';
+    default:
+      return source.trim() || '未标记来源';
+  }
 }
 
 // readableErrorMessage 统一提取接口错误文本。
