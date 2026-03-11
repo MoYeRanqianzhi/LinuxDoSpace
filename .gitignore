@@ -3,12 +3,26 @@
 
 frontend/node_modules/
 frontend/dist/
+.tmp/
 
 backend/.env
 backend/data/
 backend/tmp/
 deploy/.env
 deploy/data/
+
+# 后端本地构建和断点续传产物不应进入版本库。
+backend/chunk*.txt
+backend/linuxdospace
+backend/linuxdospace-*
+backend/linuxdospace.exe
+backend/upload-parts/
+backend/upload-resume-chunk.txt
+
+# 后端嵌入式前端目录中，本地构建生成的静态资源保持忽略。
+backend/web/dist/assets/
+backend/web/dist/ICON.png
+backend/web/dist/logo.png
 
 *.db
 *.sqlite
