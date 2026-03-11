@@ -47,6 +47,6 @@ LinuxDoSpace 是一个基于 Cloudflare DNS 的二级域名分发站，主要面
 - 兑换码 / L 站积分兑换流程
 - 管理后台页面
 
-部署参考见 [deployment.md](/G:/ClaudeProjects/LinuxDoSpace/docs/development/deployment.md)。
+部署参考见 [deployment.md](/G:/ClaudeProjects/LinuxDoSpace/LinuxDoSpace/docs/development/deployment.md)。
 
-详细开发文档见 [docs/development/README.md](/G:/ClaudeProjects/LinuxDoSpace/docs/development/README.md)。
+详细开发文档见 [docs/development/README.md](/G:/ClaudeProjects/LinuxDoSpace/LinuxDoSpace/docs/development/README.md)。

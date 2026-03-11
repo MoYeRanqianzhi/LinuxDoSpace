@@ -3,7 +3,7 @@
 ## Local backend startup
 
 1. Enter `backend/`.
-2. Copy or reference [backend/.env.example](/G:/ClaudeProjects/LinuxDoSpace/backend/.env.example) and fill real values.
+2. Copy or reference [backend/.env.example](/G:/ClaudeProjects/LinuxDoSpace/LinuxDoSpace/backend/.env.example) and fill real values.
 3. Run `go run ./cmd/linuxdospace`.
 4. Open `http://localhost:8080/healthz` and confirm the service is healthy.
 5. Call `GET /v1/public/domains` to verify the default managed root domain is available.
@@ -49,6 +49,47 @@ docker run --rm -p 8080:8080 --env-file deploy/linuxdospace.env.example linuxdos
 - `LINUXDO_OAUTH_REDIRECT_URL`
 
 Cloudflare Email Routing also requires the API token to include Email Routing Addresses and Email Routing Rules permissions in addition to the existing DNS permissions.
+
+## Production PostgreSQL cutover
+
+This production cutover was completed on `2026-03-11` against the live `remote4` deployment.
+
+Execution summary:
+
+1. Start a dedicated PostgreSQL container on the production compose stack.
+2. Keep the original SQLite file in place until the new image and migrations are verified.
+3. Freeze writes long enough to create a final SQLite backup.
+4. Run `go run ./cmd/migrate-sqlite-to-postgres` with the frozen SQLite snapshot and the production PostgreSQL DSN.
+5. Switch the backend container to `DATABASE_DRIVER=postgres`.
+6. Verify public health checks and key list endpoints before considering the cutover finished.
+
+Final frozen-source counts at cutover time:
+
+- `users=634`
+- `sessions=879`
+- `managed_domains=1`
+- `allocations=625`
+- `audit_logs=1725`
+- `email_routes=33`
+- `admin_applications=13`
+- `permission_policies=1`
+- `email_targets=43`
+
+Recorded backup artifacts:
+
+- Remote frozen SQLite backup: `data/backups/linuxdospace.sqlite.postgres-cutover-20260311-220736.bak`
+- Local migration staging backup: `.migration-staging/postgres-final-cutover-20260311-220736/linuxdospace.sqlite.postgres-cutover.bak`
+
+Post-cutover validation:
+
+- `GET /healthz` must return `200` with `"status":"ok"`.
+- `GET /v1/public/domains` must return JSON.
+- `GET /v1/public/supervision` must return JSON.
+- The reported runtime version must match the released PostgreSQL-capable commit.
+
+Rollback rule:
+
+- If the PostgreSQL container boots but the application migrations or repository queries fail, redeploy the last known-good SQLite image first, restore read-write traffic, then fix the PostgreSQL issue offline.
 
 ## Verification checklist
 

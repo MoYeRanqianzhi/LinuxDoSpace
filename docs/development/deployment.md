@@ -13,8 +13,7 @@ The repository still supports single-image self-hosting because the Go backend c
 
 ## Docker image
 
-- Dockerfile: [Dockerfile](/G:/ClaudeProjects/LinuxDoSpace/Dockerfile)
-- The container listens on `8080` internally.
+- Dockerfile: [Dockerfile](/G:/ClaudeProjects/LinuxDoSpace/LinuxDoSpace/Dockerfile)
 - The container listens on `8080` internally.
 - Production should use `DATABASE_DRIVER=postgres`.
 - SQLite remains available for local development and rollback-only scenarios.
@@ -34,8 +33,8 @@ Recommended deployment directory:
 
 The repository provides:
 
-- Compose file: [deploy/docker-compose.yml](/G:/ClaudeProjects/LinuxDoSpace/deploy/docker-compose.yml)
-- Environment template: [deploy/linuxdospace.env.example](/G:/ClaudeProjects/LinuxDoSpace/deploy/linuxdospace.env.example)
+- Compose file: [deploy/docker-compose.yml](/G:/ClaudeProjects/LinuxDoSpace/LinuxDoSpace/deploy/docker-compose.yml)
+- Environment template: [deploy/linuxdospace.env.example](/G:/ClaudeProjects/LinuxDoSpace/LinuxDoSpace/deploy/linuxdospace.env.example)
 
 Typical Debian deployment steps:
 
@@ -83,7 +82,7 @@ For the split deployment model, the important public URLs are:
 
 Workflow file:
 
-- [.github/workflows/container-release.yml](/G:/ClaudeProjects/LinuxDoSpace/.github/workflows/container-release.yml)
+- [.github/workflows/container-release.yml](/G:/ClaudeProjects/LinuxDoSpace/LinuxDoSpace/.github/workflows/container-release.yml)
 
 The workflow is designed to:
 

@@ -5,13 +5,13 @@ Use it to keep architecture, deployment, API, and release knowledge traceable ac
 
 ## Suggested reading order
 
-1. [architecture.md](/G:/ClaudeProjects/LinuxDoSpace/docs/development/architecture.md)
-2. [api.md](/G:/ClaudeProjects/LinuxDoSpace/docs/development/api.md)
-3. [runbook.md](/G:/ClaudeProjects/LinuxDoSpace/docs/development/runbook.md)
-4. [deployment.md](/G:/ClaudeProjects/LinuxDoSpace/docs/development/deployment.md)
-5. [references.md](/G:/ClaudeProjects/LinuxDoSpace/docs/development/references.md)
-6. [known-issues.md](/G:/ClaudeProjects/LinuxDoSpace/docs/development/known-issues.md)
-7. [changelog.md](/G:/ClaudeProjects/LinuxDoSpace/docs/development/changelog.md)
+1. [architecture.md](/G:/ClaudeProjects/LinuxDoSpace/LinuxDoSpace/docs/development/architecture.md)
+2. [api.md](/G:/ClaudeProjects/LinuxDoSpace/LinuxDoSpace/docs/development/api.md)
+3. [runbook.md](/G:/ClaudeProjects/LinuxDoSpace/LinuxDoSpace/docs/development/runbook.md)
+4. [deployment.md](/G:/ClaudeProjects/LinuxDoSpace/LinuxDoSpace/docs/development/deployment.md)
+5. [references.md](/G:/ClaudeProjects/LinuxDoSpace/LinuxDoSpace/docs/development/references.md)
+6. [known-issues.md](/G:/ClaudeProjects/LinuxDoSpace/LinuxDoSpace/docs/development/known-issues.md)
+7. [changelog.md](/G:/ClaudeProjects/LinuxDoSpace/LinuxDoSpace/docs/development/changelog.md)
 
 ## Current project state
 
