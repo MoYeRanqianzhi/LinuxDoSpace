@@ -1,15 +1,16 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { motion } from 'motion/react';
-import { ArrowLeft, ArrowRight, CheckCircle2, Clock3, Key, List, Send, ShieldAlert, ShieldPlus, Ticket, XCircle } from 'lucide-react';
+import { ArrowLeft, ArrowRight, CheckCircle2, Clock3, CreditCard, ExternalLink, Key, List, LoaderCircle, Send, ShieldAlert, ShieldPlus, Ticket, XCircle } from 'lucide-react';
 import { GlassCard } from '../components/GlassCard';
 import { GlassSelect, type GlassSelectOption } from '../components/GlassSelect';
-import { APIError, listMyPermissions } from '../lib/api';
-import type { User, UserPermission } from '../types/api';
+import { APIError, createMyPaymentOrder, getMyPaymentOrder, listMyPaymentOrders, listMyPermissions, listPublicPaymentProducts } from '../lib/api';
+import type { PaymentOrder, PaymentProduct, User, UserPermission } from '../types/api';
 
 interface PermissionsProps {
   authenticated: boolean;
   sessionLoading: boolean;
   user?: User;
+  csrfToken?: string;
   onLogin: () => void;
   onOpenEmails: () => void;
 }
@@ -32,6 +33,13 @@ interface OverviewRow {
   item: CatalogItem;
   target: string;
   permission: UserPermission | null;
+}
+
+type NoticeTone = 'error' | 'success' | 'info';
+
+interface PaymentNotice {
+  tone: NoticeTone;
+  message: string;
 }
 
 const emailCatchAllPermissionKey = 'email_catch_all';
@@ -82,16 +90,28 @@ const builtinCatalog: CatalogItem[] = [
   },
 ];
 
-export function Permissions({ authenticated, sessionLoading, user, onLogin, onOpenEmails }: PermissionsProps) {
+export function Permissions({ authenticated, sessionLoading, user, csrfToken, onLogin, onOpenEmails }: PermissionsProps) {
   const [viewMode, setViewMode] = useState<ViewMode>('main');
   const [permissions, setPermissions] = useState<UserPermission[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [paymentProducts, setPaymentProducts] = useState<PaymentProduct[]>([]);
+  const [paymentProductsLoading, setPaymentProductsLoading] = useState(false);
+  const [paymentProductsError, setPaymentProductsError] = useState('');
+  const [paymentOrders, setPaymentOrders] = useState<PaymentOrder[]>([]);
+  const [paymentOrdersLoading, setPaymentOrdersLoading] = useState(false);
+  const [paymentOrdersError, setPaymentOrdersError] = useState('');
+  const [paymentUnits, setPaymentUnits] = useState<Record<string, number>>({});
+  const [creatingProductKey, setCreatingProductKey] = useState('');
+  const [paymentNotice, setPaymentNotice] = useState<PaymentNotice | null>(null);
+  const [pollingOrderNo, setPollingOrderNo] = useState('');
   const [selectedKey, setSelectedKey] = useState(emailCatchAllPermissionKey);
   const [redeemCode, setRedeemCode] = useState('');
   const [plannedTarget, setPlannedTarget] = useState(builtinCatalog[1].target());
   const [plannedReason, setPlannedReason] = useState('');
   const loadRequestTokenRef = useRef(0);
+  const paymentProductsRequestTokenRef = useRef(0);
+  const paymentOrdersRequestTokenRef = useRef(0);
 
   const permissionMap = useMemo(() => new Map(permissions.map((permission) => [permission.key, permission])), [permissions]);
   const catalog = useMemo(() => {
@@ -133,15 +153,48 @@ export function Permissions({ authenticated, sessionLoading, user, onLogin, onOp
   }, [selectedItem, user]);
 
   useEffect(() => {
+    void loadPaymentProducts();
+  }, []);
+
+  useEffect(() => {
     if (!authenticated) {
       loadRequestTokenRef.current += 1;
+      paymentOrdersRequestTokenRef.current += 1;
       setPermissions([]);
       setLoading(false);
       setError('');
+      setPaymentOrders([]);
+      setPaymentOrdersLoading(false);
+      setPaymentOrdersError('');
+      setCreatingProductKey('');
+      setPollingOrderNo('');
+      setPaymentNotice(null);
       return;
     }
     void loadPermissions();
+    void loadPaymentOrders();
   }, [authenticated]);
+
+  useEffect(() => {
+    if (!pollingOrderNo || !authenticated) return;
+
+    const timer = window.setTimeout(() => {
+      void refreshOnePaymentOrder(pollingOrderNo, true);
+    }, 3000);
+    return () => window.clearTimeout(timer);
+  }, [authenticated, paymentOrders, pollingOrderNo]);
+
+  useEffect(() => {
+    setPaymentUnits((current) => {
+      const next = { ...current };
+      for (const item of paymentProducts) {
+        if (!Number.isFinite(next[item.key]) || next[item.key] < 1) {
+          next[item.key] = 1;
+        }
+      }
+      return next;
+    });
+  }, [paymentProducts]);
 
   async function loadPermissions(): Promise<void> {
     const requestToken = ++loadRequestTokenRef.current;
@@ -157,6 +210,100 @@ export function Permissions({ authenticated, sessionLoading, user, onLogin, onOp
       setError(readableErrorMessage(loadError, '无法加载权限列表。'));
     } finally {
       if (requestToken === loadRequestTokenRef.current) setLoading(false);
+    }
+  }
+
+  async function loadPaymentProducts(): Promise<void> {
+    const requestToken = ++paymentProductsRequestTokenRef.current;
+    try {
+      setPaymentProductsLoading(true);
+      const items = await listPublicPaymentProducts();
+      if (requestToken !== paymentProductsRequestTokenRef.current) return;
+      setPaymentProducts(items);
+      setPaymentProductsError('');
+    } catch (loadError) {
+      if (requestToken !== paymentProductsRequestTokenRef.current) return;
+      setPaymentProducts([]);
+      setPaymentProductsError(readableErrorMessage(loadError, '无法加载 LDC 兑换项目。'));
+    } finally {
+      if (requestToken === paymentProductsRequestTokenRef.current) setPaymentProductsLoading(false);
+    }
+  }
+
+  async function loadPaymentOrders(): Promise<void> {
+    const requestToken = ++paymentOrdersRequestTokenRef.current;
+    try {
+      setPaymentOrdersLoading(true);
+      const items = await listMyPaymentOrders();
+      if (requestToken !== paymentOrdersRequestTokenRef.current) return;
+      setPaymentOrders(items);
+      setPaymentOrdersError('');
+      const pendingOrder = items.find((item) => item.status === 'created' || item.status === 'pending' || (item.status === 'paid' && !item.applied_at));
+      setPollingOrderNo(pendingOrder?.out_trade_no ?? '');
+    } catch (loadError) {
+      if (requestToken !== paymentOrdersRequestTokenRef.current) return;
+      setPaymentOrders([]);
+      setPaymentOrdersError(readableErrorMessage(loadError, '无法加载 LDC 订单记录。'));
+    } finally {
+      if (requestToken === paymentOrdersRequestTokenRef.current) setPaymentOrdersLoading(false);
+    }
+  }
+
+  async function refreshOnePaymentOrder(outTradeNo: string, silent = false): Promise<void> {
+    if (!outTradeNo || !authenticated) return;
+    try {
+      const order = await getMyPaymentOrder(outTradeNo);
+      setPaymentOrders((current) => upsertPaymentOrder(current, order));
+      if (order.status === 'paid' && order.applied_at) {
+        setPollingOrderNo('');
+        if (!silent) {
+          setPaymentNotice({ tone: 'success', message: `订单 ${order.out_trade_no} 已支付成功，权益已经发放。` });
+        }
+      } else if (order.status === 'failed' || order.status === 'refunded') {
+        setPollingOrderNo('');
+      }
+    } catch (refreshError) {
+      if (!silent) {
+        setPaymentNotice({ tone: 'error', message: readableErrorMessage(refreshError, '刷新订单状态失败。') });
+      }
+    }
+  }
+
+  async function handleCreatePaymentOrder(product: PaymentProduct): Promise<void> {
+    if (!authenticated) {
+      onLogin();
+      return;
+    }
+    if (!csrfToken) {
+      setPaymentNotice({ tone: 'error', message: '当前会话缺少 CSRF Token，请重新登录后再试。' });
+      return;
+    }
+
+    const units = Math.max(1, Math.floor(paymentUnits[product.key] ?? 1));
+    try {
+      setCreatingProductKey(product.key);
+      setPaymentNotice(null);
+      const order = await createMyPaymentOrder({ product_key: product.key, units }, csrfToken);
+      setPaymentOrders((current) => upsertPaymentOrder(current, order));
+      setPollingOrderNo(order.out_trade_no);
+
+      const openedWindow = window.open(order.payment_url, '_blank', 'noopener,noreferrer');
+      if (!openedWindow) {
+        setPaymentNotice({
+          tone: 'info',
+          message: `订单 ${order.out_trade_no} 已创建，但浏览器拦截了新窗口。请手动打开支付链接完成支付：${order.payment_url}`,
+        });
+        return;
+      }
+
+      setPaymentNotice({
+        tone: 'success',
+        message: `订单 ${order.out_trade_no} 已创建，新标签页已经打开支付页面。当前页面会自动轮询支付状态。`,
+      });
+    } catch (createError) {
+      setPaymentNotice({ tone: 'error', message: readableErrorMessage(createError, '创建 LDC 订单失败。') });
+    } finally {
+      setCreatingProductKey('');
     }
   }
 
@@ -314,6 +461,240 @@ export function Permissions({ authenticated, sessionLoading, user, onLogin, onOp
             )}
           </GlassCard>
         </div>
+      </div>
+
+      <PaymentExchangeSection
+        authenticated={authenticated}
+        loading={paymentProductsLoading || paymentOrdersLoading}
+        products={paymentProducts}
+        productsError={paymentProductsError}
+        orders={paymentOrders}
+        ordersError={paymentOrdersError}
+        units={paymentUnits}
+        creatingProductKey={creatingProductKey}
+        notice={paymentNotice}
+        onLogin={onLogin}
+        onChangeUnits={(productKey, value) =>
+          setPaymentUnits((current) => ({
+            ...current,
+            [productKey]: Math.max(1, Math.floor(value) || 1),
+          }))
+        }
+        onCreateOrder={(product) => void handleCreatePaymentOrder(product)}
+        onRefreshOrder={(outTradeNo) => void refreshOnePaymentOrder(outTradeNo)}
+      />
+    </div>
+  );
+}
+
+interface PaymentExchangeSectionProps {
+  authenticated: boolean;
+  loading: boolean;
+  products: PaymentProduct[];
+  productsError: string;
+  orders: PaymentOrder[];
+  ordersError: string;
+  units: Record<string, number>;
+  creatingProductKey: string;
+  notice: PaymentNotice | null;
+  onLogin: () => void;
+  onChangeUnits: (productKey: string, value: number) => void;
+  onCreateOrder: (product: PaymentProduct) => void;
+  onRefreshOrder: (outTradeNo: string) => void;
+}
+
+function PaymentExchangeSection({
+  authenticated,
+  loading,
+  products,
+  productsError,
+  orders,
+  ordersError,
+  units,
+  creatingProductKey,
+  notice,
+  onLogin,
+  onChangeUnits,
+  onCreateOrder,
+  onRefreshOrder,
+}: PaymentExchangeSectionProps) {
+  return (
+    <div className="mt-10 space-y-6">
+      <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }}>
+        <GlassCard>
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <div className="inline-flex items-center gap-2 rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">
+                <CreditCard size={14} />
+                Linux Do Credit 兑换
+              </div>
+              <h2 className="mt-4 text-2xl font-bold text-gray-900 dark:text-white">使用 LDC 兑换邮箱权益与测试项目</h2>
+              <p className="mt-3 max-w-3xl text-sm leading-7 text-gray-600 dark:text-gray-300">
+                当前兑换区已经接入真实后端。你可以直接创建 LDC 订单，系统会在支付完成后自动轮询并刷新本地权益状态。邮箱泛解析相关项目只负责增加订阅或额度，本身不会替代权限审核流程。
+              </p>
+            </div>
+            {!authenticated ? (
+              <button
+                type="button"
+                onClick={onLogin}
+                className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 px-5 py-3 text-sm font-semibold text-white shadow-lg transition hover:from-emerald-600 hover:to-teal-700"
+              >
+                <ArrowRight size={16} />
+                登录后兑换
+              </button>
+            ) : null}
+          </div>
+        </GlassCard>
+      </motion.div>
+
+      {productsError ? <InlineNotice tone="error" message={productsError} /> : null}
+      {ordersError ? <InlineNotice tone="error" message={ordersError} /> : null}
+      {notice ? <InlineNotice tone={notice.tone} message={notice.message} /> : null}
+      {loading ? <InlineNotice tone="info" message="正在同步 LDC 商品与订单状态..." /> : null}
+
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+        <div className="space-y-6">
+          {products.map((product) => {
+            const quantity = Math.max(1, units[product.key] ?? 1);
+            const totalPriceCents = product.unit_price_cents * quantity;
+            const totalGrant = product.grant_quantity * quantity;
+            const creating = creatingProductKey === product.key;
+
+            return (
+              <div key={product.key}>
+                <GlassCard>
+                <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="flex-1">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <div className="rounded-2xl bg-emerald-100 px-3 py-1 text-sm font-semibold text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">{product.display_name}</div>
+                      <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${product.enabled ? 'bg-sky-100 text-sky-700 dark:bg-sky-900/25 dark:text-sky-300' : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'}`}>
+                        {product.enabled ? '可兑换' : '已关闭'}
+                      </span>
+                    </div>
+                    <p className="mt-4 text-sm leading-7 text-gray-600 dark:text-gray-300">{product.description}</p>
+                    <div className="mt-4 grid gap-3 md:grid-cols-3">
+                      <StatCard title="单价" value={`${formatLDC(product.unit_price_cents)} LDC`} />
+                      <StatCard title="单份权益" value={formatGrantAmount(product.grant_quantity, product.grant_unit)} />
+                      <StatCard title="总权益" value={formatGrantAmount(totalGrant, product.grant_unit)} />
+                    </div>
+                  </div>
+
+                  <div className="w-full max-w-sm rounded-3xl border border-white/20 bg-white/35 p-5 dark:border-white/10 dark:bg-black/20">
+                    <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">兑换数量</label>
+                    <input
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={quantity}
+                      onChange={(event) => onChangeUnits(product.key, Number(event.target.value))}
+                      className="w-full rounded-2xl border border-gray-200 bg-white/70 px-4 py-3 text-gray-900 outline-none transition focus:ring-2 focus:ring-emerald-500 dark:border-gray-700 dark:bg-black/40 dark:text-white"
+                    />
+                    <div className="mt-3 text-sm leading-7 text-gray-600 dark:text-gray-300">
+                      本次合计：<span className="font-semibold text-gray-900 dark:text-white">{formatLDC(totalPriceCents)} LDC</span>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={!product.enabled || creating}
+                      onClick={() => onCreateOrder(product)}
+                      className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 px-5 py-3 text-sm font-semibold text-white shadow-lg transition hover:from-emerald-600 hover:to-teal-700 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {creating ? <LoaderCircle size={16} className="animate-spin" /> : <CreditCard size={16} />}
+                      {authenticated ? (creating ? '创建订单中...' : '立即创建 LDC 订单') : '登录后兑换'}
+                    </button>
+                    <div className="mt-3 text-xs leading-6 text-gray-500 dark:text-gray-400">
+                      创建成功后会在新标签页打开支付页，当前页面会自动轮询订单状态直到支付成功并完成权益发放。
+                    </div>
+                  </div>
+                </div>
+                </GlassCard>
+              </div>
+            );
+          })}
+
+          {!loading && products.length === 0 ? (
+            <GlassCard>
+              <div className="rounded-2xl border border-dashed border-white/25 bg-white/25 px-5 py-8 text-sm leading-7 text-gray-600 dark:border-white/10 dark:bg-black/15 dark:text-gray-300">
+                当前没有可展示的 LDC 兑换项目。管理员可以先在后台启用或调整商品配置。
+              </div>
+            </GlassCard>
+          ) : null}
+        </div>
+
+        <GlassCard className="overflow-hidden p-0">
+          <div className="border-b border-white/20 bg-white/20 px-5 py-4 dark:border-white/10 dark:bg-black/20">
+            <div className="flex items-center gap-2 text-lg font-bold text-gray-900 dark:text-white">
+              <Ticket size={18} className="text-emerald-500" />
+              最近订单
+            </div>
+            <div className="mt-1 text-sm text-gray-600 dark:text-gray-300">这里只展示你最近创建的 LDC 订单。待支付订单支持手动刷新，也会自动轮询。</div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="min-w-full border-collapse text-left">
+              <thead>
+                <tr className="border-b border-white/10 bg-white/10 dark:border-white/5 dark:bg-black/10">
+                  <th className="px-5 py-4 text-sm font-semibold text-gray-900 dark:text-white">项目</th>
+                  <th className="px-5 py-4 text-sm font-semibold text-gray-900 dark:text-white">金额</th>
+                  <th className="px-5 py-4 text-sm font-semibold text-gray-900 dark:text-white">状态</th>
+                  <th className="px-5 py-4 text-sm font-semibold text-gray-900 dark:text-white">时间</th>
+                  <th className="px-5 py-4 text-right text-sm font-semibold text-gray-900 dark:text-white">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {orders.map((order) => {
+                  const waiting = order.status === 'created' || order.status === 'pending' || (order.status === 'paid' && !order.applied_at);
+                  const status = describePaymentOrderStatus(order);
+                  return (
+                    <tr key={order.out_trade_no} className="border-b border-white/10 text-sm hover:bg-white/30 dark:border-white/5 dark:hover:bg-white/5">
+                      <td className="px-5 py-4">
+                        <div className="font-semibold text-gray-900 dark:text-white">{order.product_name}</div>
+                        <div className="mt-1 font-mono text-xs text-gray-500 dark:text-gray-400">{order.out_trade_no}</div>
+                      </td>
+                      <td className="px-5 py-4 text-gray-700 dark:text-gray-200">{formatLDC(order.total_price_cents)} LDC</td>
+                      <td className="px-5 py-4">
+                        <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${status.className}`}>{status.label}</span>
+                      </td>
+                      <td className="px-5 py-4 text-gray-600 dark:text-gray-300">
+                        <div>{formatDate(order.created_at)}</div>
+                        <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">{order.applied_at ? `发放 ${formatDate(order.applied_at)}` : order.paid_at ? `支付 ${formatDate(order.paid_at)}` : '尚未完成支付'}</div>
+                      </td>
+                      <td className="px-5 py-4">
+                        <div className="flex justify-end gap-2">
+                          {order.payment_url ? (
+                            <button
+                              type="button"
+                              onClick={() => window.open(order.payment_url, '_blank', 'noopener,noreferrer')}
+                              className="rounded-xl p-2 text-emerald-500 transition hover:bg-emerald-100 dark:hover:bg-emerald-900/25"
+                              aria-label={`打开订单 ${order.out_trade_no} 的支付页`}
+                            >
+                              <ExternalLink size={16} />
+                            </button>
+                          ) : null}
+                          {waiting ? (
+                            <button
+                              type="button"
+                              onClick={() => onRefreshOrder(order.out_trade_no)}
+                              className="rounded-xl px-3 py-2 text-xs font-semibold text-sky-700 transition hover:bg-sky-100 dark:text-sky-300 dark:hover:bg-sky-900/25"
+                            >
+                              刷新状态
+                            </button>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {!loading && orders.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+                      {authenticated ? '当前还没有任何 LDC 订单。' : '登录后可查看你自己的 LDC 订单记录。'}
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        </GlassCard>
       </div>
     </div>
   );
@@ -478,12 +859,40 @@ function describePermissionStatus(status: UserPermission['status']) {
   }
 }
 
+function describePaymentOrderStatus(order: PaymentOrder) {
+  if (order.status === 'paid' && order.applied_at) {
+    return { label: '已支付并发放', className: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-300' };
+  }
+  switch (order.status) {
+    case 'paid':
+      return { label: '已支付，待发放', className: 'bg-sky-100 text-sky-700 dark:bg-sky-900/25 dark:text-sky-300' };
+    case 'pending':
+      return { label: '待支付', className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/25 dark:text-amber-300' };
+    case 'failed':
+      return { label: '创建失败', className: 'bg-red-100 text-red-700 dark:bg-red-900/25 dark:text-red-300' };
+    case 'refunded':
+      return { label: '已退款', className: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300' };
+    default:
+      return { label: '已创建', className: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300' };
+  }
+}
+
 function buildLiveEntryButtonLabel(authenticated: boolean, permission: UserPermission | null, key: string): string {
   if (emailCatchAllMaintenanceEnabled && key === emailCatchAllPermissionKey) return '维护中，暂不可申请';
   if (!authenticated) return '登录后申请';
   if (permission?.can_manage_route) return '前往邮箱页面管理';
   if (permission?.can_apply) return '前往邮箱页面申请';
   return '前往邮箱页面查看详情';
+}
+
+function InlineNotice({ tone, message }: { tone: NoticeTone; message: string }) {
+  const palette = tone === 'success'
+    ? 'border-emerald-300/35 bg-emerald-100/70 text-emerald-900 dark:border-emerald-700/35 dark:bg-emerald-950/30 dark:text-emerald-100'
+    : tone === 'error'
+      ? 'border-red-300/35 bg-red-100/70 text-red-900 dark:border-red-700/35 dark:bg-red-950/30 dark:text-red-100'
+      : 'border-sky-300/35 bg-sky-100/70 text-sky-900 dark:border-sky-700/35 dark:bg-sky-950/30 dark:text-sky-100';
+
+  return <div className={`rounded-2xl border px-4 py-3 text-sm leading-7 ${palette}`}>{message}</div>;
 }
 
 function readableErrorMessage(error: unknown, fallback: string): string {
@@ -518,6 +927,34 @@ function formatDate(value?: string): string {
     hour: '2-digit',
     minute: '2-digit',
   }).format(date);
+}
+
+function formatLDC(valueInCents: number): string {
+  return (valueInCents / 100).toLocaleString('zh-CN', {
+    minimumFractionDigits: valueInCents % 100 === 0 ? 0 : 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function formatGrantAmount(value: number, unit: string): string {
+  switch (unit) {
+    case 'day':
+      return `${value.toLocaleString('zh-CN')} 天`;
+    case 'message':
+      return `${value.toLocaleString('zh-CN')} 条`;
+    case 'run':
+      return `${value.toLocaleString('zh-CN')} 次`;
+    default:
+      return `${value.toLocaleString('zh-CN')} ${unit}`;
+  }
+}
+
+function upsertPaymentOrder(orders: PaymentOrder[], nextOrder: PaymentOrder): PaymentOrder[] {
+  const existingIndex = orders.findIndex((item) => item.out_trade_no === nextOrder.out_trade_no);
+  if (existingIndex >= 0) {
+    return orders.map((item, index) => (index === existingIndex ? nextOrder : item));
+  }
+  return [nextOrder, ...orders].sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime());
 }
 
 function normalizeIdentity(value: string): string {

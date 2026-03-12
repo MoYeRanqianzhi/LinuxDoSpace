@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, FileText, LoaderCircle, Search, Settings2, XCircle } from 'lucide-react';
+import { CheckCircle2, CreditCard, FileText, LoaderCircle, Search, Settings2, XCircle } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import { APIError, listApplications, listPermissionPolicies, updateApplication, updatePermissionPolicy } from '../lib/api';
+import { APIError, listAdminPaymentProducts, listApplications, listPermissionPolicies, updateAdminPaymentProduct, updateApplication, updatePermissionPolicy } from '../lib/api';
 import { AdminSwitch } from '../components/AdminSwitch';
 import { GlassCard } from '../components/GlassCard';
-import type { AdminApplicationRecord, ApplicationStatus, PermissionPolicy } from '../types/admin';
+import type { AdminApplicationRecord, ApplicationStatus, PaymentProduct, PermissionPolicy } from '../types/admin';
 
 interface ApplicationsPageProps {
   csrfToken: string;
@@ -14,6 +14,13 @@ interface PolicyDraft {
   enabled: boolean;
   auto_approve: boolean;
   min_trust_level: number;
+  default_daily_limit?: number;
+}
+
+interface PaymentProductDraft {
+  enabled: boolean;
+  unit_price: string;
+  grant_quantity: number;
 }
 
 function formatDate(value: string): string {
@@ -71,12 +78,34 @@ function reviewSummary(record: AdminApplicationRecord): string {
   return `管理员 #${record.reviewed_by_user_id} · ${formatDate(record.reviewed_at)}`;
 }
 
+function formatLDC(valueInCents: number): string {
+  return (valueInCents / 100).toLocaleString('zh-CN', {
+    minimumFractionDigits: valueInCents % 100 === 0 ? 0 : 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function readableGrantUnit(unit: string): string {
+  switch (unit) {
+    case 'day':
+      return '天';
+    case 'message':
+      return '条';
+    case 'run':
+      return '次';
+    default:
+      return unit || '份';
+  }
+}
+
 // ApplicationsPage renders both the administrator-facing application audit list
 // and the policy controls that decide whether a permission can auto-approve.
 export function ApplicationsPage({ csrfToken }: ApplicationsPageProps) {
   const [records, setRecords] = useState<AdminApplicationRecord[]>([]);
   const [policies, setPolicies] = useState<PermissionPolicy[]>([]);
+  const [paymentProducts, setPaymentProducts] = useState<PaymentProduct[]>([]);
   const [policyDrafts, setPolicyDrafts] = useState<Record<string, PolicyDraft>>({});
+  const [paymentProductDrafts, setPaymentProductDrafts] = useState<Record<string, PaymentProductDraft>>({});
   const [reviewDrafts, setReviewDrafts] = useState<Record<number, string>>({});
   const [statusDrafts, setStatusDrafts] = useState<Record<number, ApplicationStatus>>({});
   const [keyword, setKeyword] = useState('');
@@ -84,7 +113,9 @@ export function ApplicationsPage({ csrfToken }: ApplicationsPageProps) {
   const [error, setError] = useState('');
   const [applicationsLoadError, setApplicationsLoadError] = useState('');
   const [policiesLoadError, setPoliciesLoadError] = useState('');
+  const [paymentProductsLoadError, setPaymentProductsLoadError] = useState('');
   const [savingPolicyKeys, setSavingPolicyKeys] = useState<Record<string, boolean>>({});
+  const [savingPaymentProductKeys, setSavingPaymentProductKeys] = useState<Record<string, boolean>>({});
   const [updatingApplicationIDs, setUpdatingApplicationIDs] = useState<Record<number, boolean>>({});
 
   // filteredRecords applies the shared search box to the application audit list.
@@ -114,7 +145,7 @@ export function ApplicationsPage({ csrfToken }: ApplicationsPageProps) {
   async function loadData(): Promise<void> {
     try {
       setLoading(true);
-      const [recordsResult, policiesResult] = await Promise.allSettled([listApplications(), listPermissionPolicies()]);
+      const [recordsResult, policiesResult, paymentProductsResult] = await Promise.allSettled([listApplications(), listPermissionPolicies(), listAdminPaymentProducts()]);
 
       if (recordsResult.status === 'fulfilled') {
         const nextRecords = recordsResult.value;
@@ -137,6 +168,7 @@ export function ApplicationsPage({ csrfToken }: ApplicationsPageProps) {
                 enabled: policy.enabled,
                 auto_approve: policy.auto_approve,
                 min_trust_level: policy.min_trust_level,
+                default_daily_limit: policy.default_daily_limit,
               },
             ]),
           ),
@@ -144,6 +176,28 @@ export function ApplicationsPage({ csrfToken }: ApplicationsPageProps) {
         setPoliciesLoadError('');
       } else {
         setPoliciesLoadError(policiesResult.reason instanceof APIError ? policiesResult.reason.message : '权限策略加载失败。');
+      }
+
+      if (paymentProductsResult.status === 'fulfilled') {
+        const nextProducts = paymentProductsResult.value;
+        setPaymentProducts(nextProducts);
+        setPaymentProductDrafts(
+          Object.fromEntries(
+            nextProducts.map((product) => [
+              product.key,
+              {
+                enabled: product.enabled,
+                unit_price: formatLDC(product.unit_price_cents),
+                grant_quantity: product.grant_quantity,
+              },
+            ]),
+          ),
+        );
+        setPaymentProductsLoadError('');
+      } else {
+        setPaymentProducts([]);
+        setPaymentProductDrafts({});
+        setPaymentProductsLoadError(paymentProductsResult.reason instanceof APIError ? paymentProductsResult.reason.message : 'LDC 商品配置加载失败。');
       }
 
       setError('');
@@ -197,6 +251,7 @@ export function ApplicationsPage({ csrfToken }: ApplicationsPageProps) {
           enabled: draft.enabled,
           auto_approve: draft.auto_approve,
           min_trust_level: draft.min_trust_level,
+          default_daily_limit: draft.default_daily_limit,
         },
         csrfToken,
       );
@@ -204,11 +259,12 @@ export function ApplicationsPage({ csrfToken }: ApplicationsPageProps) {
       setPolicyDrafts((current) => ({
         ...current,
         [updated.key]: {
-          enabled: updated.enabled,
-          auto_approve: updated.auto_approve,
-          min_trust_level: updated.min_trust_level,
-        },
-      }));
+            enabled: updated.enabled,
+            auto_approve: updated.auto_approve,
+            min_trust_level: updated.min_trust_level,
+            default_daily_limit: updated.default_daily_limit,
+          },
+        }));
       setError('');
     } catch (saveError) {
       setError(saveError instanceof APIError ? saveError.message : '保存权限策略失败。');
@@ -216,6 +272,44 @@ export function ApplicationsPage({ csrfToken }: ApplicationsPageProps) {
       setSavingPolicyKeys((current) => {
         const next = { ...current };
         delete next[policyKey];
+        return next;
+      });
+    }
+  }
+
+  async function savePaymentProduct(productKey: string): Promise<void> {
+    const draft = paymentProductDrafts[productKey];
+    if (!draft) {
+      return;
+    }
+
+    try {
+      setSavingPaymentProductKeys((current) => ({ ...current, [productKey]: true }));
+      const updated = await updateAdminPaymentProduct(
+        productKey,
+        {
+          enabled: draft.enabled,
+          unit_price: draft.unit_price.trim(),
+          grant_quantity: Math.max(1, Math.floor(draft.grant_quantity) || 1),
+        },
+        csrfToken,
+      );
+      setPaymentProducts((current) => current.map((item) => (item.key === updated.key ? updated : item)));
+      setPaymentProductDrafts((current) => ({
+        ...current,
+        [updated.key]: {
+          enabled: updated.enabled,
+          unit_price: formatLDC(updated.unit_price_cents),
+          grant_quantity: updated.grant_quantity,
+        },
+      }));
+      setError('');
+    } catch (saveError) {
+      setError(saveError instanceof APIError ? saveError.message : '保存 LDC 商品配置失败。');
+    } finally {
+      setSavingPaymentProductKeys((current) => {
+        const next = { ...current };
+        delete next[productKey];
         return next;
       });
     }
@@ -254,6 +348,12 @@ export function ApplicationsPage({ csrfToken }: ApplicationsPageProps) {
       {policiesLoadError ? (
         <div className="mb-5 rounded-2xl border border-amber-300/50 bg-amber-50/80 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/20 dark:bg-amber-950/30 dark:text-amber-100">
           {policiesLoadError}
+        </div>
+      ) : null}
+
+      {paymentProductsLoadError ? (
+        <div className="mb-5 rounded-2xl border border-amber-300/50 bg-amber-50/80 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/20 dark:bg-amber-950/30 dark:text-amber-100">
+          {paymentProductsLoadError}
         </div>
       ) : null}
 
@@ -353,6 +453,106 @@ export function ApplicationsPage({ csrfToken }: ApplicationsPageProps) {
                 >
                   {savingPolicyKeys[policy.key] ? <LoaderCircle size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
                   <span>{savingPolicyKeys[policy.key] ? '保存中...' : '保存策略'}</span>
+                </button>
+              </div>
+            </GlassCard>
+          );
+        })}
+      </div>
+
+      <div className="mb-8 grid gap-5 xl:grid-cols-3">
+        {paymentProducts.map((product) => {
+          const draft = paymentProductDrafts[product.key] ?? {
+            enabled: product.enabled,
+            unit_price: formatLDC(product.unit_price_cents),
+            grant_quantity: product.grant_quantity,
+          };
+
+          return (
+            <GlassCard key={product.key} className="p-6">
+              <div className="mb-5 flex items-start justify-between gap-4">
+                <div>
+                  <div className="mb-2 inline-flex items-center gap-2 rounded-full bg-white/45 px-3 py-1 text-xs font-semibold text-slate-600 dark:bg-white/10 dark:text-slate-300">
+                    <CreditCard size={14} />
+                    LDC 商品
+                  </div>
+                  <h2 className="text-xl font-bold text-slate-900 dark:text-white">{product.display_name}</h2>
+                  <p className="mt-2 text-sm leading-7 text-slate-600 dark:text-slate-300">{product.description}</p>
+                </div>
+                <span className={`rounded-full px-3 py-1 text-xs font-semibold ${draft.enabled ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-300' : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'}`}>
+                  {draft.enabled ? '已启用' : '已关闭'}
+                </span>
+              </div>
+
+              <AdminSwitch
+                checked={draft.enabled}
+                onCheckedChange={(checked) =>
+                  setPaymentProductDrafts((current) => ({
+                    ...current,
+                    [product.key]: {
+                      ...draft,
+                      enabled: checked,
+                    },
+                  }))
+                }
+                label="允许前台兑换"
+                description="关闭后，前台将不再展示该 LDC 商品。"
+                accent="amber"
+                className="border-white/20 bg-white/40 dark:border-white/10 dark:bg-black/20"
+              />
+
+              <div className="mt-4 grid gap-4">
+                <div className="rounded-2xl border border-white/20 bg-white/40 px-4 py-4 dark:border-white/10 dark:bg-black/20">
+                  <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">单价（LDC）</label>
+                  <input
+                    type="number"
+                    min={0.01}
+                    step={0.01}
+                    value={draft.unit_price}
+                    onChange={(event) =>
+                      setPaymentProductDrafts((current) => ({
+                        ...current,
+                        [product.key]: {
+                          ...draft,
+                          unit_price: event.target.value,
+                        },
+                      }))
+                    }
+                    className="w-full rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
+                  />
+                </div>
+
+                <div className="rounded-2xl border border-white/20 bg-white/40 px-4 py-4 dark:border-white/10 dark:bg-black/20">
+                  <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">单份发放数量</label>
+                  <input
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={draft.grant_quantity}
+                    onChange={(event) =>
+                      setPaymentProductDrafts((current) => ({
+                        ...current,
+                        [product.key]: {
+                          ...draft,
+                          grant_quantity: Math.max(1, Number(event.target.value) || 1),
+                        },
+                      }))
+                    }
+                    className="w-full rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
+                  />
+                  <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">当前发放单位：{readableGrantUnit(product.grant_unit)}</div>
+                </div>
+              </div>
+
+              <div className="mt-5 flex items-center justify-between gap-4">
+                <div className="text-xs text-slate-500 dark:text-slate-400">最近更新：{formatDate(product.updated_at)}</div>
+                <button
+                  onClick={() => void savePaymentProduct(product.key)}
+                  disabled={Boolean(savingPaymentProductKeys[product.key])}
+                  className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 px-4 py-2 text-sm font-medium text-white shadow-lg transition hover:from-emerald-600 hover:to-teal-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {savingPaymentProductKeys[product.key] ? <LoaderCircle size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
+                  <span>{savingPaymentProductKeys[product.key] ? '保存中...' : '保存商品'}</span>
                 </button>
               </div>
             </GlassCard>

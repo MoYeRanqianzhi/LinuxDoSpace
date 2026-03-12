@@ -13,8 +13,10 @@
   GenerateRedeemCodesInput,
   ManagedDomain,
   PermissionPolicy,
+  PaymentProduct,
   SetAdminUserPermissionInput,
   SetUserQuotaInput,
+  UpdatePaymentProductInput,
   UpdateEmailRouteInput,
   UpdateAdminUserInput,
   UpdateApplicationInput,
@@ -328,6 +330,18 @@ export function listPermissionPolicies(): Promise<PermissionPolicy[]> {
 
 export function updatePermissionPolicy(policyKey: string, input: UpdatePermissionPolicyInput, csrfToken: string): Promise<PermissionPolicy> {
   return request<PermissionPolicy>(`/v1/admin/permission-policies/${encodeURIComponent(policyKey)}`, {
+    method: 'PATCH',
+    headers: { 'X-CSRF-Token': csrfToken },
+    body: JSON.stringify(input),
+  });
+}
+
+export function listAdminPaymentProducts(): Promise<PaymentProduct[]> {
+  return request<PaymentProduct[]>('/v1/admin/ldc/products');
+}
+
+export function updateAdminPaymentProduct(productKey: string, input: UpdatePaymentProductInput, csrfToken: string): Promise<PaymentProduct> {
+  return request<PaymentProduct>(`/v1/admin/ldc/products/${encodeURIComponent(productKey)}`, {
     method: 'PATCH',
     headers: { 'X-CSRF-Token': csrfToken },
     body: JSON.stringify(input),

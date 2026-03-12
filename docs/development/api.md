@@ -43,6 +43,14 @@ Checks whether a specific prefix is currently available under the selected root 
 Checks whether a mailbox local-part is available on the selected managed email domain.
 The backend also treats existing Linux Do usernames as reserved so each user keeps their implicit default mailbox.
 
+### `GET /v1/public/ldc/products`
+Returns every currently enabled Linux Do Credit product.
+The public frontend uses this endpoint so pricing can be rendered before login.
+
+### `GET /v1/public/ldc/products`
+Returns all currently enabled Linux Do Credit purchase products in display order.
+This endpoint is intentionally public so the frontend can show pricing before login.
+
 ## User authentication and self-service endpoints
 
 ### `GET /v1/auth/login?next=/settings`
@@ -89,6 +97,49 @@ Each record contains:
 ### `GET /v1/my/quantity-balances`
 Returns the current authenticated user's derived non-zero quantity balances.
 The backend sums only non-expired ledger entries and groups them by `resource_key + scope`.
+
+### `GET /v1/my/ldc/orders`
+Returns the current authenticated user's recent Linux Do Credit orders.
+
+### `POST /v1/my/ldc/orders`
+Creates one Linux Do Credit checkout order for the current user.
+The backend reserves the local order first, then asks the upstream gateway for
+the checkout URL, and finally returns the tracked local order.
+
+Request example:
+
+```json
+{
+  "product_key": "email_catch_all_subscription",
+  "units": 3
+}
+```
+
+### `GET /v1/my/ldc/orders/{outTradeNo}`
+Returns one specific Linux Do Credit order for the current user.
+This endpoint also performs opportunistic reconciliation:
+- when the order is still pending, the backend may call the upstream query API
+- when the order is already paid but not yet applied locally, the backend
+  retries entitlement application before returning the response
+
+### `GET /v1/my/ldc/orders`
+Returns the current authenticated user's recent Linux Do Credit orders.
+
+### `POST /v1/my/ldc/orders`
+Creates one local Linux Do Credit order, reserves it in the database, and returns the upstream payment URL.
+
+Request example:
+
+```json
+{
+  "product_key": "email_catch_all_subscription",
+  "units": 3
+}
+```
+
+### `GET /v1/my/ldc/orders/{outTradeNo}`
+Returns one specific Linux Do Credit order.
+When the order is still pending, the backend may query the upstream gateway and, if already paid, apply the corresponding entitlement before returning the refreshed payload.
 
 ### `POST /v1/my/permissions/applications`
 Creates or refreshes one permission application for the current user.
@@ -191,6 +242,10 @@ Possible results:
 ### `POST /v1/admin/verify-password`
 Completes the second administrator verification step by checking the extra backend password.
 This endpoint is rate limited by both session ID and client IP. Repeated failures return `429 too_many_requests` with a `Retry-After` header.
+
+### `GET /v1/payments/linuxdo-credit/notify`
+EasyPay-compatible asynchronous success callback for Linux Do Credit.
+The gateway must receive HTTP `200` with body `success` after signature verification and idempotent entitlement application.
 
 ## Administrator data endpoints
 
@@ -397,6 +452,46 @@ Returns the administrator-configurable policy rows that control permission eligi
 The `email_catch_all` policy now also exposes `default_daily_limit`, which
 defaults to `1000000`.
 
+### `GET /v1/admin/ldc/products`
+Returns the full administrator-editable Linux Do Credit product list, including disabled items.
+
+### `PATCH /v1/admin/ldc/products/{productKey}`
+Updates one Linux Do Credit product row.
+Administrators can currently change:
+- whether the product is enabled
+- the unit price
+- the grant quantity per purchased unit
+
+Request example:
+
+```json
+{
+  "enabled": true,
+  "unit_price": "500",
+  "grant_quantity": 1
+}
+```
+
+### `GET /v1/admin/ldc/products`
+Returns the full Linux Do Credit product set, including disabled items.
+
+### `PATCH /v1/admin/ldc/products/{productKey}`
+Updates one administrator-editable Linux Do Credit product row.
+Current mutable fields are:
+- `enabled`
+- `unit_price` as a decimal string with at most two fractional digits
+- `grant_quantity`
+
+Request example:
+
+```json
+{
+  "enabled": true,
+  "unit_price": "500",
+  "grant_quantity": 1
+}
+```
+
 ### `PATCH /v1/admin/permission-policies/{policyKey}`
 Updates one permission-policy row.
 
@@ -443,6 +538,20 @@ Request example:
 
 ### `DELETE /v1/admin/redeem-codes/{redeemCodeID}`
 Deletes one generated redeem code.
+
+## Linux Do Credit callback endpoint
+
+### `GET /v1/payments/linuxdo-credit/notify`
+Receives the EasyPay-compatible asynchronous success notification from Linux Do Credit.
+The backend verifies:
+- MD5 signature
+- `pid`
+- `type=epay`
+- `trade_status=TRADE_SUCCESS`
+- local order existence
+- money amount equality with the stored local order total
+
+On success, the backend must respond with plain text `success`.
 
 ## Security model
 

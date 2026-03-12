@@ -256,6 +256,7 @@ export interface PermissionPolicy {
   enabled: boolean;
   auto_approve: boolean;
   min_trust_level: number;
+  default_daily_limit?: number;
   created_at: string;
   updated_at: string;
 }
@@ -266,6 +267,7 @@ export interface UpdatePermissionPolicyInput {
   enabled?: boolean;
   auto_approve?: boolean;
   min_trust_level?: number;
+  default_daily_limit?: number;
 }
 
 // AdminPermissionApplicationSummary mirrors the latest application snapshot for
@@ -311,4 +313,26 @@ export interface GenerateRedeemCodesInput {
   type: RedeemPermissionType;
   target: string;
   note: string;
+}
+
+// PaymentProduct mirrors one administrator-editable Linux Do Credit product.
+export interface PaymentProduct {
+  key: string;
+  display_name: string;
+  description: string;
+  enabled: boolean;
+  unit_price_cents: number;
+  grant_quantity: number;
+  grant_unit: string;
+  effect_type: string;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+// UpdatePaymentProductInput mirrors the editable subset of one LDC product row.
+export interface UpdatePaymentProductInput {
+  enabled?: boolean;
+  unit_price?: string;
+  grant_quantity?: number;
 }

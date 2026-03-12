@@ -3,6 +3,7 @@ import type {
   APIEnvelope,
   APIErrorBody,
   AvailabilityResult,
+  CreatePaymentOrderInput,
   CreateAllocationInput,
   CreateMyEmailTargetInput,
   DNSRecord,
@@ -11,6 +12,8 @@ import type {
   MeResponse,
   SubmitPermissionApplicationInput,
   SupervisionEntry,
+  PaymentOrder,
+  PaymentProduct,
   UpsertMyCatchAllEmailRouteInput,
   UpsertMyDefaultEmailRouteInput,
   UpsertDNSRecordInput,
@@ -184,6 +187,12 @@ export function listPublicSupervisionEntries(): Promise<SupervisionEntry[]> {
   return request<SupervisionEntry[]>('/v1/public/supervision');
 }
 
+// listPublicPaymentProducts returns every currently enabled Linux Do Credit
+// product so the permissions page can render pricing before login.
+export function listPublicPaymentProducts(): Promise<PaymentProduct[]> {
+  return request<PaymentProduct[]>('/v1/public/ldc/products');
+}
+
 // checkAllocationAvailability checks one subdomain prefix on a managed root domain.
 export function checkAllocationAvailability(rootDomain: string, prefix: string): Promise<AvailabilityResult> {
   const query = new URLSearchParams({
@@ -216,6 +225,29 @@ export function createAllocation(input: CreateAllocationInput, csrfToken: string
 // listMyPermissions returns the current authenticated user's permission cards.
 export function listMyPermissions(): Promise<UserPermission[]> {
   return request<UserPermission[]>('/v1/my/permissions');
+}
+
+// listMyPaymentOrders returns the authenticated user's recent LDC orders.
+export function listMyPaymentOrders(): Promise<PaymentOrder[]> {
+  return request<PaymentOrder[]>('/v1/my/ldc/orders');
+}
+
+// getMyPaymentOrder reloads one specific order and lets the backend reconcile
+// its current gateway status.
+export function getMyPaymentOrder(outTradeNo: string): Promise<PaymentOrder> {
+  return request<PaymentOrder>(`/v1/my/ldc/orders/${encodeURIComponent(outTradeNo)}`);
+}
+
+// createMyPaymentOrder reserves one local order and returns the payment URL
+// that the browser should open in a new tab.
+export function createMyPaymentOrder(input: CreatePaymentOrderInput, csrfToken: string): Promise<PaymentOrder> {
+  return request<PaymentOrder>('/v1/my/ldc/orders', {
+    method: 'POST',
+    headers: {
+      'X-CSRF-Token': csrfToken,
+    },
+    body: JSON.stringify(input),
+  });
 }
 
 // submitPermissionApplication stores one permission application for the current user.

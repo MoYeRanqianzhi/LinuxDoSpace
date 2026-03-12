@@ -84,6 +84,9 @@ export type PermissionStatus = 'not_requested' | 'pending' | 'approved' | 'rejec
 // EmailRouteKind mirrors the different mailbox rows shown on the public email page.
 export type EmailRouteKind = 'default' | 'custom' | 'catch_all';
 
+// PaymentOrderStatus mirrors the lifecycle of one Linux Do Credit checkout.
+export type PaymentOrderStatus = 'created' | 'pending' | 'paid' | 'failed' | 'refunded';
+
 // PermissionApplicationSummary mirrors the latest application snapshot returned
 // to the public frontend for one permission card.
 export interface PermissionApplicationSummary {
@@ -113,7 +116,62 @@ export interface UserPermission {
   status: PermissionStatus;
   can_apply: boolean;
   can_manage_route: boolean;
+  catch_all_access?: {
+    access_mode: string;
+    subscription_active: boolean;
+    subscription_expires_at?: string;
+    remaining_count: number;
+    daily_usage_date: string;
+    daily_used_count: number;
+    daily_remaining_count: number;
+    effective_daily_limit: number;
+    has_access: boolean;
+    delivery_available: boolean;
+  };
   application?: PermissionApplicationSummary;
+}
+
+// PaymentProduct mirrors one administrator-configurable Linux Do Credit item.
+export interface PaymentProduct {
+  key: string;
+  display_name: string;
+  description: string;
+  enabled: boolean;
+  unit_price_cents: number;
+  grant_quantity: number;
+  grant_unit: string;
+  effect_type: string;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+// PaymentOrder mirrors one locally tracked Linux Do Credit checkout.
+export interface PaymentOrder {
+  id: number;
+  user_id: number;
+  username: string;
+  display_name: string;
+  product_key: string;
+  product_name: string;
+  title: string;
+  gateway_type: string;
+  out_trade_no: string;
+  provider_trade_no: string;
+  status: PaymentOrderStatus;
+  units: number;
+  grant_quantity: number;
+  granted_total: number;
+  grant_unit: string;
+  unit_price_cents: number;
+  total_price_cents: number;
+  effect_type: string;
+  payment_url: string;
+  paid_at?: string;
+  applied_at?: string;
+  last_checked_at?: string;
+  created_at: string;
+  updated_at: string;
 }
 
 // EmailRouteAvailabilityResult mirrors the public mailbox search result.
@@ -226,4 +284,10 @@ export interface UpsertMyCatchAllEmailRouteInput {
 // forwarding destination email to the current account.
 export interface CreateMyEmailTargetInput {
   email: string;
+}
+
+// CreatePaymentOrderInput mirrors one authenticated checkout request.
+export interface CreatePaymentOrderInput {
+  product_key: string;
+  units: number;
 }

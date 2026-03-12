@@ -443,6 +443,7 @@ export default function App() {
             authenticated={session.authenticated}
             sessionLoading={sessionLoading}
             user={session.user}
+            csrfToken={session.csrfToken}
             onLogin={() => beginLogin('permissions')}
             onOpenEmails={() => navigateToTab('emails')}
           />
