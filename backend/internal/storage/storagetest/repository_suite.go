@@ -3,6 +3,7 @@ package storagetest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -255,6 +256,388 @@ func RunRepositoryBehaviorSuite(t *testing.T, newStore Factory) {
 		}
 		if items[0].VerifiedAt == nil {
 			t.Fatalf("expected first listed target to include a verified timestamp")
+		}
+	})
+
+	t.Run("quantity records sort newest first and keep creator identity", func(t *testing.T) {
+		ctx := context.Background()
+		store := newStore(t)
+
+		owner := newTestUser(t, ctx, store, "ledger-owner")
+		actor := newTestUser(t, ctx, store, "ledger-admin")
+
+		older, err := store.CreateQuantityRecord(ctx, storage.CreateQuantityRecordInput{
+			UserID:          owner.ID,
+			ResourceKey:     "domain_slot",
+			Scope:           "linuxdo.space",
+			Delta:           1,
+			Source:          "admin_manual",
+			Reason:          "initial grant",
+			CreatedByUserID: &actor.ID,
+		})
+		if err != nil {
+			t.Fatalf("create older quantity record: %v", err)
+		}
+
+		time.Sleep(2 * time.Millisecond)
+
+		newer, err := store.CreateQuantityRecord(ctx, storage.CreateQuantityRecordInput{
+			UserID:          owner.ID,
+			ResourceKey:     "domain_slot",
+			Scope:           "linuxdo.space",
+			Delta:           2,
+			Source:          "redeem_code",
+			Reason:          "campaign bonus",
+			CreatedByUserID: &actor.ID,
+		})
+		if err != nil {
+			t.Fatalf("create newer quantity record: %v", err)
+		}
+
+		items, err := store.ListQuantityRecordsByUser(ctx, owner.ID)
+		if err != nil {
+			t.Fatalf("list quantity records: %v", err)
+		}
+		if len(items) != 2 {
+			t.Fatalf("expected 2 quantity records, got %d", len(items))
+		}
+		if items[0].ID != newer.ID {
+			t.Fatalf("expected newest quantity record id %d first, got %d", newer.ID, items[0].ID)
+		}
+		if items[1].ID != older.ID {
+			t.Fatalf("expected older quantity record id %d second, got %d", older.ID, items[1].ID)
+		}
+		if items[0].CreatedByUserID == nil || *items[0].CreatedByUserID != actor.ID {
+			t.Fatalf("expected creator user id %d on newest record, got %+v", actor.ID, items[0].CreatedByUserID)
+		}
+		if items[0].CreatedByUsername != actor.Username {
+			t.Fatalf("expected creator username %q, got %q", actor.Username, items[0].CreatedByUsername)
+		}
+	})
+
+	t.Run("quantity balances sum only active deltas and omit expired or zero groups", func(t *testing.T) {
+		ctx := context.Background()
+		store := newStore(t)
+
+		owner := newTestUser(t, ctx, store, "balance-owner")
+		now := time.Now().UTC()
+		expiredAt := now.Add(-time.Hour)
+		futureAt := now.Add(24 * time.Hour)
+
+		seedQuantityRecord := func(input storage.CreateQuantityRecordInput) {
+			t.Helper()
+			if _, err := store.CreateQuantityRecord(ctx, input); err != nil {
+				t.Fatalf("create quantity record %+v: %v", input, err)
+			}
+		}
+
+		seedQuantityRecord(storage.CreateQuantityRecordInput{
+			UserID:      owner.ID,
+			ResourceKey: "domain_slot",
+			Scope:       "linuxdo.space",
+			Delta:       2,
+			Source:      "admin_manual",
+			Reason:      "base grant",
+		})
+		seedQuantityRecord(storage.CreateQuantityRecordInput{
+			UserID:      owner.ID,
+			ResourceKey: "domain_slot",
+			Scope:       "linuxdo.space",
+			Delta:       -1,
+			Source:      "consumption",
+			Reason:      "manual deduction",
+		})
+		seedQuantityRecord(storage.CreateQuantityRecordInput{
+			UserID:      owner.ID,
+			ResourceKey: "email_alias",
+			Scope:       "",
+			Delta:       3,
+			Source:      "subscription",
+			Reason:      "monthly plan",
+			ExpiresAt:   &futureAt,
+		})
+		seedQuantityRecord(storage.CreateQuantityRecordInput{
+			UserID:      owner.ID,
+			ResourceKey: "expired_bucket",
+			Scope:       "",
+			Delta:       9,
+			Source:      "admin_manual",
+			Reason:      "expired grant",
+			ExpiresAt:   &expiredAt,
+		})
+		seedQuantityRecord(storage.CreateQuantityRecordInput{
+			UserID:      owner.ID,
+			ResourceKey: "zero_bucket",
+			Scope:       "",
+			Delta:       4,
+			Source:      "admin_manual",
+			Reason:      "temporary grant",
+		})
+		seedQuantityRecord(storage.CreateQuantityRecordInput{
+			UserID:      owner.ID,
+			ResourceKey: "zero_bucket",
+			Scope:       "",
+			Delta:       -4,
+			Source:      "consumption",
+			Reason:      "fully consumed",
+		})
+
+		items, err := store.ListQuantityBalancesByUser(ctx, owner.ID, now)
+		if err != nil {
+			t.Fatalf("list quantity balances: %v", err)
+		}
+		if len(items) != 2 {
+			t.Fatalf("expected 2 non-zero active quantity balances, got %d: %+v", len(items), items)
+		}
+
+		if items[0].ResourceKey != "domain_slot" || items[0].Scope != "linuxdo.space" || items[0].CurrentQuantity != 1 {
+			t.Fatalf("unexpected first quantity balance: %+v", items[0])
+		}
+		if items[1].ResourceKey != "email_alias" || items[1].Scope != "" || items[1].CurrentQuantity != 3 {
+			t.Fatalf("unexpected second quantity balance: %+v", items[1])
+		}
+
+		for _, item := range items {
+			if item.ResourceKey == "expired_bucket" {
+				t.Fatalf("expired-only balance should not be returned: %+v", item)
+			}
+			if item.ResourceKey == "zero_bucket" {
+				t.Fatalf("zeroed-out balance should not be returned: %+v", item)
+			}
+		}
+	})
+
+	t.Run("email catch-all consumption prefers subscription and then decrements remaining count", func(t *testing.T) {
+		ctx := context.Background()
+		store := newStore(t)
+
+		user := newTestUser(t, ctx, store, "catchall-owner")
+		policy, err := store.GetPermissionPolicy(ctx, "email_catch_all")
+		if err != nil {
+			t.Fatalf("load email catch-all policy: %v", err)
+		}
+		if policy.DefaultDailyLimit != 1_000_000 {
+			t.Fatalf("expected default daily limit 1000000, got %d", policy.DefaultDailyLimit)
+		}
+
+		now := time.Now().UTC()
+		subscriptionExpiresAt := now.Add(48 * time.Hour)
+		dailyLimitOverride := int64(3)
+		if _, err := store.UpsertEmailCatchAllAccess(ctx, storage.UpsertEmailCatchAllAccessInput{
+			UserID:                user.ID,
+			SubscriptionExpiresAt: &subscriptionExpiresAt,
+			RemainingCount:        5,
+			DailyLimitOverride:    &dailyLimitOverride,
+		}); err != nil {
+			t.Fatalf("upsert email catch-all access with active subscription: %v", err)
+		}
+
+		firstConsume, err := store.ConsumeEmailCatchAll(ctx, storage.ConsumeEmailCatchAllInput{
+			UserID:            user.ID,
+			Count:             2,
+			DefaultDailyLimit: policy.DefaultDailyLimit,
+			Now:               now,
+		})
+		if err != nil {
+			t.Fatalf("consume email catch-all with active subscription: %v", err)
+		}
+		if firstConsume.ConsumedMode != "subscription" {
+			t.Fatalf("expected subscription mode to win first, got %q", firstConsume.ConsumedMode)
+		}
+		if firstConsume.Access.RemainingCount != 5 {
+			t.Fatalf("expected remaining count to stay 5 while subscription is active, got %d", firstConsume.Access.RemainingCount)
+		}
+		if firstConsume.DailyUsage.UsedCount != 2 {
+			t.Fatalf("expected used count 2 after first consume, got %d", firstConsume.DailyUsage.UsedCount)
+		}
+
+		_, err = store.ConsumeEmailCatchAll(ctx, storage.ConsumeEmailCatchAllInput{
+			UserID:            user.ID,
+			Count:             2,
+			DefaultDailyLimit: policy.DefaultDailyLimit,
+			Now:               now,
+		})
+		if !errors.Is(err, storage.ErrEmailCatchAllDailyLimitExceeded) {
+			t.Fatalf("expected daily limit error, got %v", err)
+		}
+
+		expiredSubscription := now.Add(-time.Hour)
+		resetDailyLimit := int64(10)
+		if _, err := store.UpsertEmailCatchAllAccess(ctx, storage.UpsertEmailCatchAllAccessInput{
+			UserID:                user.ID,
+			SubscriptionExpiresAt: &expiredSubscription,
+			RemainingCount:        5,
+			DailyLimitOverride:    &resetDailyLimit,
+		}); err != nil {
+			t.Fatalf("upsert email catch-all access with expired subscription: %v", err)
+		}
+
+		secondDay := now.Add(24 * time.Hour)
+		secondConsume, err := store.ConsumeEmailCatchAll(ctx, storage.ConsumeEmailCatchAllInput{
+			UserID:            user.ID,
+			Count:             2,
+			DefaultDailyLimit: policy.DefaultDailyLimit,
+			Now:               secondDay,
+		})
+		if err != nil {
+			t.Fatalf("consume email catch-all using remaining count: %v", err)
+		}
+		if secondConsume.ConsumedMode != "quantity" {
+			t.Fatalf("expected quantity mode after subscription expiry, got %q", secondConsume.ConsumedMode)
+		}
+		if secondConsume.Access.RemainingCount != 3 {
+			t.Fatalf("expected remaining count to decrement to 3, got %d", secondConsume.Access.RemainingCount)
+		}
+
+		_, err = store.ConsumeEmailCatchAll(ctx, storage.ConsumeEmailCatchAllInput{
+			UserID:            user.ID,
+			Count:             4,
+			DefaultDailyLimit: policy.DefaultDailyLimit,
+			Now:               secondDay,
+		})
+		if !errors.Is(err, storage.ErrEmailCatchAllInsufficientRemainingCount) {
+			t.Fatalf("expected insufficient remaining count error, got %v", err)
+		}
+	})
+
+	t.Run("payment orders apply catch-all entitlements exactly once", func(t *testing.T) {
+		ctx := context.Background()
+		store := newStore(t)
+
+		user := newTestUser(t, ctx, store, "paid-owner")
+
+		subscriptionProduct, err := store.GetPaymentProduct(ctx, "email_catch_all_subscription")
+		if err != nil {
+			t.Fatalf("load subscription payment product: %v", err)
+		}
+		quotaProduct, err := store.GetPaymentProduct(ctx, "email_catch_all_quota")
+		if err != nil {
+			t.Fatalf("load quota payment product: %v", err)
+		}
+
+		paidAt := time.Now().UTC().Truncate(time.Second)
+		createPaidOrder := func(product model.PaymentProduct, outTradeNo string, units int64) model.PaymentOrder {
+			t.Helper()
+
+			grantedTotal := product.GrantQuantity * units
+			totalPriceCents := product.UnitPriceCents * units
+			order, createErr := store.CreatePaymentOrder(ctx, storage.CreatePaymentOrderInput{
+				UserID:          user.ID,
+				ProductKey:      product.Key,
+				ProductName:     product.DisplayName,
+				Title:           product.DisplayName,
+				GatewayType:     model.PaymentGatewayLinuxDOCredit,
+				OutTradeNo:      outTradeNo,
+				Status:          model.PaymentOrderStatusCreated,
+				Units:           units,
+				GrantQuantity:   product.GrantQuantity,
+				GrantedTotal:    grantedTotal,
+				GrantUnit:       product.GrantUnit,
+				UnitPriceCents:  product.UnitPriceCents,
+				TotalPriceCents: totalPriceCents,
+				EffectType:      product.EffectType,
+			})
+			if createErr != nil {
+				t.Fatalf("create payment order %s: %v", outTradeNo, createErr)
+			}
+
+			order, createErr = store.UpdatePaymentOrderGatewayState(ctx, storage.UpdatePaymentOrderGatewayStateInput{
+				OutTradeNo:      order.OutTradeNo,
+				Status:          model.PaymentOrderStatusPaid,
+				ProviderTradeNo: "gateway-" + outTradeNo,
+				PaidAt:          &paidAt,
+			})
+			if createErr != nil {
+				t.Fatalf("mark payment order %s paid: %v", outTradeNo, createErr)
+			}
+			return order
+		}
+
+		subscriptionOrder := createPaidOrder(subscriptionProduct, "TEST-SUBSCRIPTION", 2)
+		appliedSubscription, applied, err := store.ApplyPaymentOrderEntitlement(ctx, storage.ApplyPaymentOrderEntitlementInput{
+			OutTradeNo: subscriptionOrder.OutTradeNo,
+			AppliedAt:  paidAt,
+		})
+		if err != nil {
+			t.Fatalf("apply subscription order entitlement: %v", err)
+		}
+		if !applied {
+			t.Fatalf("expected first subscription entitlement application to report applied=true")
+		}
+		if appliedSubscription.AppliedAt == nil {
+			t.Fatalf("expected applied subscription order to contain applied_at")
+		}
+
+		replayedSubscription, applied, err := store.ApplyPaymentOrderEntitlement(ctx, storage.ApplyPaymentOrderEntitlementInput{
+			OutTradeNo: subscriptionOrder.OutTradeNo,
+			AppliedAt:  paidAt.Add(time.Minute),
+		})
+		if err != nil {
+			t.Fatalf("replay subscription order entitlement: %v", err)
+		}
+		if applied {
+			t.Fatalf("expected replayed subscription entitlement application to report applied=false")
+		}
+		if replayedSubscription.AppliedAt == nil {
+			t.Fatalf("expected replayed subscription order to keep applied_at")
+		}
+
+		quotaOrder := createPaidOrder(quotaProduct, "TEST-QUOTA", 3)
+		appliedQuota, applied, err := store.ApplyPaymentOrderEntitlement(ctx, storage.ApplyPaymentOrderEntitlementInput{
+			OutTradeNo: quotaOrder.OutTradeNo,
+			AppliedAt:  paidAt,
+		})
+		if err != nil {
+			t.Fatalf("apply quota order entitlement: %v", err)
+		}
+		if !applied {
+			t.Fatalf("expected quota entitlement application to report applied=true")
+		}
+		if appliedQuota.AppliedAt == nil {
+			t.Fatalf("expected applied quota order to contain applied_at")
+		}
+
+		access, err := store.GetEmailCatchAllAccessByUser(ctx, user.ID)
+		if err != nil {
+			t.Fatalf("load email catch-all access after payment application: %v", err)
+		}
+		if access.SubscriptionExpiresAt == nil {
+			t.Fatalf("expected subscription purchase to create a subscription expiry")
+		}
+		expectedRemainingCount := quotaProduct.GrantQuantity * 3
+		if access.RemainingCount != expectedRemainingCount {
+			t.Fatalf("expected remaining count %d, got %d", expectedRemainingCount, access.RemainingCount)
+		}
+
+		records, err := store.ListQuantityRecordsByUser(ctx, user.ID)
+		if err != nil {
+			t.Fatalf("list quantity records after payment application: %v", err)
+		}
+
+		subscriptionReferences := 0
+		quotaReferences := 0
+		for _, item := range records {
+			if item.ReferenceType != "payment_order" {
+				continue
+			}
+			switch item.ReferenceID {
+			case subscriptionOrder.OutTradeNo:
+				subscriptionReferences++
+				if item.ResourceKey != "email_catch_all_subscription_days" || item.Delta != int(subscriptionProduct.GrantQuantity*2) {
+					t.Fatalf("unexpected subscription quantity record: %+v", item)
+				}
+			case quotaOrder.OutTradeNo:
+				quotaReferences++
+				if item.ResourceKey != "email_catch_all_remaining_count" || item.Delta != int(expectedRemainingCount) {
+					t.Fatalf("unexpected quota quantity record: %+v", item)
+				}
+			}
+		}
+		if subscriptionReferences != 1 {
+			t.Fatalf("expected exactly one subscription quantity record, got %d", subscriptionReferences)
+		}
+		if quotaReferences != 1 {
+			t.Fatalf("expected exactly one quota quantity record, got %d", quotaReferences)
 		}
 	})
 

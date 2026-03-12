@@ -16,6 +16,8 @@ type RouterDependencies struct {
 	DomainService     *service.DomainService
 	AdminService      *service.AdminService
 	PermissionService *service.PermissionService
+	QuantityService   *service.QuantityService
+	PaymentService    *service.PaymentService
 }
 
 // NewRouter builds the complete HTTP router used by the backend process.
@@ -27,6 +29,8 @@ func NewRouter(deps RouterDependencies) http.Handler {
 		domainService:        deps.DomainService,
 		adminService:         deps.AdminService,
 		permissionService:    deps.PermissionService,
+		quantityService:      deps.QuantityService,
+		paymentService:       deps.PaymentService,
 		adminPasswordLimiter: newAdminPasswordLimiter(adminPasswordMaxFailures, adminPasswordBlockDuration, adminPasswordStateTTL),
 	}
 
@@ -41,15 +45,22 @@ func NewRouter(deps RouterDependencies) http.Handler {
 	mux.HandleFunc("GET /v1/public/supervision", api.handlePublicSupervision)
 	mux.HandleFunc("GET /v1/public/allocations/check", api.handleAllocationAvailability)
 	mux.HandleFunc("GET /v1/public/email-routes/check", api.handlePublicEmailRouteAvailability)
+	mux.HandleFunc("GET /v1/public/ldc/products", api.handlePublicPaymentProducts)
 	mux.HandleFunc("GET /v1/auth/login", api.handleAuthLogin)
 	mux.HandleFunc("GET /v1/admin/auth/login", api.handleAdminAuthLogin)
 	mux.HandleFunc("GET /v1/auth/callback", api.handleAuthCallback)
 	mux.HandleFunc("POST /v1/auth/logout", api.handleAuthLogout)
+	mux.HandleFunc("GET /v1/payments/linuxdo-credit/notify", api.handleLinuxDOCreditNotify)
 	mux.HandleFunc("GET /v1/me", api.handleMe)
 	mux.HandleFunc("GET /v1/admin/me", api.handleAdminMe)
 	mux.HandleFunc("POST /v1/admin/verify-password", api.handleAdminVerifyPassword)
 	mux.HandleFunc("GET /v1/my/allocations", api.handleMyAllocations)
 	mux.HandleFunc("GET /v1/my/permissions", api.handleMyPermissions)
+	mux.HandleFunc("GET /v1/my/quantity-records", api.handleMyQuantityRecords)
+	mux.HandleFunc("GET /v1/my/quantity-balances", api.handleMyQuantityBalances)
+	mux.HandleFunc("GET /v1/my/ldc/orders", api.handleMyPaymentOrders)
+	mux.HandleFunc("POST /v1/my/ldc/orders", api.handleCreateMyPaymentOrder)
+	mux.HandleFunc("GET /v1/my/ldc/orders/{outTradeNo}", api.handleMyPaymentOrder)
 	mux.HandleFunc("POST /v1/my/permissions/applications", api.handleSubmitPermissionApplication)
 	mux.HandleFunc("GET /v1/my/email-targets", api.handleMyEmailTargets)
 	mux.HandleFunc("POST /v1/my/email-targets", api.handleCreateMyEmailTarget)
@@ -68,6 +79,10 @@ func NewRouter(deps RouterDependencies) http.Handler {
 	mux.HandleFunc("GET /v1/admin/users/{userID}", api.handleAdminUserDetail)
 	mux.HandleFunc("PATCH /v1/admin/users/{userID}", api.handleAdminUpdateUser)
 	mux.HandleFunc("GET /v1/admin/users/{userID}/permissions", api.handleAdminUserPermissions)
+	mux.HandleFunc("PATCH /v1/admin/users/{userID}/permissions/{permissionKey}/access", api.handleAdminUpdateUserPermissionAccess)
+	mux.HandleFunc("GET /v1/admin/users/{userID}/quantity-records", api.handleAdminUserQuantityRecords)
+	mux.HandleFunc("GET /v1/admin/users/{userID}/quantity-balances", api.handleAdminUserQuantityBalances)
+	mux.HandleFunc("POST /v1/admin/users/{userID}/quantity-records", api.handleAdminCreateQuantityRecord)
 	mux.HandleFunc("PATCH /v1/admin/users/{userID}/permissions/{permissionKey}", api.handleAdminSetUserPermission)
 	mux.HandleFunc("GET /v1/admin/allocations", api.handleAdminAllocations)
 	mux.HandleFunc("POST /v1/admin/allocations", api.handleAdminCreateAllocation)
@@ -82,6 +97,8 @@ func NewRouter(deps RouterDependencies) http.Handler {
 	mux.HandleFunc("DELETE /v1/admin/email-routes/{routeID}", api.handleAdminDeleteEmailRoute)
 	mux.HandleFunc("GET /v1/admin/applications", api.handleAdminApplications)
 	mux.HandleFunc("GET /v1/admin/permission-policies", api.handleAdminPermissionPolicies)
+	mux.HandleFunc("GET /v1/admin/ldc/products", api.handleAdminPaymentProducts)
+	mux.HandleFunc("PATCH /v1/admin/ldc/products/{productKey}", api.handleAdminUpdatePaymentProduct)
 	mux.HandleFunc("PATCH /v1/admin/permission-policies/{policyKey}", api.handleAdminUpdatePermissionPolicy)
 	mux.HandleFunc("PATCH /v1/admin/applications/{applicationID}", api.handleAdminUpdateApplication)
 	mux.HandleFunc("GET /v1/admin/redeem-codes", api.handleAdminRedeemCodes)

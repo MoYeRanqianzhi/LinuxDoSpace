@@ -61,9 +61,24 @@ type Store interface {
 	ListPermissionPolicies(ctx context.Context) ([]model.PermissionPolicy, error)
 	GetPermissionPolicy(ctx context.Context, key string) (model.PermissionPolicy, error)
 	UpsertPermissionPolicy(ctx context.Context, input UpsertPermissionPolicyInput) (model.PermissionPolicy, error)
+	ListPaymentProducts(ctx context.Context, includeDisabled bool) ([]model.PaymentProduct, error)
+	GetPaymentProduct(ctx context.Context, key string) (model.PaymentProduct, error)
+	UpsertPaymentProduct(ctx context.Context, input UpsertPaymentProductInput) (model.PaymentProduct, error)
+	CreatePaymentOrder(ctx context.Context, input CreatePaymentOrderInput) (model.PaymentOrder, error)
+	ListPaymentOrdersByUser(ctx context.Context, userID int64, limit int) ([]model.PaymentOrder, error)
+	GetPaymentOrderByOutTradeNo(ctx context.Context, outTradeNo string) (model.PaymentOrder, error)
+	UpdatePaymentOrderGatewayState(ctx context.Context, input UpdatePaymentOrderGatewayStateInput) (model.PaymentOrder, error)
+	ApplyPaymentOrderEntitlement(ctx context.Context, input ApplyPaymentOrderEntitlementInput) (model.PaymentOrder, bool, error)
+	GetEmailCatchAllAccessByUser(ctx context.Context, userID int64) (model.EmailCatchAllAccess, error)
+	UpsertEmailCatchAllAccess(ctx context.Context, input UpsertEmailCatchAllAccessInput) (model.EmailCatchAllAccess, error)
+	GetEmailCatchAllDailyUsage(ctx context.Context, userID int64, usageDate string) (model.EmailCatchAllDailyUsage, error)
+	ConsumeEmailCatchAll(ctx context.Context, input ConsumeEmailCatchAllInput) (model.EmailCatchAllConsumeResult, error)
 	ListRedeemCodes(ctx context.Context) ([]model.RedeemCode, error)
 	CreateRedeemCode(ctx context.Context, input CreateRedeemCodeInput) (model.RedeemCode, error)
 	DeleteRedeemCode(ctx context.Context, id int64) error
+	ListQuantityRecordsByUser(ctx context.Context, userID int64) ([]model.QuantityRecord, error)
+	ListQuantityBalancesByUser(ctx context.Context, userID int64, now time.Time) ([]model.QuantityBalance, error)
+	CreateQuantityRecord(ctx context.Context, input CreateQuantityRecordInput) (model.QuantityRecord, error)
 	WriteAuditLog(ctx context.Context, input AuditLogInput) error
 }
 

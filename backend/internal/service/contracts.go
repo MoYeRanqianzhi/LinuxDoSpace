@@ -2,9 +2,11 @@ package service
 
 import (
 	"context"
+	"net/url"
 
 	"linuxdospace/backend/internal/cloudflare"
 	"linuxdospace/backend/internal/linuxdo"
+	"linuxdospace/backend/internal/linuxdocredit"
 	"linuxdospace/backend/internal/model"
 	"linuxdospace/backend/internal/storage"
 )
@@ -41,4 +43,12 @@ type CloudflareClient interface {
 	DeleteEmailRoutingRule(ctx context.Context, zoneID string, ruleIdentifier string) error
 	GetEmailRoutingCatchAllRule(ctx context.Context, zoneID string, subdomain string) (cloudflare.EmailRoutingRule, error)
 	UpdateEmailRoutingCatchAllRule(ctx context.Context, zoneID string, subdomain string, input cloudflare.UpsertEmailRoutingRuleInput) (cloudflare.EmailRoutingRule, error)
+}
+
+// LinuxDOCreditClient abstracts the EasyPay-compatible Linux Do Credit gateway.
+type LinuxDOCreditClient interface {
+	Configured() bool
+	SubmitOrder(ctx context.Context, request linuxdocredit.SubmitOrderRequest) (linuxdocredit.SubmitOrderResult, error)
+	QueryOrder(ctx context.Context, outTradeNo string) (linuxdocredit.QueryOrderResult, error)
+	VerifyNotification(values url.Values) (linuxdocredit.Notification, error)
 }

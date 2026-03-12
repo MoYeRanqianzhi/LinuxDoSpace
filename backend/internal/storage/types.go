@@ -151,12 +151,13 @@ type UpdateAdminApplicationInput struct {
 // UpsertPermissionPolicyInput describes the mutable fields of one permission
 // policy row.
 type UpsertPermissionPolicyInput struct {
-	Key           string
-	DisplayName   string
-	Description   string
-	Enabled       bool
-	AutoApprove   bool
-	MinTrustLevel int
+	Key               string
+	DisplayName       string
+	Description       string
+	Enabled           bool
+	AutoApprove       bool
+	MinTrustLevel     int
+	DefaultDailyLimit int64
 }
 
 // CreateRedeemCodeInput describes one administrator-issued redeem code.
@@ -166,4 +167,91 @@ type CreateRedeemCodeInput struct {
 	Target          string
 	Note            string
 	CreatedByUserID int64
+}
+
+// CreateQuantityRecordInput describes one append-only quantity delta written to
+// the generic user resource ledger.
+type CreateQuantityRecordInput struct {
+	UserID          int64
+	ResourceKey     string
+	Scope           string
+	Delta           int
+	Source          string
+	Reason          string
+	ReferenceType   string
+	ReferenceID     string
+	ExpiresAt       *time.Time
+	CreatedByUserID *int64
+}
+
+// UpsertEmailCatchAllAccessInput describes the mutable runtime access state
+// for one user's catch-all mailbox delivery allowance.
+type UpsertEmailCatchAllAccessInput struct {
+	UserID                int64
+	SubscriptionExpiresAt *time.Time
+	RemainingCount        int64
+	DailyLimitOverride    *int64
+}
+
+// ConsumeEmailCatchAllInput describes one atomic usage-reservation request
+// issued by the SMTP relay for catch-all mail.
+type ConsumeEmailCatchAllInput struct {
+	UserID            int64
+	Count             int64
+	DefaultDailyLimit int64
+	Now               time.Time
+}
+
+// UpsertPaymentProductInput describes one administrator-managed purchasable
+// Linux Do Credit product row.
+type UpsertPaymentProductInput struct {
+	Key            string
+	DisplayName    string
+	Description    string
+	Enabled        bool
+	UnitPriceCents int64
+	GrantQuantity  int64
+	GrantUnit      string
+	EffectType     string
+	SortOrder      int
+}
+
+// CreatePaymentOrderInput describes one locally persisted LDC order reserved
+// before the backend talks to the upstream payment gateway.
+type CreatePaymentOrderInput struct {
+	UserID          int64
+	ProductKey      string
+	ProductName     string
+	Title           string
+	GatewayType     string
+	OutTradeNo      string
+	Status          string
+	Units           int64
+	GrantQuantity   int64
+	GrantedTotal    int64
+	GrantUnit       string
+	UnitPriceCents  int64
+	TotalPriceCents int64
+	EffectType      string
+	PaymentURL      string
+}
+
+// UpdatePaymentOrderGatewayStateInput describes the mutable gateway-facing
+// portion of one local order, including checkout URL, upstream IDs, and raw
+// notification payload.
+type UpdatePaymentOrderGatewayStateInput struct {
+	OutTradeNo       string
+	Status           string
+	ProviderTradeNo  string
+	PaymentURL       string
+	NotifyPayloadRaw string
+	PaidAt           *time.Time
+	LastCheckedAt    *time.Time
+}
+
+// ApplyPaymentOrderEntitlementInput describes one idempotent request to turn a
+// paid order into local entitlements and immutable quantity ledger records.
+type ApplyPaymentOrderEntitlementInput struct {
+	OutTradeNo string
+	AppliedAt  time.Time
 }

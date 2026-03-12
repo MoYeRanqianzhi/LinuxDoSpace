@@ -12,11 +12,13 @@ import (
 
 // Config groups all runtime configuration needed by the backend process.
 type Config struct {
-	App         AppConfig
-	Database    DatabaseConfig
-	LinuxDO     LinuxDOConfig
-	Cloudflare  CloudflareConfig
-	LoadedAtUTC time.Time
+	App           AppConfig
+	Database      DatabaseConfig
+	LinuxDO       LinuxDOConfig
+	LinuxDOCredit LinuxDOCreditConfig
+	Cloudflare    CloudflareConfig
+	Mail          MailConfig
+	LoadedAtUTC   time.Time
 }
 
 // AppConfig stores generic application, networking, and session settings.
@@ -63,6 +65,17 @@ type LinuxDOConfig struct {
 	EnablePKCE   bool
 }
 
+// LinuxDOCreditConfig stores the EasyPay-compatible Linux Do Credit gateway
+// settings used by the purchase flow.
+type LinuxDOCreditConfig struct {
+	PID       string
+	Key       string
+	BaseURL   string
+	NotifyURL string
+	ReturnURL string
+	Timeout   time.Duration
+}
+
 // CloudflareConfig stores Cloudflare API and domain defaults.
 type CloudflareConfig struct {
 	AccountID           string
@@ -71,6 +84,37 @@ type CloudflareConfig struct {
 	DefaultZoneID       string
 	AutoBootstrapDomain bool
 	DefaultUserQuota    int
+}
+
+const (
+	// EmailForwardingBackendCloudflare keeps the historical behavior where the
+	// backend writes forwarding rules directly into Cloudflare Email Routing.
+	EmailForwardingBackendCloudflare = "cloudflare"
+
+	// EmailForwardingBackendDatabaseRelay stores mailbox routes only in the
+	// database and lets the application receive + forward SMTP traffic itself.
+	EmailForwardingBackendDatabaseRelay = "database_relay"
+)
+
+// MailConfig stores the email-forwarding execution mode and the SMTP relay
+// settings used when LinuxDoSpace receives mail itself.
+type MailConfig struct {
+	ForwardingBackend string
+	RelayEnabled      bool
+	EnsureDNS         bool
+	SMTPAddr          string
+	Domain            string
+	MXTarget          string
+	MXPriority        int
+	SPFValue          string
+	MaxRecipients     int
+	MaxMessageBytes   int64
+	ReadTimeout       time.Duration
+	WriteTimeout      time.Duration
+	ForwardHost       string
+	ForwardUsername   string
+	ForwardPassword   string
+	ForwardFrom       string
 }
 
 // Load reads configuration from environment variables and applies defaults.
@@ -112,6 +156,14 @@ func Load() (Config, error) {
 			Scope:        getEnv("LINUXDO_OAUTH_SCOPE", "user"),
 			EnablePKCE:   mustParseBool(getEnv("LINUXDO_OAUTH_ENABLE_PKCE", "false")),
 		},
+		LinuxDOCredit: LinuxDOCreditConfig{
+			PID:       strings.TrimSpace(os.Getenv("LINUXDO_CREDIT_PID")),
+			Key:       strings.TrimSpace(os.Getenv("LINUXDO_CREDIT_KEY")),
+			BaseURL:   getEnv("LINUXDO_CREDIT_BASE_URL", "https://credit.linux.do/epay"),
+			NotifyURL: strings.TrimSpace(os.Getenv("LINUXDO_CREDIT_NOTIFY_URL")),
+			ReturnURL: strings.TrimSpace(os.Getenv("LINUXDO_CREDIT_RETURN_URL")),
+			Timeout:   mustParseDuration(getEnv("LINUXDO_CREDIT_TIMEOUT", "15s")),
+		},
 		Cloudflare: CloudflareConfig{
 			AccountID:           strings.TrimSpace(os.Getenv("CLOUDFLARE_ACCOUNT_ID")),
 			APIToken:            strings.TrimSpace(os.Getenv("CLOUDFLARE_API_TOKEN")),
@@ -119,6 +171,24 @@ func Load() (Config, error) {
 			DefaultZoneID:       strings.TrimSpace(os.Getenv("CLOUDFLARE_DEFAULT_ZONE_ID")),
 			AutoBootstrapDomain: mustParseBool(getEnv("CLOUDFLARE_AUTO_BOOTSTRAP_DOMAIN", "true")),
 			DefaultUserQuota:    mustParseInt(getEnv("CLOUDFLARE_DEFAULT_USER_QUOTA", "1")),
+		},
+		Mail: MailConfig{
+			ForwardingBackend: strings.ToLower(getEnv("EMAIL_FORWARDING_BACKEND", EmailForwardingBackendCloudflare)),
+			RelayEnabled:      mustParseBool(getEnv("MAIL_RELAY_ENABLED", "false")),
+			EnsureDNS:         mustParseBool(getEnv("MAIL_RELAY_ENSURE_DNS", "true")),
+			SMTPAddr:          getEnv("MAIL_RELAY_SMTP_ADDR", ":2525"),
+			Domain:            getEnv("MAIL_RELAY_DOMAIN", "mail.linuxdo.space"),
+			MXTarget:          getEnv("MAIL_RELAY_MX_TARGET", "mail.linuxdo.space"),
+			MXPriority:        mustParseInt(getEnv("MAIL_RELAY_MX_PRIORITY", "10")),
+			SPFValue:          getEnv("MAIL_RELAY_SPF_VALUE", "v=spf1 -all"),
+			MaxRecipients:     mustParseInt(getEnv("MAIL_RELAY_MAX_RECIPIENTS", "50")),
+			MaxMessageBytes:   mustParseInt64(getEnv("MAIL_RELAY_MAX_MESSAGE_BYTES", "26214400")),
+			ReadTimeout:       mustParseDuration(getEnv("MAIL_RELAY_READ_TIMEOUT", "30s")),
+			WriteTimeout:      mustParseDuration(getEnv("MAIL_RELAY_WRITE_TIMEOUT", "30s")),
+			ForwardHost:       strings.TrimSpace(os.Getenv("MAIL_RELAY_FORWARD_HOST")),
+			ForwardUsername:   strings.TrimSpace(os.Getenv("MAIL_RELAY_FORWARD_USERNAME")),
+			ForwardPassword:   strings.TrimSpace(os.Getenv("MAIL_RELAY_FORWARD_PASSWORD")),
+			ForwardFrom:       strings.TrimSpace(os.Getenv("MAIL_RELAY_FORWARD_FROM")),
 		},
 		LoadedAtUTC: time.Now().UTC(),
 	}
@@ -141,6 +211,12 @@ func Load() (Config, error) {
 	if err := validateDatabaseConfig(cfg.Database); err != nil {
 		return Config{}, err
 	}
+	if err := validateLinuxDOCreditConfig(cfg.LinuxDOCredit); err != nil {
+		return Config{}, err
+	}
+	if err := validateMailConfig(cfg.Mail); err != nil {
+		return Config{}, err
+	}
 	if cfg.App.AdminVerificationTTL <= 0 {
 		return Config{}, fmt.Errorf("APP_ADMIN_VERIFICATION_TTL must be greater than 0")
 	}
@@ -157,9 +233,21 @@ func (c Config) OAuthConfigured() bool {
 	return c.LinuxDO.ClientID != "" && c.LinuxDO.ClientSecret != "" && c.LinuxDO.RedirectURL != ""
 }
 
+// LinuxDOCreditConfigured reports whether the LDC purchase flow has the
+// minimum gateway credentials required to create and verify orders.
+func (c Config) LinuxDOCreditConfigured() bool {
+	return c.LinuxDOCredit.PID != "" && c.LinuxDOCredit.Key != ""
+}
+
 // CloudflareConfigured reports whether Cloudflare API access is configured.
 func (c Config) CloudflareConfigured() bool {
 	return c.Cloudflare.APIToken != ""
+}
+
+// UsesDatabaseMailRelay reports whether email forwarding should be resolved
+// from the local database and executed by the built-in SMTP relay.
+func (c Config) UsesDatabaseMailRelay() bool {
+	return strings.EqualFold(strings.TrimSpace(c.Mail.ForwardingBackend), EmailForwardingBackendDatabaseRelay)
 }
 
 // getEnv returns a trimmed environment variable or a fallback value.
@@ -232,6 +320,16 @@ func mustParseInt(raw string) int {
 	return value
 }
 
+// mustParseInt64 parses one integer value that may exceed the platform-sized
+// `int`, such as maximum accepted SMTP message bytes.
+func mustParseInt64(raw string) int64 {
+	var value int64
+	if _, err := fmt.Sscanf(strings.TrimSpace(raw), "%d", &value); err != nil {
+		panic(fmt.Sprintf("invalid int64 %q: %v", raw, err))
+	}
+	return value
+}
+
 // mustParseCIDRs parses one comma-separated CIDR allowlist used for trusted
 // reverse proxies. Invalid values are treated as configuration bugs and panic
 // immediately so production never starts with a silently weakened trust model.
@@ -297,4 +395,81 @@ func validateDatabaseConfig(database DatabaseConfig) error {
 	}
 
 	return nil
+}
+
+// validateMailConfig keeps the selected forwarding execution mode explicit and
+// fails fast when the built-in relay would start without the minimum upstream
+// SMTP settings required to forward mail safely.
+func validateMailConfig(mail MailConfig) error {
+	switch strings.ToLower(strings.TrimSpace(mail.ForwardingBackend)) {
+	case EmailForwardingBackendCloudflare:
+		return nil
+	case EmailForwardingBackendDatabaseRelay:
+		if mail.MaxRecipients < 1 {
+			return fmt.Errorf("MAIL_RELAY_MAX_RECIPIENTS must be at least 1")
+		}
+		if mail.MaxMessageBytes < 1 {
+			return fmt.Errorf("MAIL_RELAY_MAX_MESSAGE_BYTES must be at least 1")
+		}
+		if mail.ReadTimeout <= 0 {
+			return fmt.Errorf("MAIL_RELAY_READ_TIMEOUT must be greater than 0")
+		}
+		if mail.WriteTimeout <= 0 {
+			return fmt.Errorf("MAIL_RELAY_WRITE_TIMEOUT must be greater than 0")
+		}
+		if mail.MXPriority < 0 {
+			return fmt.Errorf("MAIL_RELAY_MX_PRIORITY must be at least 0")
+		}
+		if mail.RelayEnabled {
+			if strings.TrimSpace(mail.SMTPAddr) == "" {
+				return fmt.Errorf("MAIL_RELAY_SMTP_ADDR is required when MAIL_RELAY_ENABLED=true")
+			}
+			if strings.TrimSpace(mail.Domain) == "" {
+				return fmt.Errorf("MAIL_RELAY_DOMAIN is required when MAIL_RELAY_ENABLED=true")
+			}
+			if strings.TrimSpace(mail.ForwardHost) == "" {
+				return fmt.Errorf("MAIL_RELAY_FORWARD_HOST is required when MAIL_RELAY_ENABLED=true")
+			}
+			if strings.TrimSpace(mail.ForwardFrom) == "" {
+				return fmt.Errorf("MAIL_RELAY_FORWARD_FROM is required when MAIL_RELAY_ENABLED=true")
+			}
+		}
+		if mail.EnsureDNS && strings.TrimSpace(firstNonEmptyString(mail.MXTarget, mail.Domain)) == "" {
+			return fmt.Errorf("MAIL_RELAY_MX_TARGET or MAIL_RELAY_DOMAIN is required when MAIL_RELAY_ENSURE_DNS=true")
+		}
+		return nil
+	default:
+		return fmt.Errorf("EMAIL_FORWARDING_BACKEND must be one of %s, %s", EmailForwardingBackendCloudflare, EmailForwardingBackendDatabaseRelay)
+	}
+}
+
+// validateLinuxDOCreditConfig keeps the purchase subsystem explicitly enabled:
+// either both gateway credentials are configured, or neither is.
+func validateLinuxDOCreditConfig(credit LinuxDOCreditConfig) error {
+	hasPID := strings.TrimSpace(credit.PID) != ""
+	hasKey := strings.TrimSpace(credit.Key) != ""
+
+	if hasPID != hasKey {
+		return fmt.Errorf("LINUXDO_CREDIT_PID and LINUXDO_CREDIT_KEY must be configured together")
+	}
+	if !hasPID {
+		return nil
+	}
+	if strings.TrimSpace(credit.BaseURL) == "" {
+		return fmt.Errorf("LINUXDO_CREDIT_BASE_URL is required when Linux Do Credit is configured")
+	}
+	if credit.Timeout <= 0 {
+		return fmt.Errorf("LINUXDO_CREDIT_TIMEOUT must be greater than 0")
+	}
+	return nil
+}
+
+// firstNonEmptyString returns the first trimmed non-empty string.
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }

@@ -13,5 +13,7 @@ type API struct {
 	domainService        *service.DomainService
 	adminService         *service.AdminService
 	permissionService    *service.PermissionService
+	quantityService      *service.QuantityService
+	paymentService       *service.PaymentService
 	adminPasswordLimiter *adminPasswordLimiter
 }
