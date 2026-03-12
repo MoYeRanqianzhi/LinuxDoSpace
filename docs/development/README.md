@@ -17,6 +17,7 @@ Use it to keep architecture, deployment, API, and release knowledge traceable ac
 
 - The Go backend already provides Linux Do OAuth, server-side sessions, CSRF checks, managed-domain allocation, DNS record management, and administrator APIs.
 - The backend now also exposes an append-only quantity ledger and derived balance APIs to support future paid features without sacrificing auditability.
+- The email catch-all flow now uses separate mutable runtime state for subscription expiry, remaining prepaid count, and UTC-day usage caps instead of overloading the immutable quantity ledger.
 - SQLite persistence, Cloudflare integration, Docker packaging, and GHCR-based release workflows are in place.
 - The main frontend is connected to the backend and supports the current public/user flows.
 - The standalone `admin-frontend/` project is no longer just a UI prototype. It now uses real backend administrator sessions and management APIs.

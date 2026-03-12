@@ -66,6 +66,12 @@ Lists every active allocation namespace currently owned by the authenticated use
 ### `GET /v1/my/permissions`
 Returns the current authenticated user's visible permission cards.
 The current release exposes the `email_catch_all` permission used by the public email page.
+That permission card now also includes `catch_all_access`, which reports:
+- whether an active subscription window currently exists
+- the remaining prepaid count when no subscription is active
+- the current UTC day's used count
+- the effective per-user daily cap
+- whether catch-all delivery is currently available
 
 ### `GET /v1/my/quantity-records`
 Returns the current authenticated user's full append-only quantity ledger.
@@ -102,6 +108,14 @@ The current release returns:
 - the always-owned default mailbox row for `<username>@linuxdo.space`
 - any extra mailbox aliases already assigned to the user in the database
 - the permission-gated `*@<username>.linuxdo.space` row
+
+When the returned row is the catch-all mailbox, the payload also includes
+`catch_all_access`. This runtime state is evaluated separately from the
+append-only quantity ledger:
+- active subscription time always wins first
+- once no active subscription remains, the relay consumes `remaining_count`
+- all catch-all deliveries still obey the effective single-user daily limit
+- all time calculations use the server's UTC clock
 
 Every email-route mutation now syncs the effective forwarding state into the
 currently selected backend.
@@ -277,6 +291,29 @@ Request example:
 }
 ```
 
+### `PATCH /v1/admin/users/{userID}/permissions/{permissionKey}/access`
+Updates the target user's mutable catch-all runtime allowance.
+This endpoint is currently specific to `email_catch_all`.
+
+The runtime model intentionally stays separate from the append-only quantity
+ledger:
+- subscription time is tracked by `subscription_expires_at`
+- prepaid usage is tracked by `remaining_count`
+- the effective daily cap is `daily_limit_override` when set, otherwise the
+  policy's `default_daily_limit`
+- all time calculations use the server's UTC clock
+
+Request example:
+
+```json
+{
+  "add_subscription_days": 30,
+  "remaining_count_delta": 50000,
+  "daily_limit_override": 200000,
+  "reason": "manual commercial grant"
+}
+```
+
 ### `GET /v1/admin/allocations`
 Returns all allocation namespaces together with owner identity.
 Useful for admin record creation workflows.
@@ -357,6 +394,8 @@ Returns all moderation requests visible to the administrator console.
 
 ### `GET /v1/admin/permission-policies`
 Returns the administrator-configurable policy rows that control permission eligibility and auto-approval.
+The `email_catch_all` policy now also exposes `default_daily_limit`, which
+defaults to `1000000`.
 
 ### `PATCH /v1/admin/permission-policies/{policyKey}`
 Updates one permission-policy row.
@@ -367,7 +406,8 @@ Request example:
 {
   "enabled": true,
   "auto_approve": true,
-  "min_trust_level": 2
+  "min_trust_level": 2,
+  "default_daily_limit": 1000000
 }
 ```
 

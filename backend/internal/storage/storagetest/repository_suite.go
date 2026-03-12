@@ -3,6 +3,7 @@ package storagetest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -403,6 +404,99 @@ func RunRepositoryBehaviorSuite(t *testing.T, newStore Factory) {
 			if item.ResourceKey == "zero_bucket" {
 				t.Fatalf("zeroed-out balance should not be returned: %+v", item)
 			}
+		}
+	})
+
+	t.Run("email catch-all consumption prefers subscription and then decrements remaining count", func(t *testing.T) {
+		ctx := context.Background()
+		store := newStore(t)
+
+		user := newTestUser(t, ctx, store, "catchall-owner")
+		policy, err := store.GetPermissionPolicy(ctx, "email_catch_all")
+		if err != nil {
+			t.Fatalf("load email catch-all policy: %v", err)
+		}
+		if policy.DefaultDailyLimit != 1_000_000 {
+			t.Fatalf("expected default daily limit 1000000, got %d", policy.DefaultDailyLimit)
+		}
+
+		now := time.Now().UTC()
+		subscriptionExpiresAt := now.Add(48 * time.Hour)
+		dailyLimitOverride := int64(3)
+		if _, err := store.UpsertEmailCatchAllAccess(ctx, storage.UpsertEmailCatchAllAccessInput{
+			UserID:                user.ID,
+			SubscriptionExpiresAt: &subscriptionExpiresAt,
+			RemainingCount:        5,
+			DailyLimitOverride:    &dailyLimitOverride,
+		}); err != nil {
+			t.Fatalf("upsert email catch-all access with active subscription: %v", err)
+		}
+
+		firstConsume, err := store.ConsumeEmailCatchAll(ctx, storage.ConsumeEmailCatchAllInput{
+			UserID:            user.ID,
+			Count:             2,
+			DefaultDailyLimit: policy.DefaultDailyLimit,
+			Now:               now,
+		})
+		if err != nil {
+			t.Fatalf("consume email catch-all with active subscription: %v", err)
+		}
+		if firstConsume.ConsumedMode != "subscription" {
+			t.Fatalf("expected subscription mode to win first, got %q", firstConsume.ConsumedMode)
+		}
+		if firstConsume.Access.RemainingCount != 5 {
+			t.Fatalf("expected remaining count to stay 5 while subscription is active, got %d", firstConsume.Access.RemainingCount)
+		}
+		if firstConsume.DailyUsage.UsedCount != 2 {
+			t.Fatalf("expected used count 2 after first consume, got %d", firstConsume.DailyUsage.UsedCount)
+		}
+
+		_, err = store.ConsumeEmailCatchAll(ctx, storage.ConsumeEmailCatchAllInput{
+			UserID:            user.ID,
+			Count:             2,
+			DefaultDailyLimit: policy.DefaultDailyLimit,
+			Now:               now,
+		})
+		if !errors.Is(err, storage.ErrEmailCatchAllDailyLimitExceeded) {
+			t.Fatalf("expected daily limit error, got %v", err)
+		}
+
+		expiredSubscription := now.Add(-time.Hour)
+		resetDailyLimit := int64(10)
+		if _, err := store.UpsertEmailCatchAllAccess(ctx, storage.UpsertEmailCatchAllAccessInput{
+			UserID:                user.ID,
+			SubscriptionExpiresAt: &expiredSubscription,
+			RemainingCount:        5,
+			DailyLimitOverride:    &resetDailyLimit,
+		}); err != nil {
+			t.Fatalf("upsert email catch-all access with expired subscription: %v", err)
+		}
+
+		secondDay := now.Add(24 * time.Hour)
+		secondConsume, err := store.ConsumeEmailCatchAll(ctx, storage.ConsumeEmailCatchAllInput{
+			UserID:            user.ID,
+			Count:             2,
+			DefaultDailyLimit: policy.DefaultDailyLimit,
+			Now:               secondDay,
+		})
+		if err != nil {
+			t.Fatalf("consume email catch-all using remaining count: %v", err)
+		}
+		if secondConsume.ConsumedMode != "quantity" {
+			t.Fatalf("expected quantity mode after subscription expiry, got %q", secondConsume.ConsumedMode)
+		}
+		if secondConsume.Access.RemainingCount != 3 {
+			t.Fatalf("expected remaining count to decrement to 3, got %d", secondConsume.Access.RemainingCount)
+		}
+
+		_, err = store.ConsumeEmailCatchAll(ctx, storage.ConsumeEmailCatchAllInput{
+			UserID:            user.ID,
+			Count:             4,
+			DefaultDailyLimit: policy.DefaultDailyLimit,
+			Now:               secondDay,
+		})
+		if !errors.Is(err, storage.ErrEmailCatchAllInsufficientRemainingCount) {
+			t.Fatalf("expected insufficient remaining count error, got %v", err)
 		}
 	})
 

@@ -151,12 +151,13 @@ type UpdateAdminApplicationInput struct {
 // UpsertPermissionPolicyInput describes the mutable fields of one permission
 // policy row.
 type UpsertPermissionPolicyInput struct {
-	Key           string
-	DisplayName   string
-	Description   string
-	Enabled       bool
-	AutoApprove   bool
-	MinTrustLevel int
+	Key               string
+	DisplayName       string
+	Description       string
+	Enabled           bool
+	AutoApprove       bool
+	MinTrustLevel     int
+	DefaultDailyLimit int64
 }
 
 // CreateRedeemCodeInput describes one administrator-issued redeem code.
@@ -181,4 +182,22 @@ type CreateQuantityRecordInput struct {
 	ReferenceID     string
 	ExpiresAt       *time.Time
 	CreatedByUserID *int64
+}
+
+// UpsertEmailCatchAllAccessInput describes the mutable runtime access state
+// for one user's catch-all mailbox delivery allowance.
+type UpsertEmailCatchAllAccessInput struct {
+	UserID                int64
+	SubscriptionExpiresAt *time.Time
+	RemainingCount        int64
+	DailyLimitOverride    *int64
+}
+
+// ConsumeEmailCatchAllInput describes one atomic usage-reservation request
+// issued by the SMTP relay for catch-all mail.
+type ConsumeEmailCatchAllInput struct {
+	UserID            int64
+	Count             int64
+	DefaultDailyLimit int64
+	Now               time.Time
 }

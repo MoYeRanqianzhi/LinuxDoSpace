@@ -252,3 +252,45 @@ func (a *API) handleAdminSetUserPermission(w http.ResponseWriter, r *http.Reques
 	}
 	writeJSON(w, http.StatusOK, item)
 }
+
+// handleAdminUpdateUserPermissionAccess lets an administrator adjust the
+// mutable catch-all runtime access state for one target user.
+func (a *API) handleAdminUpdateUserPermissionAccess(w http.ResponseWriter, r *http.Request) {
+	session, actor, ok := a.requireVerifiedAdmin(w, r)
+	if !ok {
+		return
+	}
+	if !a.enforceCSRF(w, r, session) {
+		return
+	}
+
+	userID, err := pathInt64(r, "userID")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	permissionKey := r.PathValue("permissionKey")
+	if permissionKey == "" {
+		writeError(w, service.ValidationError("permissionKey is required"))
+		return
+	}
+
+	var request service.AdminUpdateEmailCatchAllAccessRequest
+	if err := decodeJSONBody(r, &request); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	if permissionKey != service.PermissionKeyEmailCatchAll {
+		writeError(w, service.ValidationError("unsupported permission key"))
+		return
+	}
+
+	item, err := a.permissionService.UpdateEmailCatchAllAccessForUser(r.Context(), *actor, userID, request)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}

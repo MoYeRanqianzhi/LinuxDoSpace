@@ -72,6 +72,7 @@ func NewRouter(deps RouterDependencies) http.Handler {
 	mux.HandleFunc("GET /v1/admin/users/{userID}", api.handleAdminUserDetail)
 	mux.HandleFunc("PATCH /v1/admin/users/{userID}", api.handleAdminUpdateUser)
 	mux.HandleFunc("GET /v1/admin/users/{userID}/permissions", api.handleAdminUserPermissions)
+	mux.HandleFunc("PATCH /v1/admin/users/{userID}/permissions/{permissionKey}/access", api.handleAdminUpdateUserPermissionAccess)
 	mux.HandleFunc("GET /v1/admin/users/{userID}/quantity-records", api.handleAdminUserQuantityRecords)
 	mux.HandleFunc("GET /v1/admin/users/{userID}/quantity-balances", api.handleAdminUserQuantityBalances)
 	mux.HandleFunc("POST /v1/admin/users/{userID}/quantity-records", api.handleAdminCreateQuantityRecord)

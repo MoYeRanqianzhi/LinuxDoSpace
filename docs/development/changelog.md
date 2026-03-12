@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added dual runtime billing modes for `email_catch_all`: subscription time and prepaid remaining count, with subscription taking priority and all catch-all mail still capped by a configurable per-user UTC-day limit.
+- Added mutable catch-all access tables plus SMTP relay enforcement so `*@<username>.linuxdo.space` now checks real subscription/count state instead of relying only on permission approval.
+- Added administrator policy support for `default_daily_limit` and a dedicated admin endpoint for per-user catch-all access adjustments.
 - Added an append-only quantity ledger plus user/admin quantity APIs so future billing, redeem-code, and subscription work can track auditable resource deltas instead of mutating balances in place.
 - Added a built-in SMTP relay mode controlled by `EMAIL_FORWARDING_BACKEND=database_relay`, allowing LinuxDoSpace to receive mail itself and forward it according to database-stored routes instead of relying on Cloudflare catch-all delivery.
 - Added database-relay DNS bootstrap so LinuxDoSpace can automatically create its own managed MX/TXT records for routed mail domains and subdomains instead of depending on manual DNS setup.

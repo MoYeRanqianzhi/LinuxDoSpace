@@ -103,6 +103,7 @@ func main() {
 		smtpServer = mailrelay.NewServer(
 			cfg.Mail,
 			mailrelay.NewDBResolver(store),
+			mailrelay.NewDBCatchAllAccessManager(store),
 			mailrelay.NewSMTPForwarder(cfg.Mail),
 			log.Default(),
 		)

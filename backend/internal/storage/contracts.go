@@ -61,6 +61,10 @@ type Store interface {
 	ListPermissionPolicies(ctx context.Context) ([]model.PermissionPolicy, error)
 	GetPermissionPolicy(ctx context.Context, key string) (model.PermissionPolicy, error)
 	UpsertPermissionPolicy(ctx context.Context, input UpsertPermissionPolicyInput) (model.PermissionPolicy, error)
+	GetEmailCatchAllAccessByUser(ctx context.Context, userID int64) (model.EmailCatchAllAccess, error)
+	UpsertEmailCatchAllAccess(ctx context.Context, input UpsertEmailCatchAllAccessInput) (model.EmailCatchAllAccess, error)
+	GetEmailCatchAllDailyUsage(ctx context.Context, userID int64, usageDate string) (model.EmailCatchAllDailyUsage, error)
+	ConsumeEmailCatchAll(ctx context.Context, input ConsumeEmailCatchAllInput) (model.EmailCatchAllConsumeResult, error)
 	ListRedeemCodes(ctx context.Context) ([]model.RedeemCode, error)
 	CreateRedeemCode(ctx context.Context, input CreateRedeemCodeInput) (model.RedeemCode, error)
 	DeleteRedeemCode(ctx context.Context, id int64) error

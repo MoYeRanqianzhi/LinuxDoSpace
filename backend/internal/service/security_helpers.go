@@ -25,3 +25,13 @@ func logAuditWriteFailure(action string, err error) {
 	}
 	log.Printf("audit log write failed for %s: %v", action, err)
 }
+
+// logPostMutationFailure keeps non-critical post-success bookkeeping failures
+// from surfacing as false-negative 500 responses after the main mutation
+// already committed.
+func logPostMutationFailure(action string, err error) {
+	if err == nil {
+		return
+	}
+	log.Printf("post-mutation bookkeeping failed for %s: %v", action, err)
+}

@@ -26,14 +26,16 @@ type Server struct {
 }
 
 // NewServer constructs the SMTP listener from runtime configuration, the
-// database-backed recipient resolver, and the outbound SMTP forwarder.
-func NewServer(mail config.MailConfig, resolver RecipientResolver, forwarder MessageForwarder, logger smtp.Logger) *Server {
+// database-backed recipient resolver, the catch-all access manager, and the
+// outbound SMTP forwarder.
+func NewServer(mail config.MailConfig, resolver RecipientResolver, accessManager CatchAllAccessManager, forwarder MessageForwarder, logger smtp.Logger) *Server {
 	if logger == nil {
 		logger = log.Default()
 	}
 
 	backend := &smtpBackend{
 		resolver:       resolver,
+		accessManager:  accessManager,
 		forwarder:      forwarder,
 		logger:         logger,
 		forwardTimeout: deriveForwardTimeout(mail),
@@ -64,6 +66,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // smtpBackend creates one SMTP session per inbound TCP connection.
 type smtpBackend struct {
 	resolver       RecipientResolver
+	accessManager  CatchAllAccessManager
 	forwarder      MessageForwarder
 	logger         smtp.Logger
 	forwardTimeout time.Duration
@@ -73,6 +76,7 @@ type smtpBackend struct {
 func (b *smtpBackend) NewSession(c *smtp.Conn) (smtp.Session, error) {
 	return &smtpSession{
 		resolver:       b.resolver,
+		accessManager:  b.accessManager,
 		forwarder:      b.forwarder,
 		logger:         b.logger,
 		forwardTimeout: b.forwardTimeout,
@@ -83,6 +87,7 @@ func (b *smtpBackend) NewSession(c *smtp.Conn) (smtp.Session, error) {
 // smtpSession stores the current envelope state for one SMTP transaction.
 type smtpSession struct {
 	resolver       RecipientResolver
+	accessManager  CatchAllAccessManager
 	forwarder      MessageForwarder
 	logger         smtp.Logger
 	forwardTimeout time.Duration
@@ -124,6 +129,15 @@ func (s *smtpSession) Data(r io.Reader) error {
 		}
 	}
 
+	for ownerUserID, count := range buildCatchAllUsagePlan(s.recipients) {
+		if s.accessManager == nil || count <= 0 {
+			continue
+		}
+		if err := s.accessManager.Consume(context.Background(), ownerUserID, count); err != nil {
+			return catchAllAccessSMTPError(err)
+		}
+	}
+
 	rawMessage, err := io.ReadAll(r)
 	if err != nil {
 		return &smtp.SMTPError{
@@ -155,6 +169,20 @@ func (s *smtpSession) Data(r io.Reader) error {
 	}
 
 	return nil
+}
+
+// buildCatchAllUsagePlan collapses the accepted recipients into per-owner
+// catch-all usage reservations so one message can reserve quota exactly once
+// per owner before forwarding starts.
+func buildCatchAllUsagePlan(recipients []ResolvedRecipient) map[int64]int64 {
+	usageByOwner := make(map[int64]int64)
+	for _, item := range recipients {
+		if !item.UsedCatchAll || item.RouteOwnerUserID <= 0 {
+			continue
+		}
+		usageByOwner[item.RouteOwnerUserID]++
+	}
+	return usageByOwner
 }
 
 // Reset discards the current transaction state as required by the SMTP session
@@ -276,6 +304,31 @@ func forwardSMTPError(err error) error {
 			Code:         451,
 			EnhancedCode: smtp.EnhancedCode{4, 4, 0},
 			Message:      "failed to forward message upstream",
+		}
+	}
+}
+
+// catchAllAccessSMTPError converts deterministic catch-all access denials into
+// SMTP DATA failures that correctly signal whether the sender should retry.
+func catchAllAccessSMTPError(err error) error {
+	switch {
+	case errors.Is(err, ErrCatchAllAccessUnavailable):
+		return &smtp.SMTPError{
+			Code:         550,
+			EnhancedCode: smtp.EnhancedCode{5, 2, 1},
+			Message:      "recipient catch-all access is unavailable",
+		}
+	case errors.Is(err, ErrCatchAllDailyLimitExceeded):
+		return &smtp.SMTPError{
+			Code:         452,
+			EnhancedCode: smtp.EnhancedCode{4, 2, 2},
+			Message:      "recipient catch-all daily limit has been reached",
+		}
+	default:
+		return &smtp.SMTPError{
+			Code:         451,
+			EnhancedCode: smtp.EnhancedCode{4, 4, 0},
+			Message:      "temporary error while checking recipient catch-all access",
 		}
 	}
 }
