@@ -25,6 +25,9 @@ Error responses:
 
 ### `GET /healthz`
 Returns process health, version, and dependency readiness.
+The payload now also exposes `mail_forwarding_backend` and `mail_relay_enabled`
+so operators can verify whether the instance is running in `cloudflare` or
+`database_relay` mode.
 
 ### `GET /v1/public/domains`
 Returns the enabled managed root-domain list.
@@ -71,6 +74,72 @@ Lists every active allocation namespace currently owned by the authenticated use
 ### `GET /v1/my/permissions`
 Returns the current authenticated user's visible permission cards.
 The current release exposes the `email_catch_all` permission used by the public email page.
+That permission card now also includes `catch_all_access`, which reports:
+- whether an active subscription window currently exists
+- the remaining prepaid count when no subscription is active
+- the current UTC day's used count
+- the effective per-user daily cap
+- whether catch-all delivery is currently available
+
+### `GET /v1/my/quantity-records`
+Returns the current authenticated user's full append-only quantity ledger.
+This endpoint is intended for future billing, redeem-code, and quota history UIs.
+
+Each record contains:
+- `resource_key`: machine-readable resource type such as `domain_slot`
+- `scope`: optional namespace such as `linuxdo.space`
+- `delta`: signed quantity change
+- `source`: machine-readable origin such as `admin_manual`
+- `reason`: human-readable explanation
+- `reference_type` and `reference_id`: optional external linkage for future payment or redeem flows
+- `expires_at`: optional future expiry timestamp
+
+### `GET /v1/my/quantity-balances`
+Returns the current authenticated user's derived non-zero quantity balances.
+The backend sums only non-expired ledger entries and groups them by `resource_key + scope`.
+
+### `GET /v1/my/ldc/orders`
+Returns the current authenticated user's recent Linux Do Credit orders.
+
+### `POST /v1/my/ldc/orders`
+Creates one Linux Do Credit checkout order for the current user.
+The backend reserves the local order first, then asks the upstream gateway for
+the checkout URL, and finally returns the tracked local order.
+
+Request example:
+
+```json
+{
+  "product_key": "email_catch_all_subscription",
+  "units": 3
+}
+```
+
+### `GET /v1/my/ldc/orders/{outTradeNo}`
+Returns one specific Linux Do Credit order for the current user.
+This endpoint also performs opportunistic reconciliation:
+- when the order is still pending, the backend may call the upstream query API
+- when the order is already paid but not yet applied locally, the backend
+  retries entitlement application before returning the response
+
+### `GET /v1/my/ldc/orders`
+Returns the current authenticated user's recent Linux Do Credit orders.
+
+### `POST /v1/my/ldc/orders`
+Creates one local Linux Do Credit order, reserves it in the database, and returns the upstream payment URL.
+
+Request example:
+
+```json
+{
+  "product_key": "email_catch_all_subscription",
+  "units": 3
+}
+```
+
+### `GET /v1/my/ldc/orders/{outTradeNo}`
+Returns one specific Linux Do Credit order.
+When the order is still pending, the backend may query the upstream gateway and, if already paid, apply the corresponding entitlement before returning the refreshed payload.
 
 ### `GET /v1/my/ldc/orders`
 Returns the current authenticated user's recent Linux Do Credit orders.
@@ -134,10 +203,20 @@ The current release returns:
 - any extra mailbox aliases already assigned to the user in the database
 - the permission-gated `*@<username>.linuxdo.space` row
 
-Every email-route mutation now syncs the effective forwarding rule into Cloudflare Email Routing.
+When the returned row is the catch-all mailbox, the payload also includes
+`catch_all_access`. This runtime state is evaluated separately from the
+append-only quantity ledger:
+- active subscription time always wins first
+- once no active subscription remains, the relay consumes `remaining_count`
+- all catch-all deliveries still obey the effective single-user daily limit
+- all time calculations use the server's UTC clock
+
+Every email-route mutation now syncs the effective forwarding state into the
+currently selected backend.
 Important operational constraints:
 - the target mailbox must already be a verified Cloudflare Email Routing destination address, or Cloudflare will send a verification email and the save will be rejected until verification completes
-- namespace catch-all routes such as `*@<username>.linuxdo.space` automatically trigger the backend to ensure Cloudflare Email Routing MX and SPF records for that namespace before the catch-all rule is updated
+- when `EMAIL_FORWARDING_BACKEND=cloudflare`, the backend syncs exact-address and catch-all rules directly into Cloudflare Email Routing
+- when `EMAIL_FORWARDING_BACKEND=database_relay`, the backend stores the route only in the database and the built-in SMTP relay executes the forward at delivery time
 
 ### `PUT /v1/my/email-routes/default`
 Creates, updates, or clears the current user's default mailbox forwarding target.
@@ -272,6 +351,31 @@ Request example:
 ### `GET /v1/admin/users/{userID}/permissions`
 Returns the current administrator-visible permission cards for one target user.
 
+### `GET /v1/admin/users/{userID}/quantity-records`
+Returns the target user's full quantity ledger for administrator inspection.
+
+### `GET /v1/admin/users/{userID}/quantity-balances`
+Returns the target user's currently effective non-zero quantity balances.
+
+### `POST /v1/admin/users/{userID}/quantity-records`
+Appends one immutable quantity delta for the target user.
+This is the write endpoint that future billing, manual grants, subscriptions, and redeem-code processors can reuse.
+
+Request example:
+
+```json
+{
+  "resource_key": "domain_slot",
+  "scope": "linuxdo.space",
+  "delta": 2,
+  "source": "admin_manual",
+  "reason": "manual promotional grant",
+  "reference_type": "campaign",
+  "reference_id": "spring-2026",
+  "expires_at": "2026-04-01T00:00:00Z"
+}
+```
+
 ### `PATCH /v1/admin/users/{userID}/permissions/{permissionKey}`
 Lets an administrator directly override one target user's permission state.
 
@@ -282,6 +386,29 @@ Request example:
   "status": "approved",
   "review_note": "manual grant after review",
   "reason": "管理员手动设置该权限状态。"
+}
+```
+
+### `PATCH /v1/admin/users/{userID}/permissions/{permissionKey}/access`
+Updates the target user's mutable catch-all runtime allowance.
+This endpoint is currently specific to `email_catch_all`.
+
+The runtime model intentionally stays separate from the append-only quantity
+ledger:
+- subscription time is tracked by `subscription_expires_at`
+- prepaid usage is tracked by `remaining_count`
+- the effective daily cap is `daily_limit_override` when set, otherwise the
+  policy's `default_daily_limit`
+- all time calculations use the server's UTC clock
+
+Request example:
+
+```json
+{
+  "add_subscription_days": 30,
+  "remaining_count_delta": 50000,
+  "daily_limit_override": 200000,
+  "reason": "manual commercial grant"
 }
 ```
 
@@ -336,6 +463,8 @@ Deletes one DNS record inside the selected allocation namespace.
 Returns all administrator-managed email forwarding rules.
 
 Administrator-side create, update, and delete operations also sync the effective route into Cloudflare Email Routing.
+In `database_relay` mode, these administrator operations become database-only
+writes and are enforced later by the built-in SMTP relay.
 
 ### `POST /v1/admin/email-routes`
 Creates one email forwarding rule.
@@ -363,6 +492,54 @@ Returns all moderation requests visible to the administrator console.
 
 ### `GET /v1/admin/permission-policies`
 Returns the administrator-configurable policy rows that control permission eligibility and auto-approval.
+The `email_catch_all` policy now also exposes `default_daily_limit`, which
+defaults to `1000000`.
+
+### `GET /v1/admin/ldc/products`
+Returns the full administrator-editable Linux Do Credit product list, including disabled items.
+
+### `PATCH /v1/admin/ldc/products/{productKey}`
+Updates one Linux Do Credit product row.
+Administrators can currently change:
+- whether the product is enabled
+- the unit price
+- the grant quantity per purchased unit
+
+Request example:
+
+```json
+{
+  "enabled": true,
+  "unit_price": "500",
+  "grant_quantity": 1
+}
+```
+
+### `GET /v1/admin/ldc/products`
+Returns the full Linux Do Credit product set, including disabled items.
+
+### `GET /v1/admin/ldc/orders`
+Returns recent Linux Do Credit orders across all users for the administrator console.
+
+### `GET /v1/admin/ldc/orders/{outTradeNo}`
+Returns one specific Linux Do Credit order and, when possible, refreshes it from the upstream gateway before responding.
+
+### `PATCH /v1/admin/ldc/products/{productKey}`
+Updates one administrator-editable Linux Do Credit product row.
+Current mutable fields are:
+- `enabled`
+- `unit_price` as a decimal string with at most two fractional digits
+- `grant_quantity`
+
+Request example:
+
+```json
+{
+  "enabled": true,
+  "unit_price": "500",
+  "grant_quantity": 1
+}
+```
 
 ### `GET /v1/admin/ldc/products`
 Returns the full administrator-editable Linux Do Credit product list, including disabled items.
@@ -419,7 +596,8 @@ Request example:
 {
   "enabled": true,
   "auto_approve": true,
-  "min_trust_level": 2
+  "min_trust_level": 2,
+  "default_daily_limit": 1000000
 }
 ```
 

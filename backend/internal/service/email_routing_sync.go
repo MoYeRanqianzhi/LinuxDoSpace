@@ -16,6 +16,13 @@ import (
 const emailRoutingRollbackTimeout = 20 * time.Second
 
 const (
+	// databaseRelayManagedDNSComment marks the DNS records LinuxDoSpace created
+	// specifically for the built-in SMTP relay. The service only updates records
+	// carrying this comment so unrelated user TXT/MX records are never rewritten.
+	databaseRelayManagedDNSComment = "managed by LinuxDoSpace mail relay"
+)
+
+const (
 	// emailRouteMatchKindExact represents one exact mailbox address such as
 	// `alice@linuxdo.space`.
 	emailRouteMatchKindExact = "exact"
@@ -110,6 +117,15 @@ func (s emailRouteSyncState) Address() string {
 // one best-effort attempt to restore Cloudflare back to the previous state so
 // local storage and the external provider do not silently diverge.
 func (p emailRoutingProvisioner) SyncForwardingState(ctx context.Context, before emailRouteSyncState, after emailRouteSyncState, persist func() error) error {
+	if p.cfg.UsesDatabaseMailRelay() {
+		if after.Exists {
+			if err := p.ensureDatabaseRelayIngressDNS(ctx, after.RootDomain); err != nil {
+				return err
+			}
+		}
+		return persist()
+	}
+
 	if err := p.applyForwardingState(ctx, after); err != nil {
 		return err
 	}
@@ -127,6 +143,103 @@ func (p emailRoutingProvisioner) SyncForwardingState(ctx context.Context, before
 		return err
 	}
 
+	return nil
+}
+
+// ensureDatabaseRelayIngressDNS makes sure the routed email domain points at
+// the built-in SMTP relay when database-driven forwarding is enabled. Unlike
+// Cloudflare Email Routing DNS sync, this helper only manages records tagged
+// with LinuxDoSpace's own comment and never rewrites unrelated TXT/MX records.
+func (p emailRoutingProvisioner) ensureDatabaseRelayIngressDNS(ctx context.Context, rootDomain string) error {
+	if !p.cfg.Mail.EnsureDNS {
+		return nil
+	}
+	if p.cf == nil || !p.cfg.CloudflareConfigured() {
+		return UnavailableError("database mail relay dns automation is not configured; configure Cloudflare DNS access or set MAIL_RELAY_ENSURE_DNS=false", nil)
+	}
+
+	zoneID, err := p.resolveZoneID(ctx, rootDomain)
+	if err != nil {
+		return err
+	}
+
+	desiredRecords, err := p.buildDatabaseRelayIngressDNSRecords(rootDomain)
+	if err != nil {
+		return err
+	}
+	existingRecords, err := p.cf.ListAllDNSRecords(ctx, zoneID)
+	if err != nil {
+		return wrapEmailRoutingUnavailable("failed to list cloudflare dns records while ensuring database mail relay ingress", err)
+	}
+
+	for _, desiredRecord := range desiredRecords {
+		if err := p.upsertDatabaseRelayDNSRecord(ctx, zoneID, &existingRecords, desiredRecord); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// buildDatabaseRelayIngressDNSRecords returns the DNS records required for one
+// routed mail domain to deliver inbound mail to LinuxDoSpace's SMTP relay.
+func (p emailRoutingProvisioner) buildDatabaseRelayIngressDNSRecords(rootDomain string) ([]cloudflare.CreateDNSRecordInput, error) {
+	normalizedRoot := normalizeDNSName(rootDomain)
+	if normalizedRoot == "" {
+		return nil, UnavailableError("database mail relay dns root is missing", fmt.Errorf("root domain is empty"))
+	}
+
+	mxTarget := normalizeDNSName(firstNonEmpty(strings.TrimSpace(p.cfg.Mail.MXTarget), strings.TrimSpace(p.cfg.Mail.Domain)))
+	if mxTarget == "" {
+		return nil, UnavailableError("database mail relay mx target is missing", fmt.Errorf("MAIL_RELAY_MX_TARGET and MAIL_RELAY_DOMAIN are empty"))
+	}
+
+	mxPriority := p.cfg.Mail.MXPriority
+	records := []cloudflare.CreateDNSRecordInput{{
+		Type:     "MX",
+		Name:     normalizedRoot,
+		Content:  mxTarget,
+		TTL:      1,
+		Proxied:  false,
+		Priority: &mxPriority,
+		Comment:  databaseRelayManagedDNSComment,
+	}}
+
+	if spfValue := strings.TrimSpace(p.cfg.Mail.SPFValue); spfValue != "" {
+		records = append(records, cloudflare.CreateDNSRecordInput{
+			Type:    "TXT",
+			Name:    normalizedRoot,
+			Content: spfValue,
+			TTL:     1,
+			Proxied: false,
+			Comment: databaseRelayManagedDNSComment,
+		})
+	}
+
+	return records, nil
+}
+
+// upsertDatabaseRelayDNSRecord creates or updates one SMTP-relay DNS record
+// while respecting unrelated user-managed TXT/MX records on the same name.
+func (p emailRoutingProvisioner) upsertDatabaseRelayDNSRecord(ctx context.Context, zoneID string, existingRecords *[]cloudflare.DNSRecord, desired cloudflare.CreateDNSRecordInput) error {
+	if index, found := findEquivalentDatabaseRelayDNSRecord(*existingRecords, desired); found {
+		(*existingRecords)[index] = normalizeDNSRecordSnapshot((*existingRecords)[index], desired)
+		return nil
+	}
+
+	if index, found := findManagedDatabaseRelayDNSRecord(*existingRecords, desired); found {
+		updatedRecord, err := p.cf.UpdateDNSRecord(ctx, zoneID, (*existingRecords)[index].ID, cloudflare.UpdateDNSRecordInput(desired))
+		if err != nil {
+			return wrapEmailRoutingUnavailable("failed to update cloudflare dns record required for database mail relay", err)
+		}
+		(*existingRecords)[index] = updatedRecord
+		return nil
+	}
+
+	createdRecord, err := p.cf.CreateDNSRecord(ctx, zoneID, desired)
+	if err != nil {
+		return wrapEmailRoutingUnavailable("failed to create cloudflare dns record required for database mail relay", err)
+	}
+	*existingRecords = append(*existingRecords, createdRecord)
 	return nil
 }
 
@@ -563,6 +676,35 @@ func findEquivalentEmailRoutingDNSRecord(records []cloudflare.DNSRecord, desired
 	return 0, false
 }
 
+// findEquivalentDatabaseRelayDNSRecord detects whether the desired SMTP-relay
+// DNS record already exists verbatim, regardless of who created it.
+func findEquivalentDatabaseRelayDNSRecord(records []cloudflare.DNSRecord, desired cloudflare.CreateDNSRecordInput) (int, bool) {
+	for index, item := range records {
+		if !dnsRecordMatchesIdentity(item, desired) {
+			continue
+		}
+		if dnsRecordMatchesContent(item, desired) {
+			return index, true
+		}
+	}
+	return 0, false
+}
+
+// findManagedDatabaseRelayDNSRecord locates the LinuxDoSpace-managed SMTP relay
+// record that may be safely updated when the operator changes relay settings.
+func findManagedDatabaseRelayDNSRecord(records []cloudflare.DNSRecord, desired cloudflare.CreateDNSRecordInput) (int, bool) {
+	for index, item := range records {
+		if !dnsRecordMatchesIdentity(item, desired) {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(item.Comment), strings.TrimSpace(databaseRelayManagedDNSComment)) {
+			continue
+		}
+		return index, true
+	}
+	return 0, false
+}
+
 // findUpdatableEmailRoutingDNSRecord locates an existing DNS record that refers
 // to the same logical Email Routing requirement and can therefore be replaced.
 func findUpdatableEmailRoutingDNSRecord(records []cloudflare.DNSRecord, desired cloudflare.CreateDNSRecordInput) (int, bool) {
@@ -610,6 +752,7 @@ func normalizeDNSRecordSnapshot(existing cloudflare.DNSRecord, desired cloudflar
 	existing.Content = strings.TrimSpace(desired.Content)
 	existing.TTL = desired.TTL
 	existing.Proxied = desired.Proxied
+	existing.Comment = strings.TrimSpace(desired.Comment)
 	existing.Priority = desired.Priority
 	return existing
 }

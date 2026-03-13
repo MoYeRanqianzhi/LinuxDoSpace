@@ -35,6 +35,14 @@ const (
 	// public address is no longer exposed as catch-all@... and instead renders as
 	// *@<username>.<root>.
 	emailCatchAllPrefix = "catch-all"
+
+	// QuantityResourceEmailCatchAllSubscriptionDays records administrator grants
+	// that extend the paid catch-all subscription window.
+	QuantityResourceEmailCatchAllSubscriptionDays = "email_catch_all_subscription_days"
+
+	// QuantityResourceEmailCatchAllRemainingCount records administrator grants or
+	// deductions applied to the mutable prepaid remaining-count pool.
+	QuantityResourceEmailCatchAllRemainingCount = "email_catch_all_remaining_count"
 )
 
 // EmailCatchAllPledgeText is the canonical server-side pledge text recorded on
@@ -91,27 +99,44 @@ type UserPermissionView struct {
 	Status             string                        `json:"status"`
 	CanApply           bool                          `json:"can_apply"`
 	CanManageRoute     bool                          `json:"can_manage_route"`
+	CatchAllAccess     *EmailCatchAllAccessView      `json:"catch_all_access,omitempty"`
 	Application        *PermissionApplicationSummary `json:"application,omitempty"`
+}
+
+// EmailCatchAllAccessView describes the currently effective runtime allowance
+// for one catch-all mailbox, independent of the immutable quantity ledger.
+type EmailCatchAllAccessView struct {
+	AccessMode            string     `json:"access_mode"`
+	SubscriptionActive    bool       `json:"subscription_active"`
+	SubscriptionExpiresAt *time.Time `json:"subscription_expires_at,omitempty"`
+	RemainingCount        int64      `json:"remaining_count"`
+	DailyUsageDate        string     `json:"daily_usage_date"`
+	DailyUsedCount        int64      `json:"daily_used_count"`
+	DailyRemainingCount   int64      `json:"daily_remaining_count"`
+	EffectiveDailyLimit   int64      `json:"effective_daily_limit"`
+	HasAccess             bool       `json:"has_access"`
+	DeliveryAvailable     bool       `json:"delivery_available"`
 }
 
 // UserEmailRouteView describes one user-visible email forwarding row shown on
 // the public email page.
 type UserEmailRouteView struct {
-	ID               int64      `json:"id,omitempty"`
-	Kind             string     `json:"kind"`
-	PermissionKey    string     `json:"permission_key,omitempty"`
-	DisplayName      string     `json:"display_name"`
-	Description      string     `json:"description"`
-	Address          string     `json:"address"`
-	Prefix           string     `json:"prefix"`
-	RootDomain       string     `json:"root_domain"`
-	TargetEmail      string     `json:"target_email"`
-	Enabled          bool       `json:"enabled"`
-	Configured       bool       `json:"configured"`
-	PermissionStatus string     `json:"permission_status,omitempty"`
-	CanManage        bool       `json:"can_manage"`
-	CanDelete        bool       `json:"can_delete"`
-	UpdatedAt        *time.Time `json:"updated_at,omitempty"`
+	ID               int64                    `json:"id,omitempty"`
+	Kind             string                   `json:"kind"`
+	PermissionKey    string                   `json:"permission_key,omitempty"`
+	DisplayName      string                   `json:"display_name"`
+	Description      string                   `json:"description"`
+	Address          string                   `json:"address"`
+	Prefix           string                   `json:"prefix"`
+	RootDomain       string                   `json:"root_domain"`
+	TargetEmail      string                   `json:"target_email"`
+	Enabled          bool                     `json:"enabled"`
+	Configured       bool                     `json:"configured"`
+	PermissionStatus string                   `json:"permission_status,omitempty"`
+	CatchAllAccess   *EmailCatchAllAccessView `json:"catch_all_access,omitempty"`
+	CanManage        bool                     `json:"can_manage"`
+	CanDelete        bool                     `json:"can_delete"`
+	UpdatedAt        *time.Time               `json:"updated_at,omitempty"`
 }
 
 // EmailRouteAvailabilityResult mirrors the public email-prefix search result
@@ -148,9 +173,10 @@ type UpsertMyCatchAllEmailRouteRequest struct {
 // UpdatePermissionPolicyRequest describes the administrator-editable subset of
 // one permission policy row. Pointer fields let PATCH keep existing values.
 type UpdatePermissionPolicyRequest struct {
-	Enabled       *bool `json:"enabled,omitempty"`
-	AutoApprove   *bool `json:"auto_approve,omitempty"`
-	MinTrustLevel *int  `json:"min_trust_level,omitempty"`
+	Enabled           *bool  `json:"enabled,omitempty"`
+	AutoApprove       *bool  `json:"auto_approve,omitempty"`
+	MinTrustLevel     *int   `json:"min_trust_level,omitempty"`
+	DefaultDailyLimit *int64 `json:"default_daily_limit,omitempty"`
 }
 
 // AdminSetUserPermissionRequest describes one administrator-authored permission
@@ -159,6 +185,17 @@ type AdminSetUserPermissionRequest struct {
 	Status     string `json:"status"`
 	ReviewNote string `json:"review_note"`
 	Reason     string `json:"reason"`
+}
+
+// AdminUpdateEmailCatchAllAccessRequest describes one administrator-managed
+// adjustment to the mutable catch-all entitlement state.
+type AdminUpdateEmailCatchAllAccessRequest struct {
+	AddSubscriptionDays     int    `json:"add_subscription_days"`
+	ClearSubscription       bool   `json:"clear_subscription"`
+	RemainingCountDelta     int64  `json:"remaining_count_delta"`
+	DailyLimitOverride      *int64 `json:"daily_limit_override,omitempty"`
+	ClearDailyLimitOverride bool   `json:"clear_daily_limit_override"`
+	Reason                  string `json:"reason"`
 }
 
 // catchAllNamespace describes the routed namespace derived from the current
@@ -420,6 +457,7 @@ func (s *PermissionService) UpsertMyCatchAllEmailRoute(ctx context.Context, user
 		Enabled:          item.Enabled,
 		Configured:       strings.TrimSpace(item.TargetEmail) != "",
 		PermissionStatus: permission.Status,
+		CatchAllAccess:   permission.CatchAllAccess,
 		CanManage:        true,
 		CanDelete:        false,
 		UpdatedAt:        &updatedAt,
@@ -458,24 +496,32 @@ func (s *PermissionService) UpdatePermissionPolicy(ctx context.Context, actor mo
 		}
 		item.MinTrustLevel = *request.MinTrustLevel
 	}
+	if request.DefaultDailyLimit != nil {
+		if *request.DefaultDailyLimit <= 0 {
+			return model.PermissionPolicy{}, ValidationError("default_daily_limit must be greater than 0")
+		}
+		item.DefaultDailyLimit = *request.DefaultDailyLimit
+	}
 
 	updated, err := s.db.UpsertPermissionPolicy(ctx, storage.UpsertPermissionPolicyInput{
-		Key:           item.Key,
-		DisplayName:   item.DisplayName,
-		Description:   item.Description,
-		Enabled:       item.Enabled,
-		AutoApprove:   item.AutoApprove,
-		MinTrustLevel: item.MinTrustLevel,
+		Key:               item.Key,
+		DisplayName:       item.DisplayName,
+		Description:       item.Description,
+		Enabled:           item.Enabled,
+		AutoApprove:       item.AutoApprove,
+		MinTrustLevel:     item.MinTrustLevel,
+		DefaultDailyLimit: item.DefaultDailyLimit,
 	})
 	if err != nil {
 		return model.PermissionPolicy{}, InternalError("failed to update permission policy", err)
 	}
 
 	metadata, _ := json.Marshal(map[string]any{
-		"policy_key":      updated.Key,
-		"enabled":         updated.Enabled,
-		"auto_approve":    updated.AutoApprove,
-		"min_trust_level": updated.MinTrustLevel,
+		"policy_key":          updated.Key,
+		"enabled":             updated.Enabled,
+		"auto_approve":        updated.AutoApprove,
+		"min_trust_level":     updated.MinTrustLevel,
+		"default_daily_limit": updated.DefaultDailyLimit,
 	})
 	if err := s.db.WriteAuditLog(ctx, storage.AuditLogInput{
 		ActorUserID:  &actor.ID,
@@ -621,6 +667,10 @@ func (s *PermissionService) loadEmailCatchAllPermission(ctx context.Context, use
 
 	canApply := len(reasons) == 0 && status != "pending" && status != "approved"
 	canManageRoute := status == "approved"
+	catchAllAccess, err := s.loadEmailCatchAllAccessView(ctx, user.ID, policy, canManageRoute)
+	if err != nil {
+		return UserPermissionView{}, err
+	}
 
 	return normalizeCatchAllPermissionCopy(UserPermissionView{
 		Key:                PermissionKeyEmailCatchAll,
@@ -636,6 +686,7 @@ func (s *PermissionService) loadEmailCatchAllPermission(ctx context.Context, use
 		Status:             status,
 		CanApply:           canApply,
 		CanManageRoute:     canManageRoute,
+		CatchAllAccess:     catchAllAccess,
 		Application:        summary,
 	}), nil
 }
@@ -656,6 +707,7 @@ func (s *PermissionService) buildCatchAllEmailRouteView(ctx context.Context, use
 		Enabled:          false,
 		Configured:       false,
 		PermissionStatus: permission.Status,
+		CatchAllAccess:   permission.CatchAllAccess,
 		CanManage:        permission.CanManageRoute,
 		CanDelete:        false,
 	}
@@ -682,6 +734,7 @@ func (s *PermissionService) buildCatchAllEmailRouteView(ctx context.Context, use
 	item.Enabled = route.Enabled
 	item.Configured = strings.TrimSpace(route.TargetEmail) != ""
 	item.UpdatedAt = &updatedAt
+	item.CatchAllAccess = permission.CatchAllAccess
 	if snapshotErr == nil && snapshot.Found {
 		item.TargetEmail = snapshot.TargetEmail
 		item.Enabled = snapshot.Enabled

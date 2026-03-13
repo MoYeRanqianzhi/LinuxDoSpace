@@ -5,6 +5,16 @@ import (
 	"errors"
 )
 
+var (
+	// ErrEmailCatchAllDailyLimitExceeded means one catch-all delivery would push
+	// the user over the effective single-day maximum.
+	ErrEmailCatchAllDailyLimitExceeded = errors.New("email catch-all daily limit exceeded")
+
+	// ErrEmailCatchAllInsufficientRemainingCount means the user has no active
+	// subscription and not enough prepaid remaining count to accept the mail.
+	ErrEmailCatchAllInsufficientRemainingCount = errors.New("email catch-all remaining count is insufficient")
+)
+
 // IsNotFound reports whether one storage call failed only because the target
 // row does not exist.
 //

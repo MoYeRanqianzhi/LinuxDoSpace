@@ -34,8 +34,11 @@ var orderedCopyPlan = []tableCopyPlan{
 	{Name: "email_routes", Columns: []string{"id", "owner_user_id", "root_domain", "prefix", "target_email", "enabled", "created_at", "updated_at"}, ResetSequence: true},
 	{Name: "admin_applications", Columns: []string{"id", "applicant_user_id", "type", "target", "reason", "status", "review_note", "reviewed_by_user_id", "reviewed_at", "created_at", "updated_at"}, ResetSequence: true},
 	{Name: "redeem_codes", Columns: []string{"id", "code", "type", "target", "note", "created_by_user_id", "used_by_user_id", "used_at", "created_at"}, ResetSequence: true},
-	{Name: "permission_policies", Columns: []string{"key", "display_name", "description", "enabled", "auto_approve", "min_trust_level", "created_at", "updated_at"}},
+	{Name: "permission_policies", Columns: []string{"key", "display_name", "description", "enabled", "auto_approve", "min_trust_level", "default_daily_limit", "created_at", "updated_at"}},
 	{Name: "email_targets", Columns: []string{"id", "owner_user_id", "email", "cloudflare_address_id", "verified_at", "last_verification_sent_at", "created_at", "updated_at"}, ResetSequence: true},
+	{Name: "quantity_records", Columns: []string{"id", "user_id", "resource_key", "scope", "delta", "source", "reason", "reference_type", "reference_id", "expires_at", "created_by_user_id", "created_at"}, ResetSequence: true},
+	{Name: "email_catch_all_access", Columns: []string{"user_id", "subscription_expires_at", "remaining_count", "daily_limit_override", "created_at", "updated_at"}},
+	{Name: "email_catch_all_daily_usage", Columns: []string{"user_id", "usage_date", "used_count", "created_at", "updated_at"}},
 	{Name: "audit_logs", Columns: []string{"id", "actor_user_id", "action", "resource_type", "resource_id", "metadata_json", "created_at"}, ResetSequence: true},
 }
 

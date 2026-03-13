@@ -14,7 +14,7 @@ The repository still supports single-image self-hosting because the Go backend c
 ## Docker image
 
 - Dockerfile: [Dockerfile](/G:/ClaudeProjects/LinuxDoSpace/LinuxDoSpace/Dockerfile)
-- The container listens on `8080` internally.
+- The container listens on `8080` for HTTP and can also listen on `2525` for SMTP relay ingress when `EMAIL_FORWARDING_BACKEND=database_relay` and `MAIL_RELAY_ENABLED=true`.
 - Production should use `DATABASE_DRIVER=postgres`.
 - SQLite remains available for local development and rollback-only scenarios.
 
@@ -132,7 +132,16 @@ When the service is behind Nginx or another reverse proxy, also verify:
 
 ## Cloudflare Email Routing
 
-Mailbox forwarding now depends on Cloudflare Email Routing in addition to DNS.
+LinuxDoSpace now supports two mailbox-forwarding execution backends:
+
+- `EMAIL_FORWARDING_BACKEND=cloudflare`
+  The backend writes exact and catch-all forwarding rules directly into Cloudflare Email Routing.
+- `EMAIL_FORWARDING_BACKEND=database_relay`
+  The backend stores the routes in the database and the built-in SMTP listener receives mail on this server, resolves the route locally, and forwards it through `MAIL_RELAY_FORWARD_HOST`.
+
+The current implementation still uses Cloudflare destination-address verification
+for user-owned forwarding targets in both modes, because that remains the
+existing ownership proof workflow.
 
 Required backend environment variables:
 
@@ -145,14 +154,39 @@ Required Cloudflare token capabilities:
 
 - DNS read/write for the managed zone
 - Email Routing Addresses read/write
-- Email Routing Rules read/write
 - Zone read
+
+Additional requirement for `EMAIL_FORWARDING_BACKEND=cloudflare` only:
+
+- Email Routing Rules read/write
+
+Additional requirement for `EMAIL_FORWARDING_BACKEND=database_relay`:
+
+- `MAIL_RELAY_ENABLED=true`
+- `MAIL_RELAY_ENSURE_DNS=true`
+- `MAIL_RELAY_SMTP_ADDR=:2525`
+- `MAIL_RELAY_DOMAIN=mail.example.com`
+- `MAIL_RELAY_MX_TARGET=mail.example.com`
+- `MAIL_RELAY_MX_PRIORITY=10`
+- `MAIL_RELAY_SPF_VALUE=v=spf1 -all`
+- `MAIL_RELAY_FORWARD_HOST=smtp.example.com:587`
+- `MAIL_RELAY_FORWARD_FROM=relay@example.com`
+
+Operational DNS note for `database_relay`:
+
+- when `MAIL_RELAY_ENSURE_DNS=true`, LinuxDoSpace will create or update its own
+  managed `MX` and optional `TXT` records for routed mail domains and
+  subdomains, pointing them at `MAIL_RELAY_MX_TARGET`
+- LinuxDoSpace only updates DNS records carrying its own mail-relay comment, so
+  unrelated user TXT/MX records are not rewritten
+- the MX target itself still must resolve to the real SMTP listener host or the
+  upstream mail gateway that passes mail into this service
 
 Operational notes:
 
 - destination mailboxes must be verified in Cloudflare before LinuxDoSpace can activate forwarding rules
-- namespace catch-all routes such as `*@<username>.linuxdo.space` now have their required Email Routing MX and SPF records ensured automatically by the backend before the rule is synced
-- the zone must already have the Email Routing DNS records in place
+- `cloudflare` mode still depends on Cloudflare Email Routing DNS readiness
+- `database_relay` mode depends on the built-in SMTP listener being reachable on the configured MX target and on a working upstream SMTP relay for outbound forwarding
 
 ## Frontend deployment on Cloudflare Pages
 

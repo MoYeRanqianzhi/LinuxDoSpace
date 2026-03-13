@@ -638,6 +638,7 @@ SELECT
     enabled,
     auto_approve,
     min_trust_level,
+    default_daily_limit,
     created_at,
     updated_at
 FROM permission_policies
@@ -672,6 +673,7 @@ SELECT
     enabled,
     auto_approve,
     min_trust_level,
+    default_daily_limit,
     created_at,
     updated_at
 FROM permission_policies
@@ -691,15 +693,17 @@ INSERT INTO permission_policies (
     enabled,
     auto_approve,
     min_trust_level,
+    default_daily_limit,
     created_at,
     updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(key) DO UPDATE SET
     display_name = excluded.display_name,
     description = excluded.description,
     enabled = excluded.enabled,
     auto_approve = excluded.auto_approve,
     min_trust_level = excluded.min_trust_level,
+    default_daily_limit = excluded.default_daily_limit,
     updated_at = excluded.updated_at
 RETURNING key
 `,
@@ -709,6 +713,7 @@ RETURNING key
 		boolToInt(input.Enabled),
 		boolToInt(input.AutoApprove),
 		input.MinTrustLevel,
+		input.DefaultDailyLimit,
 		formatTime(now),
 		formatTime(now),
 	)
@@ -864,6 +869,7 @@ func scanPermissionPolicy(scanner interface{ Scan(dest ...any) error }) (model.P
 		&enabled,
 		&autoApprove,
 		&item.MinTrustLevel,
+		&item.DefaultDailyLimit,
 		&createdAt,
 		&updatedAt,
 	)

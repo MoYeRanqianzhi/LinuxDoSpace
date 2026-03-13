@@ -196,3 +196,86 @@ func TestLoadAcceptsDatabaseURLFallback(t *testing.T) {
 		t.Fatalf("expected postgres dsn to be loaded from DATABASE_URL")
 	}
 }
+
+// TestLoadDefaultsToCloudflareEmailForwarding ensures existing deployments keep
+// the current Email Routing execution mode unless they explicitly opt into the
+// database-driven SMTP relay.
+func TestLoadDefaultsToCloudflareEmailForwarding(t *testing.T) {
+	t.Setenv("APP_SESSION_SECRET", "test-session-secret")
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("APP_ADMIN_USERNAMES", "")
+	t.Setenv("APP_ADMIN_PASSWORD", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load config with default email forwarding backend: %v", err)
+	}
+	if cfg.Mail.ForwardingBackend != EmailForwardingBackendCloudflare {
+		t.Fatalf("expected default email forwarding backend %q, got %q", EmailForwardingBackendCloudflare, cfg.Mail.ForwardingBackend)
+	}
+	if cfg.UsesDatabaseMailRelay() {
+		t.Fatalf("expected database mail relay to be disabled by default")
+	}
+}
+
+// TestLoadAcceptsDatabaseRelayConfiguration verifies the server-side relay mode
+// can be enabled once the required SMTP listener and upstream relay settings
+// are provided explicitly.
+func TestLoadAcceptsDatabaseRelayConfiguration(t *testing.T) {
+	t.Setenv("APP_SESSION_SECRET", "test-session-secret")
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("APP_ADMIN_USERNAMES", "")
+	t.Setenv("APP_ADMIN_PASSWORD", "")
+	t.Setenv("EMAIL_FORWARDING_BACKEND", EmailForwardingBackendDatabaseRelay)
+	t.Setenv("MAIL_RELAY_ENABLED", "true")
+	t.Setenv("MAIL_RELAY_SMTP_ADDR", ":2525")
+	t.Setenv("MAIL_RELAY_DOMAIN", "mail.linuxdo.space")
+	t.Setenv("MAIL_RELAY_FORWARD_HOST", "smtp.example.com:587")
+	t.Setenv("MAIL_RELAY_FORWARD_FROM", "relay@linuxdo.space")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load config for database mail relay: %v", err)
+	}
+	if !cfg.UsesDatabaseMailRelay() {
+		t.Fatalf("expected database mail relay mode to be enabled")
+	}
+	if !cfg.Mail.RelayEnabled {
+		t.Fatalf("expected smtp relay listener to be enabled")
+	}
+	if cfg.Mail.ForwardHost != "smtp.example.com:587" {
+		t.Fatalf("expected forward host to survive load, got %q", cfg.Mail.ForwardHost)
+	}
+	if !cfg.Mail.EnsureDNS {
+		t.Fatalf("expected dns automation to stay enabled by default in database relay mode")
+	}
+	if cfg.Mail.MXTarget != "mail.linuxdo.space" {
+		t.Fatalf("expected default mail relay mx target mail.linuxdo.space, got %q", cfg.Mail.MXTarget)
+	}
+	if cfg.Mail.SPFValue != "v=spf1 -all" {
+		t.Fatalf("expected default relay spf value, got %q", cfg.Mail.SPFValue)
+	}
+}
+
+// TestLoadRejectsIncompleteDatabaseRelayConfiguration ensures the relay cannot
+// start in server-side mode without the minimum upstream SMTP configuration.
+func TestLoadRejectsIncompleteDatabaseRelayConfiguration(t *testing.T) {
+	t.Setenv("APP_SESSION_SECRET", "test-session-secret")
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("APP_ADMIN_USERNAMES", "")
+	t.Setenv("APP_ADMIN_PASSWORD", "")
+	t.Setenv("EMAIL_FORWARDING_BACKEND", EmailForwardingBackendDatabaseRelay)
+	t.Setenv("MAIL_RELAY_ENABLED", "true")
+	t.Setenv("MAIL_RELAY_SMTP_ADDR", ":2525")
+	t.Setenv("MAIL_RELAY_DOMAIN", "mail.linuxdo.space")
+	t.Setenv("MAIL_RELAY_FORWARD_HOST", "")
+	t.Setenv("MAIL_RELAY_FORWARD_FROM", "")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatalf("expected incomplete database relay configuration to fail")
+	}
+	if !strings.Contains(err.Error(), "MAIL_RELAY_FORWARD_HOST is required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
