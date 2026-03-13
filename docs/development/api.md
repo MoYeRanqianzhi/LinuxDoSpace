@@ -475,6 +475,12 @@ Request example:
 ### `GET /v1/admin/ldc/products`
 Returns the full Linux Do Credit product set, including disabled items.
 
+### `GET /v1/admin/ldc/orders`
+Returns recent Linux Do Credit orders across all users for the administrator console.
+
+### `GET /v1/admin/ldc/orders/{outTradeNo}`
+Returns one specific Linux Do Credit order and, when possible, refreshes it from the upstream gateway before responding.
+
 ### `PATCH /v1/admin/ldc/products/{productKey}`
 Updates one administrator-editable Linux Do Credit product row.
 Current mutable fields are:

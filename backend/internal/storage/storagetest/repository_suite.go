@@ -641,6 +641,78 @@ func RunRepositoryBehaviorSuite(t *testing.T, newStore Factory) {
 		}
 	})
 
+	t.Run("admin payment order list sorts newest first and keeps user identity", func(t *testing.T) {
+		ctx := context.Background()
+		store := newStore(t)
+
+		user := newTestUser(t, ctx, store, "order-owner")
+		product, err := store.GetPaymentProduct(ctx, "payment_test")
+		if err != nil {
+			t.Fatalf("load payment test product: %v", err)
+		}
+
+		older, err := store.CreatePaymentOrder(ctx, storage.CreatePaymentOrderInput{
+			UserID:          user.ID,
+			ProductKey:      product.Key,
+			ProductName:     product.DisplayName,
+			Title:           product.DisplayName + " older",
+			GatewayType:     model.PaymentGatewayLinuxDOCredit,
+			OutTradeNo:      "ORDER-OLDER",
+			Status:          model.PaymentOrderStatusPending,
+			Units:           1,
+			GrantQuantity:   product.GrantQuantity,
+			GrantedTotal:    product.GrantQuantity,
+			GrantUnit:       product.GrantUnit,
+			UnitPriceCents:  product.UnitPriceCents,
+			TotalPriceCents: product.UnitPriceCents,
+			EffectType:      product.EffectType,
+			PaymentURL:      "https://example.com/older",
+		})
+		if err != nil {
+			t.Fatalf("create older payment order: %v", err)
+		}
+
+		time.Sleep(2 * time.Millisecond)
+
+		newer, err := store.CreatePaymentOrder(ctx, storage.CreatePaymentOrderInput{
+			UserID:          user.ID,
+			ProductKey:      product.Key,
+			ProductName:     product.DisplayName,
+			Title:           product.DisplayName + " newer",
+			GatewayType:     model.PaymentGatewayLinuxDOCredit,
+			OutTradeNo:      "ORDER-NEWER",
+			Status:          model.PaymentOrderStatusCreated,
+			Units:           2,
+			GrantQuantity:   product.GrantQuantity,
+			GrantedTotal:    product.GrantQuantity * 2,
+			GrantUnit:       product.GrantUnit,
+			UnitPriceCents:  product.UnitPriceCents,
+			TotalPriceCents: product.UnitPriceCents * 2,
+			EffectType:      product.EffectType,
+			PaymentURL:      "https://example.com/newer",
+		})
+		if err != nil {
+			t.Fatalf("create newer payment order: %v", err)
+		}
+
+		items, err := store.ListPaymentOrders(ctx, 10)
+		if err != nil {
+			t.Fatalf("list admin payment orders: %v", err)
+		}
+		if len(items) != 2 {
+			t.Fatalf("expected 2 payment orders, got %d", len(items))
+		}
+		if items[0].OutTradeNo != newer.OutTradeNo {
+			t.Fatalf("expected newest order %q first, got %q", newer.OutTradeNo, items[0].OutTradeNo)
+		}
+		if items[1].OutTradeNo != older.OutTradeNo {
+			t.Fatalf("expected older order %q second, got %q", older.OutTradeNo, items[1].OutTradeNo)
+		}
+		if items[0].Username != user.Username || items[0].DisplayName != user.DisplayName {
+			t.Fatalf("expected admin order list to include user identity, got %+v", items[0])
+		}
+	})
+
 	t.Run("admin application upsert stays idempotent per applicant target", func(t *testing.T) {
 		ctx := context.Background()
 		store := newStore(t)

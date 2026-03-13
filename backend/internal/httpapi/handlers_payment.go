@@ -114,6 +114,44 @@ func (a *API) handleAdminPaymentProducts(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, items)
 }
 
+// handleAdminPaymentOrders returns recent LDC orders across all users for the
+// administrator console.
+func (a *API) handleAdminPaymentOrders(w http.ResponseWriter, r *http.Request) {
+	_, _, ok := a.requireVerifiedAdmin(w, r)
+	if !ok {
+		return
+	}
+
+	items, err := a.paymentService.ListOrdersForAdmin(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+// handleAdminPaymentOrder returns one specific LDC order and refreshes it from
+// the gateway when possible.
+func (a *API) handleAdminPaymentOrder(w http.ResponseWriter, r *http.Request) {
+	_, _, ok := a.requireVerifiedAdmin(w, r)
+	if !ok {
+		return
+	}
+
+	outTradeNo := strings.TrimSpace(r.PathValue("outTradeNo"))
+	if outTradeNo == "" {
+		writeError(w, service.ValidationError("outTradeNo is required"))
+		return
+	}
+
+	item, err := a.paymentService.GetOrderForAdmin(r.Context(), outTradeNo)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
 // handleAdminUpdatePaymentProduct updates one administrator-editable LDC
 // product row.
 func (a *API) handleAdminUpdatePaymentProduct(w http.ResponseWriter, r *http.Request) {

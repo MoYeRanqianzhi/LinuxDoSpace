@@ -1,5 +1,5 @@
 ﻿// AdminTabKey enumerates the top-level tabs rendered by the standalone admin console.
-export type AdminTabKey = 'users' | 'domains' | 'emails' | 'applications' | 'redeem';
+export type AdminTabKey = 'users' | 'domains' | 'emails' | 'applications' | 'orders' | 'redeem';
 
 // UserStatus is the simplified moderation status displayed in the admin UI.
 export type UserStatus = 'active' | 'banned';
@@ -335,4 +335,36 @@ export interface UpdatePaymentProductInput {
   enabled?: boolean;
   unit_price?: string;
   grant_quantity?: number;
+}
+
+// PaymentOrderStatus mirrors the backend payment-order lifecycle.
+export type PaymentOrderStatus = 'created' | 'pending' | 'paid' | 'failed' | 'refunded';
+
+// AdminPaymentOrder mirrors one LDC order row visible to the administrator
+// console.
+export interface AdminPaymentOrder {
+  id: number;
+  user_id: number;
+  username: string;
+  display_name: string;
+  product_key: string;
+  product_name: string;
+  title: string;
+  gateway_type: string;
+  out_trade_no: string;
+  provider_trade_no: string;
+  status: PaymentOrderStatus;
+  units: number;
+  grant_quantity: number;
+  granted_total: number;
+  grant_unit: string;
+  unit_price_cents: number;
+  total_price_cents: number;
+  effect_type: string;
+  payment_url: string;
+  paid_at?: string;
+  applied_at?: string;
+  last_checked_at?: string;
+  created_at: string;
+  updated_at: string;
 }
