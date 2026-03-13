@@ -98,6 +98,8 @@ func NewRouter(deps RouterDependencies) http.Handler {
 	mux.HandleFunc("GET /v1/admin/applications", api.handleAdminApplications)
 	mux.HandleFunc("GET /v1/admin/permission-policies", api.handleAdminPermissionPolicies)
 	mux.HandleFunc("GET /v1/admin/ldc/products", api.handleAdminPaymentProducts)
+	mux.HandleFunc("GET /v1/admin/ldc/orders", api.handleAdminPaymentOrders)
+	mux.HandleFunc("GET /v1/admin/ldc/orders/{outTradeNo}", api.handleAdminPaymentOrder)
 	mux.HandleFunc("PATCH /v1/admin/ldc/products/{productKey}", api.handleAdminUpdatePaymentProduct)
 	mux.HandleFunc("PATCH /v1/admin/permission-policies/{policyKey}", api.handleAdminUpdatePermissionPolicy)
 	mux.HandleFunc("PATCH /v1/admin/applications/{applicationID}", api.handleAdminUpdateApplication)

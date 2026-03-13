@@ -65,6 +65,7 @@ type Store interface {
 	GetPaymentProduct(ctx context.Context, key string) (model.PaymentProduct, error)
 	UpsertPaymentProduct(ctx context.Context, input UpsertPaymentProductInput) (model.PaymentProduct, error)
 	CreatePaymentOrder(ctx context.Context, input CreatePaymentOrderInput) (model.PaymentOrder, error)
+	ListPaymentOrders(ctx context.Context, limit int) ([]model.PaymentOrder, error)
 	ListPaymentOrdersByUser(ctx context.Context, userID int64, limit int) ([]model.PaymentOrder, error)
 	GetPaymentOrderByOutTradeNo(ctx context.Context, outTradeNo string) (model.PaymentOrder, error)
 	UpdatePaymentOrderGatewayState(ctx context.Context, input UpdatePaymentOrderGatewayStateInput) (model.PaymentOrder, error)

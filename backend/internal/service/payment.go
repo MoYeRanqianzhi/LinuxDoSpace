@@ -259,6 +259,16 @@ func (s *PaymentService) ListMyOrders(ctx context.Context, user model.User) ([]m
 	return items, nil
 }
 
+// ListOrdersForAdmin returns recent Linux Do Credit orders across all users so
+// the administrator console can inspect payment flow health and audit history.
+func (s *PaymentService) ListOrdersForAdmin(ctx context.Context) ([]model.PaymentOrder, error) {
+	items, err := s.db.ListPaymentOrders(ctx, 200)
+	if err != nil {
+		return nil, InternalError("failed to list payment orders", err)
+	}
+	return items, nil
+}
+
 // GetMyOrder loads one specific order and opportunistically reconciles its
 // payment status so the frontend polling loop can converge on success.
 func (s *PaymentService) GetMyOrder(ctx context.Context, user model.User, outTradeNo string) (model.PaymentOrder, error) {
@@ -271,6 +281,24 @@ func (s *PaymentService) GetMyOrder(ctx context.Context, user model.User, outTra
 	}
 	if order.UserID != user.ID {
 		return model.PaymentOrder{}, ForbiddenError("payment order does not belong to the current user")
+	}
+
+	order, err = s.syncAndApplyOrder(ctx, order)
+	if err != nil {
+		return model.PaymentOrder{}, err
+	}
+	return order, nil
+}
+
+// GetOrderForAdmin loads one specific order for the administrator console and
+// opportunistically reconciles its current gateway state.
+func (s *PaymentService) GetOrderForAdmin(ctx context.Context, outTradeNo string) (model.PaymentOrder, error) {
+	order, err := s.db.GetPaymentOrderByOutTradeNo(ctx, strings.TrimSpace(outTradeNo))
+	if err != nil {
+		if storage.IsNotFound(err) {
+			return model.PaymentOrder{}, NotFoundError("payment order not found")
+		}
+		return model.PaymentOrder{}, InternalError("failed to load payment order", err)
 	}
 
 	order, err = s.syncAndApplyOrder(ctx, order)

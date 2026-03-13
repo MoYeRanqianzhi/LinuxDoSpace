@@ -4,6 +4,7 @@
   CreateAdminAllocationInput,
   AdminDomainRecord,
   AdminEmailRecord,
+  AdminPaymentOrder,
   AdminRedeemCodeRecord,
   AdminSessionResponse,
   UpdateAdminAllocationInput,
@@ -338,6 +339,14 @@ export function updatePermissionPolicy(policyKey: string, input: UpdatePermissio
 
 export function listAdminPaymentProducts(): Promise<PaymentProduct[]> {
   return request<PaymentProduct[]>('/v1/admin/ldc/products');
+}
+
+export function listAdminPaymentOrders(): Promise<AdminPaymentOrder[]> {
+  return request<AdminPaymentOrder[]>('/v1/admin/ldc/orders');
+}
+
+export function getAdminPaymentOrder(outTradeNo: string): Promise<AdminPaymentOrder> {
+  return request<AdminPaymentOrder>(`/v1/admin/ldc/orders/${encodeURIComponent(outTradeNo)}`);
 }
 
 export function updateAdminPaymentProduct(productKey: string, input: UpdatePaymentProductInput, csrfToken: string): Promise<PaymentProduct> {

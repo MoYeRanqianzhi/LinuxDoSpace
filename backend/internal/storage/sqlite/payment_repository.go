@@ -204,6 +204,64 @@ RETURNING id
 	return s.getPaymentOrderByID(ctx, id)
 }
 
+// ListPaymentOrders returns recent payment orders across all users so the
+// administrator console can inspect the full purchase flow.
+func (s *Store) ListPaymentOrders(ctx context.Context, limit int) ([]model.PaymentOrder, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+SELECT
+    po.id,
+    po.user_id,
+    u.username,
+    u.display_name,
+    po.product_key,
+    po.product_name,
+    po.title,
+    po.gateway_type,
+    po.out_trade_no,
+    po.provider_trade_no,
+    po.status,
+    po.units,
+    po.grant_quantity,
+    po.granted_total,
+    po.grant_unit,
+    po.unit_price_cents,
+    po.total_price_cents,
+    po.effect_type,
+    po.payment_url,
+    po.notify_payload_raw,
+    po.paid_at,
+    po.applied_at,
+    po.last_checked_at,
+    po.created_at,
+    po.updated_at
+FROM payment_orders po
+INNER JOIN users u ON u.id = po.user_id
+ORDER BY po.created_at DESC, po.id DESC
+LIMIT ?
+`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]model.PaymentOrder, 0, limit)
+	for rows.Next() {
+		item, scanErr := scanPaymentOrder(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 // ListPaymentOrdersByUser returns one user's most recent orders first.
 func (s *Store) ListPaymentOrdersByUser(ctx context.Context, userID int64, limit int) ([]model.PaymentOrder, error) {
 	if limit <= 0 {

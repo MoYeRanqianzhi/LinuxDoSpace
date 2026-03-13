@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Added Linux Do Credit purchase products, local payment orders, EasyPay-compatible signature verification, asynchronous notify handling, and idempotent entitlement application for catch-all subscription days, catch-all quota, and payment-test purchases.
+- Added administrator Linux Do Credit order APIs plus a dedicated admin order-management page for cross-user purchase inspection and manual status refresh.
 - Added dual runtime billing modes for `email_catch_all`: subscription time and prepaid remaining count, with subscription taking priority and all catch-all mail still capped by a configurable per-user UTC-day limit.
 - Added mutable catch-all access tables plus SMTP relay enforcement so `*@<username>.linuxdo.space` now checks real subscription/count state instead of relying only on permission approval.
 - Added administrator policy support for `default_daily_limit` and a dedicated admin endpoint for per-user catch-all access adjustments.
