@@ -257,13 +257,13 @@ export function Permissions({ authenticated, sessionLoading, user, csrfToken, on
       setPaymentOrders((current) => upsertPaymentOrder(current, order));
       if (order.status === 'paid' && order.applied_at) {
         setPollingOrderNo('');
-        clearRememberedPaymentOrder();
+        clearRememberedPaymentOrder(order.out_trade_no);
         if (!silent) {
           setPaymentNotice({ tone: 'success', message: `订单 ${order.out_trade_no} 已支付成功，权益已经发放。` });
         }
       } else if (order.status === 'failed' || order.status === 'refunded') {
         setPollingOrderNo('');
-        clearRememberedPaymentOrder();
+        clearRememberedPaymentOrder(order.out_trade_no);
       }
     } catch (refreshError) {
       if (!silent) {

@@ -3,7 +3,7 @@ import { motion } from 'motion/react';
 import { ArrowRight, CheckCircle2, Clock3, CreditCard, LoaderCircle, RefreshCw, ShieldAlert, XCircle } from 'lucide-react';
 import { GlassCard } from '../components/GlassCard';
 import { APIError, listMyPaymentOrders, refreshMyPaymentOrder } from '../lib/api';
-import { clearRememberedPaymentOrder, readRememberedPaymentOrder } from '../lib/payment-tracking';
+import { clearRememberedPaymentOrder, readRememberedPaymentOrder, readRememberedPaymentOrders } from '../lib/payment-tracking';
 import type { PaymentOrder, User } from '../types/api';
 
 interface PaymentCallbackProps {
@@ -82,7 +82,7 @@ export function PaymentCallback({
   async function resolveAndRefreshOrder(): Promise<void> {
     try {
       setLoading(true);
-      const candidateOrderNo = callbackOutTradeNo || readRememberedPaymentOrder() || await findFallbackOrderNo();
+      const candidateOrderNo = await resolveCandidateOrderNo();
       if (!candidateOrderNo) {
         setResolvedOrderNo('');
         setNotice({
@@ -100,8 +100,25 @@ export function PaymentCallback({
     }
   }
 
-  async function findFallbackOrderNo(): Promise<string> {
+  async function resolveCandidateOrderNo(): Promise<string> {
+    if (callbackOutTradeNo) {
+      return callbackOutTradeNo;
+    }
+
+    const rememberedOrderNo = readRememberedPaymentOrder();
+    if (rememberedOrderNo) {
+      return rememberedOrderNo;
+    }
+
     const orders = await listMyPaymentOrders();
+    const rememberedCandidates = readRememberedPaymentOrders();
+    for (const candidateOrderNo of rememberedCandidates) {
+      const matchedOrder = orders.find((item) => item.out_trade_no === candidateOrderNo);
+      if (matchedOrder) {
+        return matchedOrder.out_trade_no;
+      }
+    }
+
     const preferredOrder = orders.find((item) => isOrderAwaitingSettlement(item)) ?? orders[0];
     return preferredOrder?.out_trade_no ?? '';
   }
@@ -118,7 +135,7 @@ export function PaymentCallback({
       setNotice(buildCallbackNotice(refreshedOrder, callbackTradeStatus, callbackTradeNo, nextAttempt));
 
       if (isTerminalPaymentState(refreshedOrder)) {
-        clearRememberedPaymentOrder();
+        clearRememberedPaymentOrder(refreshedOrder.out_trade_no);
         return;
       }
 
@@ -135,11 +152,49 @@ export function PaymentCallback({
         message: `订单 ${refreshedOrder.out_trade_no} 还没有进入最终状态。异步通知可能仍在路上，你可以稍后手动再检查一次，或回到权限页查看全部订单。`,
       });
     } catch (error) {
+      const fallbackOrder = await tryLoadFallbackOrder();
+      if (fallbackOrder) {
+        setOrder(fallbackOrder);
+        setResolvedOrderNo(fallbackOrder.out_trade_no);
+        setNotice(buildCallbackNotice(fallbackOrder, callbackTradeStatus, callbackTradeNo, nextAttempt));
+        if (isTerminalPaymentState(fallbackOrder)) {
+          clearRememberedPaymentOrder(fallbackOrder.out_trade_no);
+          return;
+        }
+        if (nextAttempt + 1 < maxRefreshAttempts) {
+          refreshTimerRef.current = window.setTimeout(() => {
+            void refreshOrder(fallbackOrder.out_trade_no, nextAttempt + 1);
+          }, refreshIntervalMilliseconds);
+          return;
+        }
+      }
       setNotice({
         tone: 'error',
         title: '订单核对失败',
         message: readableErrorMessage(error, '回调页暂时无法确认订单状态。你可以稍后回到权限页，在“查看全部订单”中手动刷新。'),
       });
+    }
+  }
+
+  async function tryLoadFallbackOrder(): Promise<PaymentOrder | null> {
+    try {
+      const orders = await listMyPaymentOrders();
+      if (resolvedOrderNo) {
+        const exactMatch = orders.find((item) => item.out_trade_no === resolvedOrderNo);
+        if (exactMatch) {
+          return exactMatch;
+        }
+      }
+      const rememberedCandidates = readRememberedPaymentOrders();
+      for (const candidateOrderNo of rememberedCandidates) {
+        const matchedOrder = orders.find((item) => item.out_trade_no === candidateOrderNo);
+        if (matchedOrder) {
+          return matchedOrder;
+        }
+      }
+      return orders.find((item) => isOrderAwaitingSettlement(item)) ?? orders[0] ?? null;
+    } catch {
+      return null;
     }
   }
 
