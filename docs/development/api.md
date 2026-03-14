@@ -102,6 +102,7 @@ The backend sums only non-expired ledger entries and groups them by `resource_ke
 Returns the authenticated user's proof-of-work dashboard state.
 
 The payload includes:
+- whether the whole PoW feature is currently enabled
 - the currently enabled benefit options
 - the supported difficulty options
 - the fixed daily completion cap
@@ -472,6 +473,32 @@ Request example:
 }
 ```
 
+### `GET /v1/admin/users/{userID}/pow-settings`
+Returns the target user's current PoW daily completion settings.
+
+The payload includes:
+- the explicit per-user override, when present
+- the currently effective daily completion limit
+- how many PoW rewards the user already claimed today
+- how many claims remain today
+
+### `PATCH /v1/admin/users/{userID}/pow-settings`
+Updates the target user's PoW daily completion override.
+
+Request examples:
+
+```json
+{
+  "daily_completion_limit_override": 12
+}
+```
+
+```json
+{
+  "clear_daily_completion_limit_override": true
+}
+```
+
 ### `GET /v1/admin/allocations`
 Returns all allocation namespaces together with owner identity.
 Useful for admin record creation workflows.
@@ -554,6 +581,51 @@ Returns all moderation requests visible to the administrator console.
 Returns the administrator-configurable policy rows that control permission eligibility and auto-approval.
 The `email_catch_all` policy now also exposes `default_daily_limit`, which
 defaults to `1000000`.
+
+### `GET /v1/admin/pow/settings`
+Returns the full administrator-facing PoW configuration payload.
+
+The payload groups:
+- the global PoW feature switch plus the default daily limit
+- the global base reward min/max range
+- every benefit-specific toggle row
+- every supported difficulty toggle row
+
+### `PATCH /v1/admin/pow/settings`
+Updates the singleton global PoW settings row.
+
+Request example:
+
+```json
+{
+  "enabled": true,
+  "default_daily_completion_limit": 5,
+  "base_reward_min": 5,
+  "base_reward_max": 10
+}
+```
+
+### `PATCH /v1/admin/pow/benefits/{benefitKey}`
+Updates one PoW benefit toggle row.
+
+Request example:
+
+```json
+{
+  "enabled": true
+}
+```
+
+### `PATCH /v1/admin/pow/difficulties/{difficulty}`
+Updates one supported PoW difficulty toggle row.
+
+Request example:
+
+```json
+{
+  "enabled": false
+}
+```
 
 ### `GET /v1/admin/ldc/products`
 Returns the full administrator-editable Linux Do Credit product list, including disabled items.

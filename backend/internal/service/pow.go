@@ -21,14 +21,14 @@ import (
 )
 
 const (
-	// powMaxDailyCompletions limits how many proof-of-work rewards one user may
-	// successfully claim per UTC day.
-	powMaxDailyCompletions = 5
+	// powDefaultDailyCompletionLimit keeps the feature safe even before an
+	// administrator touches the persisted PoW settings.
+	powDefaultDailyCompletionLimit = 5
 
-	// powBaseRewardMin and powBaseRewardMax bound the random base reward that is
-	// multiplied by the selected difficulty.
-	powBaseRewardMin = 5
-	powBaseRewardMax = 10
+	// powDefaultBaseRewardMin and powDefaultBaseRewardMax define the fallback
+	// random reward window before the persisted PoW settings are loaded.
+	powDefaultBaseRewardMin = 5
+	powDefaultBaseRewardMax = 10
 
 	// powArgon2Variant identifies the exact browser/backend hash function used
 	// to solve and verify the puzzle.
@@ -54,7 +54,7 @@ const (
 	powSaltBytes = 16
 )
 
-var powDifficultyOptions = []int{3, 6, 9, 12}
+var powSupportedDifficulties = []int{3, 6, 9, 12}
 
 // powBenefitDefinition describes one currently supported PoW reward target.
 // The struct stays separate from the database model so the frontend can later
@@ -66,7 +66,6 @@ type powBenefitDefinition struct {
 	ResourceKey string
 	Scope       string
 	RewardUnit  string
-	Enabled     bool
 }
 
 var powBenefitCatalog = []powBenefitDefinition{
@@ -77,7 +76,6 @@ var powBenefitCatalog = []powBenefitDefinition{
 		ResourceKey: QuantityResourceEmailCatchAllRemainingCount,
 		Scope:       PermissionKeyEmailCatchAll,
 		RewardUnit:  "次",
-		Enabled:     true,
 	},
 }
 
@@ -106,6 +104,7 @@ type POWDifficultyOptionView struct {
 	Label            string `json:"label"`
 	Description      string `json:"description"`
 	RewardMultiplier int    `json:"reward_multiplier"`
+	Enabled          bool   `json:"enabled"`
 }
 
 // POWChallengeView exposes the active or already-claimed challenge row in the
@@ -134,6 +133,7 @@ type POWChallengeView struct {
 // POWStatusView returns the current PoW dashboard state rendered under the LDC
 // section on the frontend.
 type POWStatusView struct {
+	FeatureEnabled        bool                      `json:"feature_enabled"`
 	Benefits              []POWBenefitOptionView    `json:"benefits"`
 	DifficultyOptions     []POWDifficultyOptionView `json:"difficulty_options"`
 	MaxDailyCompletions   int                       `json:"max_daily_completions"`
@@ -176,6 +176,14 @@ func NewPOWService(cfg config.Config, db Store) *POWService {
 // GetMyStatus returns the current active challenge, daily claim counters, and
 // selectable reward metadata for the authenticated user.
 func (s *POWService) GetMyStatus(ctx context.Context, user model.User) (POWStatusView, error) {
+	runtimeSettings, err := s.loadRuntimeSettings(ctx)
+	if err != nil {
+		return POWStatusView{}, err
+	}
+	effectiveDailyLimit, err := s.loadEffectiveDailyCompletionLimit(ctx, user.ID, runtimeSettings.Global)
+	if err != nil {
+		return POWStatusView{}, err
+	}
 	completedToday, err := s.countCompletedToday(ctx, user.ID, time.Now().UTC())
 	if err != nil {
 		return POWStatusView{}, err
@@ -198,15 +206,16 @@ func (s *POWService) GetMyStatus(ctx context.Context, user model.User) (POWStatu
 		return POWStatusView{}, err
 	}
 
-	remainingToday := powMaxDailyCompletions - completedToday
+	remainingToday := effectiveDailyLimit - completedToday
 	if remainingToday < 0 {
 		remainingToday = 0
 	}
 
 	return POWStatusView{
-		Benefits:              s.benefitOptions(),
-		DifficultyOptions:     s.difficultyOptions(),
-		MaxDailyCompletions:   powMaxDailyCompletions,
+		FeatureEnabled:        runtimeSettings.Global.Enabled,
+		Benefits:              s.benefitOptions(runtimeSettings),
+		DifficultyOptions:     s.difficultyOptions(runtimeSettings),
+		MaxDailyCompletions:   effectiveDailyLimit,
 		CompletedToday:        completedToday,
 		RemainingToday:        remainingToday,
 		CurrentRemainingCount: currentRemainingCount,
@@ -217,11 +226,23 @@ func (s *POWService) GetMyStatus(ctx context.Context, user model.User) (POWStatu
 // CreateChallenge replaces any older active challenge with one freshly
 // generated puzzle for the current user.
 func (s *POWService) CreateChallenge(ctx context.Context, user model.User, request GeneratePOWChallengeRequest) (POWChallengeView, error) {
-	benefit, err := s.requireBenefitDefinition(request.BenefitKey)
+	runtimeSettings, err := s.loadRuntimeSettings(ctx)
 	if err != nil {
 		return POWChallengeView{}, err
 	}
-	difficulty, err := normalizePOWDifficulty(request.Difficulty)
+	if !runtimeSettings.Global.Enabled {
+		return POWChallengeView{}, ForbiddenError("proof-of-work welfare is currently disabled")
+	}
+
+	benefit, err := s.requireBenefitDefinition(request.BenefitKey, runtimeSettings)
+	if err != nil {
+		return POWChallengeView{}, err
+	}
+	difficulty, err := s.requireEnabledDifficulty(request.Difficulty, runtimeSettings)
+	if err != nil {
+		return POWChallengeView{}, err
+	}
+	effectiveDailyLimit, err := s.loadEffectiveDailyCompletionLimit(ctx, user.ID, runtimeSettings.Global)
 	if err != nil {
 		return POWChallengeView{}, err
 	}
@@ -230,8 +251,8 @@ func (s *POWService) CreateChallenge(ctx context.Context, user model.User, reque
 	if countErr != nil {
 		return POWChallengeView{}, countErr
 	}
-	if completedToday >= powMaxDailyCompletions {
-		return POWChallengeView{}, TooManyRequestsError("你今天已经完成了 5 次 PoW 福利领取，请明天再来。")
+	if completedToday >= effectiveDailyLimit {
+		return POWChallengeView{}, TooManyRequestsError(fmt.Sprintf("你今天已经完成了 %d 次 PoW 福利领取，请明天再来。", effectiveDailyLimit))
 	}
 
 	saltHex, err := randomHex(powSaltBytes)
@@ -298,6 +319,14 @@ func (s *POWService) SubmitChallenge(ctx context.Context, user model.User, reque
 		return SubmitPOWChallengeResult{}, ValidationError("nonce is too long")
 	}
 
+	runtimeSettings, err := s.loadRuntimeSettings(ctx)
+	if err != nil {
+		return SubmitPOWChallengeResult{}, err
+	}
+	if !runtimeSettings.Global.Enabled {
+		return SubmitPOWChallengeResult{}, ForbiddenError("proof-of-work welfare is currently disabled")
+	}
+
 	challenge, err := s.db.GetActivePOWChallengeByUser(ctx, user.ID)
 	if err != nil {
 		if storage.IsNotFound(err) {
@@ -308,16 +337,26 @@ func (s *POWService) SubmitChallenge(ctx context.Context, user model.User, reque
 	if challenge.ID != request.ChallengeID {
 		return SubmitPOWChallengeResult{}, ConflictError("当前题目已经变化，请重新获取最新题目后再提交。")
 	}
+	if _, err := s.requireBenefitDefinition(challenge.BenefitKey, runtimeSettings); err != nil {
+		return SubmitPOWChallengeResult{}, err
+	}
+	if _, err := s.requireEnabledDifficulty(challenge.Difficulty, runtimeSettings); err != nil {
+		return SubmitPOWChallengeResult{}, err
+	}
 
 	hashHex, solveErr := verifyPOWChallenge(challenge, nonce)
 	if solveErr != nil {
 		return SubmitPOWChallengeResult{}, solveErr
 	}
-	baseReward, err := randomIntInRange(powBaseRewardMin, powBaseRewardMax)
+	baseReward, err := randomIntInRange(runtimeSettings.Global.BaseRewardMin, runtimeSettings.Global.BaseRewardMax)
 	if err != nil {
 		return SubmitPOWChallengeResult{}, InternalError("failed to generate proof-of-work reward", err)
 	}
 	rewardQuantity := baseReward * challenge.Difficulty
+	effectiveDailyLimit, err := s.loadEffectiveDailyCompletionLimit(ctx, user.ID, runtimeSettings.Global)
+	if err != nil {
+		return SubmitPOWChallengeResult{}, err
+	}
 
 	now := time.Now().UTC()
 	startOfDay := utcStartOfDay(now)
@@ -333,13 +372,13 @@ func (s *POWService) SubmitChallenge(ctx context.Context, user model.User, reque
 		ClaimedAt:            now,
 		DailyWindowStart:     startOfDay,
 		DailyWindowEnd:       endOfDay,
-		MaxDailyCompletions:  powMaxDailyCompletions,
+		MaxDailyCompletions:  effectiveDailyLimit,
 		QuantityRecordReason: buildPOWRewardReason(challenge.Difficulty, baseReward, rewardQuantity, challenge.RewardUnit),
 	})
 	if claimErr != nil {
 		switch {
 		case claimErr == storage.ErrPOWChallengeDailyLimitExceeded:
-			return SubmitPOWChallengeResult{}, TooManyRequestsError("你今天已经完成了 5 次 PoW 福利领取，请明天再来。")
+			return SubmitPOWChallengeResult{}, TooManyRequestsError(fmt.Sprintf("你今天已经完成了 %d 次 PoW 福利领取，请明天再来。", effectiveDailyLimit))
 		case claimErr == storage.ErrPOWChallengeNotActive:
 			return SubmitPOWChallengeResult{}, ConflictError("当前题目已经失效，请重新生成新的题目。")
 		default:
@@ -351,7 +390,7 @@ func (s *POWService) SubmitChallenge(ctx context.Context, user model.User, reque
 	if err != nil {
 		return SubmitPOWChallengeResult{}, err
 	}
-	remainingToday := powMaxDailyCompletions - completedToday
+	remainingToday := effectiveDailyLimit - completedToday
 	if remainingToday < 0 {
 		remainingToday = 0
 	}
@@ -381,40 +420,13 @@ func (s *POWService) SubmitChallenge(ctx context.Context, user model.User, reque
 	}, nil
 }
 
-// benefitOptions renders the static reward catalog into the public API shape.
-func (s *POWService) benefitOptions() []POWBenefitOptionView {
-	items := make([]POWBenefitOptionView, 0, len(powBenefitCatalog))
-	for _, benefit := range powBenefitCatalog {
-		items = append(items, POWBenefitOptionView{
-			Key:         benefit.Key,
-			DisplayName: benefit.DisplayName,
-			Description: benefit.Description,
-			RewardUnit:  benefit.RewardUnit,
-			Enabled:     benefit.Enabled,
-		})
-	}
-	return items
-}
-
-// difficultyOptions returns the fixed puzzle difficulties rendered by the
-// frontend dropdown.
-func (s *POWService) difficultyOptions() []POWDifficultyOptionView {
-	items := make([]POWDifficultyOptionView, 0, len(powDifficultyOptions))
-	for _, difficulty := range powDifficultyOptions {
-		items = append(items, POWDifficultyOptionView{
-			Value:            difficulty,
-			Label:            fmt.Sprintf("难度 %d", difficulty),
-			Description:      fmt.Sprintf("要求 Argon2 输出至少有 %d 个前导零 bit，奖励倍数也是 %d。", difficulty, difficulty),
-			RewardMultiplier: difficulty,
-		})
-	}
-	return items
-}
-
 // challengeView converts one storage model row into the narrower API contract
 // used by the frontend worker and dashboard.
 func (s *POWService) challengeView(item model.POWChallenge) POWChallengeView {
-	benefit, _ := s.requireBenefitDefinition(item.BenefitKey)
+	benefit, found := lookupPOWBenefitDefinition(item.BenefitKey)
+	if !found {
+		benefit = powBenefitDefinition{DisplayName: item.BenefitKey, RewardUnit: item.RewardUnit}
+	}
 	return POWChallengeView{
 		ID:                 item.ID,
 		BenefitKey:         item.BenefitKey,
@@ -435,22 +447,6 @@ func (s *POWService) challengeView(item model.POWChallenge) POWChallengeView {
 		CreatedAt:          item.CreatedAt,
 		UpdatedAt:          item.UpdatedAt,
 	}
-}
-
-// requireBenefitDefinition resolves one supported benefit key into its static
-// reward metadata.
-func (s *POWService) requireBenefitDefinition(key string) (powBenefitDefinition, error) {
-	normalizedKey := strings.TrimSpace(key)
-	for _, benefit := range powBenefitCatalog {
-		if benefit.Key != normalizedKey {
-			continue
-		}
-		if !benefit.Enabled {
-			return powBenefitDefinition{}, ForbiddenError("the selected proof-of-work benefit is currently disabled")
-		}
-		return benefit, nil
-	}
-	return powBenefitDefinition{}, ValidationError("unsupported proof-of-work benefit")
 }
 
 // countCompletedToday returns how many PoW rewards the current user already
@@ -529,7 +525,7 @@ func buildPOWRewardReason(difficulty int, baseReward int, rewardQuantity int, re
 // normalizePOWDifficulty rejects unsupported difficulty values so frontend
 // tampering cannot silently create custom reward multipliers.
 func normalizePOWDifficulty(raw int) (int, error) {
-	for _, difficulty := range powDifficultyOptions {
+	for _, difficulty := range powSupportedDifficulties {
 		if raw == difficulty {
 			return raw, nil
 		}

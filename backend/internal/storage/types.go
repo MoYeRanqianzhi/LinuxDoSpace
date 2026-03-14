@@ -303,3 +303,33 @@ type ClaimPOWChallengeRewardInput struct {
 	MaxDailyCompletions  int
 	QuantityRecordReason string
 }
+
+// UpsertPOWGlobalSettingsInput describes one administrator-authored update to
+// the global proof-of-work feature configuration.
+type UpsertPOWGlobalSettingsInput struct {
+	Enabled                     bool
+	DefaultDailyCompletionLimit int
+	BaseRewardMin               int
+	BaseRewardMax               int
+}
+
+// UpsertPOWBenefitSettingsInput describes one administrator-authored toggle for
+// a single proof-of-work benefit target.
+type UpsertPOWBenefitSettingsInput struct {
+	Key     string
+	Enabled bool
+}
+
+// UpsertPOWDifficultySettingsInput describes one administrator-authored toggle
+// for a single proof-of-work difficulty level.
+type UpsertPOWDifficultySettingsInput struct {
+	Difficulty int
+	Enabled    bool
+}
+
+// UpsertPOWUserSettingsInput describes one per-user daily completion limit
+// override managed by the administrator console.
+type UpsertPOWUserSettingsInput struct {
+	UserID                       int64
+	DailyCompletionLimitOverride *int
+}

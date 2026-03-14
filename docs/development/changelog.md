@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added administrator-manageable PoW configuration, including a global feature switch, base reward min/max, per-benefit toggles, per-difficulty toggles, and per-user daily completion overrides.
+- Updated the public PoW panel so realtime attempt count, best progress, and elapsed time now appear directly inside the “当前题目” area.
 - Added per-user proof-of-work welfare challenges under the public permissions page, with server-generated Argon2id puzzles, browser-side local solving, daily UTC claim limits, and atomic reward grants into `email_catch_all_remaining_count`.
 - Added Linux Do Credit purchase products, local payment orders, EasyPay-compatible signature verification, asynchronous notify handling, and idempotent entitlement application for catch-all subscription days, catch-all quota, and payment-test purchases.
 - Added administrator Linux Do Credit order APIs plus a dedicated admin order-management page for cross-user purchase inspection and manual status refresh.
