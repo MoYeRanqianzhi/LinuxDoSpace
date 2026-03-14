@@ -117,7 +117,7 @@ func (s emailRouteSyncState) Address() string {
 // one best-effort attempt to restore Cloudflare back to the previous state so
 // local storage and the external provider do not silently diverge.
 func (p emailRoutingProvisioner) SyncForwardingState(ctx context.Context, before emailRouteSyncState, after emailRouteSyncState, persist func() error) error {
-	if p.cfg.UsesDatabaseMailRelay() {
+	if p.cfg.UsesDatabaseMailRelay() && p.shouldUseDatabaseRelayForMutation(before, after) {
 		return persist()
 	}
 
@@ -139,6 +139,46 @@ func (p emailRoutingProvisioner) SyncForwardingState(ctx context.Context, before
 	}
 
 	return nil
+}
+
+// shouldUseDatabaseRelayForMutation decides whether the current route mutation
+// should stay database-only. Parent-domain exact mailboxes still use
+// Cloudflare's free exact-address forwarding, while subdomain-scoped routes and
+// namespace catch-all routes are handled by the local SMTP relay.
+func (p emailRoutingProvisioner) shouldUseDatabaseRelayForMutation(before emailRouteSyncState, after emailRouteSyncState) bool {
+	matchKind := strings.TrimSpace(after.MatchKind)
+	if matchKind == "" {
+		matchKind = strings.TrimSpace(before.MatchKind)
+	}
+	if matchKind == emailRouteMatchKindCatchAll {
+		return true
+	}
+
+	rootDomain := strings.TrimSpace(after.RootDomain)
+	if rootDomain == "" {
+		rootDomain = strings.TrimSpace(before.RootDomain)
+	}
+	return usesDatabaseRelayNamespaceRoot(p.cfg, rootDomain)
+}
+
+// usesDatabaseRelayNamespaceRoot reports whether one routed root should be
+// served by the local SMTP relay instead of Cloudflare Email Routing. Only
+// subdomains under the configured default root qualify; the parent root itself
+// keeps using Cloudflare exact mailbox forwarding.
+func usesDatabaseRelayNamespaceRoot(cfg config.Config, rootDomain string) bool {
+	if !cfg.UsesDatabaseMailRelay() {
+		return false
+	}
+
+	normalizedRoot := normalizeDNSName(rootDomain)
+	defaultRoot := normalizeDNSName(cfg.Cloudflare.DefaultRootDomain)
+	if normalizedRoot == "" || defaultRoot == "" {
+		return false
+	}
+	if normalizedRoot == defaultRoot {
+		return false
+	}
+	return strings.HasSuffix(normalizedRoot, "."+defaultRoot)
 }
 
 // ensureDatabaseRelayIngressDNS makes sure the routed email domain points at

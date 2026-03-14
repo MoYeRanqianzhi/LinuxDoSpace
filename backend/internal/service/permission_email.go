@@ -383,7 +383,7 @@ func buildCustomEmailRouteView(route model.EmailRoute) UserEmailRouteView {
 // rule for one visible mailbox address when Email Routing integration is
 // configured. The public page uses this to avoid showing stale local state.
 func (s *PermissionService) lookupCloudflareForwardingSnapshot(ctx context.Context, rootDomain string, prefix string) (forwardingRuleSnapshot, error) {
-	if s.cfg.UsesDatabaseMailRelay() {
+	if usesDatabaseRelayNamespaceRoot(s.cfg, rootDomain) {
 		return forwardingRuleSnapshot{}, nil
 	}
 	if s.cf == nil || !s.cfg.CloudflareConfigured() {

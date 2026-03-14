@@ -230,6 +230,9 @@ func (s *DomainService) AutoProvisionForUser(ctx context.Context, user model.Use
 			Status:           "active",
 		})
 		if err != nil {
+			if isAllocationConflictError(err) {
+				continue
+			}
 			return InternalError("failed to create auto-provision allocation", err)
 		}
 
@@ -316,6 +319,9 @@ func (s *DomainService) CreateAllocation(ctx context.Context, user model.User, r
 		Status:           "active",
 	})
 	if err != nil {
+		if isAllocationConflictError(err) {
+			return model.Allocation{}, ConflictError("the requested allocation already exists or changed concurrently")
+		}
 		return model.Allocation{}, InternalError("failed to create allocation", err)
 	}
 
@@ -708,6 +714,9 @@ func (s *DomainService) buildCloudflareRecordInput(allocation model.Allocation, 
 	if err != nil {
 		return cloudflare.CreateDNSRecordInput{}, "", ValidationError(err.Error())
 	}
+	if strings.EqualFold(strings.TrimSpace(input.Comment), strings.TrimSpace(databaseRelayManagedDNSComment)) {
+		return cloudflare.CreateDNSRecordInput{}, "", ValidationError("record comment uses a reserved system marker")
+	}
 
 	return cloudflare.CreateDNSRecordInput{
 		Type:     normalizedType,
@@ -823,6 +832,17 @@ func RelativeNameFromAbsolute(recordName string, namespaceFQDN string) string {
 		return "@"
 	}
 	return strings.TrimSuffix(name, "."+namespace)
+}
+
+// isAllocationConflictError collapses backend-specific uniqueness failures into
+// one deterministic conflict outcome for callers. This now also covers the
+// partial unique index that enforces the single-primary invariant.
+func isAllocationConflictError(err error) bool {
+	if err == nil {
+		return false
+	}
+	normalized := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(normalized, "unique") || strings.Contains(normalized, "constraint failed")
 }
 
 // toModelDNSRecord 把 Cloudflare 记录转换为对外返回的模型。

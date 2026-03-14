@@ -8,10 +8,10 @@ import (
 	"linuxdospace/backend/internal/cloudflare"
 )
 
-// TestSyncForwardingStateDatabaseRelaySkipsCloudflareWhenDNSAutomationDisabled
-// verifies that the database-relay mode can still behave as a pure database
-// write when the operator explicitly disables DNS automation.
-func TestSyncForwardingStateDatabaseRelaySkipsCloudflareWhenDNSAutomationDisabled(t *testing.T) {
+// TestSyncForwardingStateDatabaseRelaySkipsCloudflareForSubdomainExactRoute
+// verifies that a subdomain-scoped exact mailbox still behaves as a pure
+// database write when relay DNS automation is disabled.
+func TestSyncForwardingStateDatabaseRelaySkipsCloudflareForSubdomainExactRoute(t *testing.T) {
 	cfg := newPermissionEmailTestConfig()
 	cfg.Mail.ForwardingBackend = "database_relay"
 	cfg.Mail.EnsureDNS = false
@@ -19,8 +19,8 @@ func TestSyncForwardingStateDatabaseRelaySkipsCloudflareWhenDNSAutomationDisable
 	persistCalls := 0
 	err := newEmailRoutingProvisioner(cfg, nil).SyncForwardingState(
 		context.Background(),
-		newDeletedEmailRouteSyncState("linuxdo.space", "alice"),
-		newForwardingEmailRouteSyncState("linuxdo.space", "alice", "owner@example.com", true),
+		newDeletedEmailRouteSyncState("alice.linuxdo.space", "hello"),
+		newForwardingEmailRouteSyncState("alice.linuxdo.space", "hello", "owner@example.com", true),
 		func() error {
 			persistCalls++
 			return nil
@@ -107,10 +107,10 @@ func TestDatabaseRelayCatchAllPermissionApprovalEnsuresRelayDNS(t *testing.T) {
 	}
 }
 
-// TestDatabaseRelayDefaultMailboxDoesNotEnsureRelayDNS verifies that saving the
-// always-owned parent-domain mailbox never bootstraps relay MX/TXT records.
-// Parent-domain mail must stay on Cloudflare's normal forwarding path.
-func TestDatabaseRelayDefaultMailboxDoesNotEnsureRelayDNS(t *testing.T) {
+// TestDatabaseRelayDefaultMailboxKeepsCloudflareExactForwarding verifies that
+// the parent-domain exact mailbox still uses Cloudflare Email Routing even
+// while subdomain catch-all delivery uses the local relay.
+func TestDatabaseRelayDefaultMailboxKeepsCloudflareExactForwarding(t *testing.T) {
 	ctx := context.Background()
 	store := newAuthTestStore(t)
 	user := seedPermissionEmailTestUserWithLinuxDOID(t, ctx, store, 703, "alice")
@@ -149,8 +149,12 @@ func TestDatabaseRelayDefaultMailboxDoesNotEnsureRelayDNS(t *testing.T) {
 	if len(zoneDNSRecords) != 0 {
 		t.Fatalf("expected no relay dns records for the parent domain mailbox, got %+v", zoneDNSRecords)
 	}
-	if len(cf.rulesByZone["zone-default"]) != 0 {
-		t.Fatalf("expected no cloudflare exact email-routing rule writes, got %+v", cf.rulesByZone["zone-default"])
+	exactRule, found := findEmailRoutingRuleByAddress(cf.rulesByZone["zone-default"], "alice@linuxdo.space")
+	if !found {
+		t.Fatalf("expected cloudflare exact email-routing rule for the parent domain mailbox, got %+v", cf.rulesByZone["zone-default"])
+	}
+	if targetEmail := extractForwardTargetEmail(exactRule); targetEmail != "owner@example.com" {
+		t.Fatalf("expected parent-domain exact route to forward to owner@example.com, got %q", targetEmail)
 	}
 }
 
@@ -197,10 +201,10 @@ func TestDatabaseRelayAdminGrantEnsuresRelayDNS(t *testing.T) {
 	}
 }
 
-// TestDatabaseRelayModeIgnoresCloudflareSnapshots verifies that the database
-// relay mode does not treat remote Cloudflare state as a fallback truth source
-// for public email search or the mailbox settings page.
-func TestDatabaseRelayModeIgnoresCloudflareSnapshots(t *testing.T) {
+// TestDatabaseRelayModeUsesCloudflareSnapshotsOnlyForParentDomain verifies that
+// hybrid mode still trusts Cloudflare for parent-domain exact mailboxes while
+// keeping subdomain catch-all state database-only.
+func TestDatabaseRelayModeUsesCloudflareSnapshotsOnlyForParentDomain(t *testing.T) {
 	ctx := context.Background()
 	store := newAuthTestStore(t)
 	user := seedPermissionEmailTestUserWithLinuxDOID(t, ctx, store, 701, "alice")
@@ -246,12 +250,12 @@ func TestDatabaseRelayModeIgnoresCloudflareSnapshots(t *testing.T) {
 	cfg.Mail.ForwardingBackend = "database_relay"
 	service := NewPermissionService(cfg, store, cf)
 
-	forwardingSnapshot, err := service.lookupCloudflareForwardingSnapshot(ctx, "linuxdo.space", "alice")
+	forwardingSnapshot, err := service.lookupCloudflareForwardingSnapshot(ctx, "linuxdo.space", "hello")
 	if err != nil {
 		t.Fatalf("lookup forwarding snapshot in database relay mode: %v", err)
 	}
-	if forwardingSnapshot.Found {
-		t.Fatalf("expected database relay mode to ignore cloudflare exact-route snapshots")
+	if !forwardingSnapshot.Found {
+		t.Fatalf("expected parent-domain exact route snapshot to stay visible in hybrid mode")
 	}
 
 	catchAllSnapshot, err := service.lookupCloudflareCatchAllSnapshot(ctx, "alice.linuxdo.space")
@@ -266,7 +270,7 @@ func TestDatabaseRelayModeIgnoresCloudflareSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("check email availability in database relay mode: %v", err)
 	}
-	if !availability.Available {
-		t.Fatalf("expected search to ignore stale cloudflare-only state, got %+v", availability)
+	if availability.Available {
+		t.Fatalf("expected parent-domain search to respect existing cloudflare exact-route state, got %+v", availability)
 	}
 }

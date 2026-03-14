@@ -3,7 +3,7 @@ import { motion } from 'motion/react';
 import { ArrowRight, CheckCircle2, Clock3, CreditCard, LoaderCircle, RefreshCw, ShieldAlert, XCircle } from 'lucide-react';
 import { GlassCard } from '../components/GlassCard';
 import { APIError, listMyPaymentOrders, refreshMyPaymentOrder } from '../lib/api';
-import { clearRememberedPaymentOrder } from '../lib/payment-tracking';
+import { clearRememberedPaymentOrder, readRememberedPaymentOrders } from '../lib/payment-tracking';
 import type { PaymentOrder, User } from '../types/api';
 
 interface PaymentCallbackProps {
@@ -97,7 +97,7 @@ export function PaymentCallback({
 
   async function resolveCandidateOrderNo(): Promise<string> {
     const orders = await listMyPaymentOrders();
-    const matchedOrder = findBestMatchingOrder(orders);
+    const matchedOrder = findBestMatchingOrder(orders, '', readRememberedPaymentOrders());
     return matchedOrder?.out_trade_no ?? '';
   }
 
@@ -157,7 +157,7 @@ export function PaymentCallback({
   async function tryLoadFallbackOrder(): Promise<PaymentOrder | null> {
     try {
       const orders = await listMyPaymentOrders();
-      const matchedOrder = findBestMatchingOrder(orders, resolvedOrderNo);
+      const matchedOrder = findBestMatchingOrder(orders, resolvedOrderNo, readRememberedPaymentOrders());
       return matchedOrder ?? null;
     } catch {
       return null;
@@ -369,12 +369,23 @@ function formatLDC(valueInCents: number): string {
   });
 }
 
-function findBestMatchingOrder(orders: PaymentOrder[], preferredOutTradeNo = ''): PaymentOrder | null {
+function findBestMatchingOrder(orders: PaymentOrder[], preferredOutTradeNo = '', rememberedOrderNos: string[] = []): PaymentOrder | null {
   const normalizedPreferredOutTradeNo = preferredOutTradeNo.trim();
   if (normalizedPreferredOutTradeNo) {
     const exactMatch = orders.find((item) => item.out_trade_no === normalizedPreferredOutTradeNo);
     if (exactMatch) {
       return exactMatch;
+    }
+  }
+
+  for (const rememberedOrderNo of rememberedOrderNos) {
+    const normalizedRememberedOrderNo = rememberedOrderNo.trim();
+    if (!normalizedRememberedOrderNo) {
+      continue;
+    }
+    const rememberedMatch = orders.find((item) => item.out_trade_no === normalizedRememberedOrderNo);
+    if (rememberedMatch) {
+      return rememberedMatch;
     }
   }
 

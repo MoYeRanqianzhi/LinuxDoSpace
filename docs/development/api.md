@@ -277,7 +277,7 @@ currently selected backend.
 Important operational constraints:
 - the target mailbox must already be a verified Cloudflare Email Routing destination address, or Cloudflare will send a verification email and the save will be rejected until verification completes
 - when `EMAIL_FORWARDING_BACKEND=cloudflare`, the backend syncs exact-address and catch-all rules directly into Cloudflare Email Routing
-- when `EMAIL_FORWARDING_BACKEND=database_relay`, the backend stores the route only in the database and the built-in SMTP relay executes the forward at delivery time
+- when `EMAIL_FORWARDING_BACKEND=database_relay`, parent-root exact mailboxes still sync to Cloudflare Email Routing, while subdomain relay namespaces and catch-all delivery execute through the built-in SMTP relay
 
 ### `PUT /v1/my/email-routes/default`
 Creates, updates, or clears the current user's default mailbox forwarding target.
@@ -550,8 +550,9 @@ Deletes one DNS record inside the selected allocation namespace.
 Returns all administrator-managed email forwarding rules.
 
 Administrator-side create, update, and delete operations also sync the effective route into Cloudflare Email Routing.
-In `database_relay` mode, these administrator operations become database-only
-writes and are enforced later by the built-in SMTP relay.
+In `database_relay` mode, parent-root exact mailboxes still sync to Cloudflare,
+while subdomain relay namespaces remain database-backed and are enforced later
+by the built-in SMTP relay.
 
 ### `POST /v1/admin/email-routes`
 Creates one email forwarding rule.

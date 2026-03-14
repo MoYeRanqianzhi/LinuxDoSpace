@@ -3,13 +3,15 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
+
+	"linuxdospace/backend/internal/cloudflare"
 )
 
-// TestAdminCreateEmailRouteDatabaseRelayDoesNotEnsureRelayDNS verifies that the
-// administrator email-route workflow no longer bootstraps relay MX/TXT
-// records. Relay ingress DNS is now reserved for approved catch-all
-// namespaces only.
-func TestAdminCreateEmailRouteDatabaseRelayDoesNotEnsureRelayDNS(t *testing.T) {
+// TestAdminCreateEmailRouteDatabaseRelayKeepsCloudflareExactForwarding verifies
+// that administrator-created parent-domain exact mailboxes still sync to
+// Cloudflare Email Routing while avoiding relay MX/TXT bootstrap.
+func TestAdminCreateEmailRouteDatabaseRelayKeepsCloudflareExactForwarding(t *testing.T) {
 	ctx := context.Background()
 	store := newAuthTestStore(t)
 	actor := seedPermissionEmailTestUserWithLinuxDOID(t, ctx, store, 801, "admin")
@@ -24,6 +26,12 @@ func TestAdminCreateEmailRouteDatabaseRelayDoesNotEnsureRelayDNS(t *testing.T) {
 	cfg.Mail.MXTarget = "mail.linuxdo.space"
 	cfg.Mail.MXPriority = 10
 	cfg.Mail.SPFValue = "v=spf1 -all"
+	verifiedAt := time.Now().UTC()
+	cf.addressesByAccount["account-default"] = []cloudflare.EmailRoutingDestinationAddress{{
+		ID:       "addr-1",
+		Email:    "owner@example.com",
+		Verified: &verifiedAt,
+	}}
 
 	service := NewAdminService(cfg, store, cf)
 	item, err := service.CreateEmailRoute(ctx, actor, UpsertEmailRouteRequest{
@@ -44,7 +52,11 @@ func TestAdminCreateEmailRouteDatabaseRelayDoesNotEnsureRelayDNS(t *testing.T) {
 	if len(zoneDNSRecords) != 0 {
 		t.Fatalf("expected admin exact-route flow to avoid relay dns bootstrap, got %+v", zoneDNSRecords)
 	}
-	if len(cf.rulesByZone["zone-default"]) != 0 {
-		t.Fatalf("expected no cloudflare exact email-routing rule writes, got %+v", cf.rulesByZone["zone-default"])
+	exactRule, found := findEmailRoutingRuleByAddress(cf.rulesByZone["zone-default"], "hello@linuxdo.space")
+	if !found {
+		t.Fatalf("expected admin exact-route flow to sync one cloudflare exact rule, got %+v", cf.rulesByZone["zone-default"])
+	}
+	if targetEmail := extractForwardTargetEmail(exactRule); targetEmail != "owner@example.com" {
+		t.Fatalf("expected admin exact route to forward to owner@example.com, got %q", targetEmail)
 	}
 }

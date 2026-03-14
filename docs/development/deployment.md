@@ -144,7 +144,9 @@ LinuxDoSpace now supports two mailbox-forwarding execution backends:
 - `EMAIL_FORWARDING_BACKEND=cloudflare`
   The backend writes exact and catch-all forwarding rules directly into Cloudflare Email Routing.
 - `EMAIL_FORWARDING_BACKEND=database_relay`
-  The backend stores the routes in the database and the built-in SMTP listener receives mail on this server, resolves the route locally, and forwards it through `MAIL_RELAY_FORWARD_HOST`.
+  The backend uses a hybrid model:
+  exact mailboxes on the parent root domain still sync to Cloudflare Email Routing,
+  while subdomain-scoped relay namespaces and catch-all delivery are executed by the built-in SMTP listener and forwarded through `MAIL_RELAY_FORWARD_HOST`.
 
 The current implementation still uses Cloudflare destination-address verification
 for user-owned forwarding targets in both modes, because that remains the
@@ -184,6 +186,8 @@ Operational DNS note for `database_relay`:
 - when `MAIL_RELAY_ENSURE_DNS=true`, LinuxDoSpace will create or update its own
   managed `MX` and optional `TXT` records for routed mail domains and
   subdomains, pointing them at `MAIL_RELAY_MX_TARGET`
+- parent-root exact mailboxes intentionally do not receive these relay `MX/TXT`
+  records, because they keep using Cloudflare's exact-address forwarding path
 - LinuxDoSpace only updates DNS records carrying its own mail-relay comment, so
   unrelated user TXT/MX records are not rewritten
 - the MX target itself still must resolve to the real SMTP listener host or the
