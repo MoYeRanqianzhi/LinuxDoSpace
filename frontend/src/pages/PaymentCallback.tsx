@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import { ArrowRight, CheckCircle2, Clock3, CreditCard, LoaderCircle, RefreshCw, ShieldAlert, XCircle } from 'lucide-react';
 import { GlassCard } from '../components/GlassCard';
 import { APIError, listMyPaymentOrders, refreshMyPaymentOrder } from '../lib/api';
-import { clearRememberedPaymentOrder, readRememberedPaymentOrder, readRememberedPaymentOrders } from '../lib/payment-tracking';
+import { clearRememberedPaymentOrder } from '../lib/payment-tracking';
 import type { PaymentOrder, User } from '../types/api';
 
 interface PaymentCallbackProps {
@@ -48,11 +48,6 @@ export function PaymentCallback({
   });
   const [refreshAttempt, setRefreshAttempt] = useState(0);
   const refreshTimerRef = useRef<number | null>(null);
-
-  const callbackQuery = useMemo(() => new URLSearchParams(window.location.search), []);
-  const callbackTradeStatus = callbackQuery.get('trade_status')?.trim().toUpperCase() ?? '';
-  const callbackTradeNo = callbackQuery.get('trade_no')?.trim() ?? '';
-  const callbackOutTradeNo = callbackQuery.get('out_trade_no')?.trim() ?? '';
 
   useEffect(() => {
     return () => {
@@ -102,7 +97,7 @@ export function PaymentCallback({
 
   async function resolveCandidateOrderNo(): Promise<string> {
     const orders = await listMyPaymentOrders();
-    const matchedOrder = findBestMatchingOrder(orders, callbackOutTradeNo, callbackTradeNo);
+    const matchedOrder = findBestMatchingOrder(orders);
     return matchedOrder?.out_trade_no ?? '';
   }
 
@@ -115,7 +110,7 @@ export function PaymentCallback({
       const refreshedOrder = await refreshMyPaymentOrder(outTradeNo, csrfToken);
       setOrder(refreshedOrder);
       setRefreshAttempt(nextAttempt);
-      setNotice(buildCallbackNotice(refreshedOrder, callbackTradeStatus, callbackTradeNo, nextAttempt));
+      setNotice(buildCallbackNotice(refreshedOrder, nextAttempt));
 
       if (isTerminalPaymentState(refreshedOrder)) {
         clearRememberedPaymentOrder(refreshedOrder.out_trade_no);
@@ -139,7 +134,7 @@ export function PaymentCallback({
       if (fallbackOrder) {
         setOrder(fallbackOrder);
         setResolvedOrderNo(fallbackOrder.out_trade_no);
-        setNotice(buildCallbackNotice(fallbackOrder, callbackTradeStatus, callbackTradeNo, nextAttempt));
+        setNotice(buildCallbackNotice(fallbackOrder, nextAttempt));
         if (isTerminalPaymentState(fallbackOrder)) {
           clearRememberedPaymentOrder(fallbackOrder.out_trade_no);
           return;
@@ -162,7 +157,7 @@ export function PaymentCallback({
   async function tryLoadFallbackOrder(): Promise<PaymentOrder | null> {
     try {
       const orders = await listMyPaymentOrders();
-      const matchedOrder = findBestMatchingOrder(orders, resolvedOrderNo || callbackOutTradeNo, callbackTradeNo);
+      const matchedOrder = findBestMatchingOrder(orders, resolvedOrderNo);
       return matchedOrder ?? null;
     } catch {
       return null;
@@ -181,13 +176,13 @@ export function PaymentCallback({
               </div>
               <h1 className="mt-4 text-3xl font-extrabold text-gray-900 dark:text-white md:text-4xl">正在确认你的支付结果</h1>
               <p className="mt-3 max-w-2xl text-sm leading-7 text-gray-600 dark:text-gray-300">
-                这是专门的支付回调页。系统会优先从回调参数和本地最近订单中恢复订单号，再主动向后端刷新支付状态，并等待异步通知与权益发放完成。
+                这是专门的支付回调页。当前支付平台不会回传订单参数，所以页面会直接以你账号下的最新订单为准，主动向后端刷新状态，并等待异步通知与权益发放完成。
               </p>
             </div>
             <div className="rounded-[1.5rem] border border-white/20 bg-white/45 px-5 py-4 text-sm leading-7 text-gray-700 dark:border-white/10 dark:bg-black/20 dark:text-gray-200">
               <div>当前账号：{authenticated ? user?.username ?? '已登录' : '未登录'}</div>
-              <div>回调订单号：{callbackOutTradeNo || '未携带'}</div>
-              <div>回调状态：{callbackTradeStatus || '未携带'}</div>
+              <div>当前策略：以最新订单为准</div>
+              <div>回调路由：/payments/callback</div>
             </div>
           </div>
 
@@ -206,7 +201,7 @@ export function PaymentCallback({
               <div className="mt-6 grid gap-3 md:grid-cols-2">
                 <InfoStat title="实际核对订单号" value={resolvedOrderNo || '尚未确定'} mono />
                 <InfoStat title="刷新轮次" value={`${refreshAttempt + 1} / ${maxRefreshAttempts}`} />
-                <InfoStat title="浏览器回调单号" value={callbackTradeNo || '未携带'} mono />
+                <InfoStat title="状态来源" value="账号下最新订单" />
                 <InfoStat title="订单状态" value={order ? readablePaymentStatus(order) : '尚未取得'} />
               </div>
 
@@ -237,7 +232,7 @@ export function PaymentCallback({
                 </div>
               ) : (
                 <div className="mt-4 text-sm leading-7 text-gray-600 dark:text-gray-300">
-                  当前还没有拿到订单详情。系统会优先根据回调参数和最近订单自动查找。
+                  当前还没有拿到订单详情。系统会直接从你账号下的最新订单开始核对。
                 </div>
               )}
 
@@ -269,12 +264,12 @@ export function PaymentCallback({
   );
 }
 
-function buildCallbackNotice(order: PaymentOrder, callbackTradeStatus: string, callbackTradeNo: string, attempt: number): CallbackNotice {
+function buildCallbackNotice(order: PaymentOrder, attempt: number): CallbackNotice {
   if (order.status === 'paid' && order.applied_at) {
     return {
       tone: 'success',
       title: '支付成功，权益已经到账',
-      message: `订单 ${order.out_trade_no} 已确认支付${callbackTradeNo ? `（回调单号 ${callbackTradeNo}）` : ''}，对应权益已经发放。你现在可以返回权限页继续操作。`,
+      message: `订单 ${order.out_trade_no} 已确认支付，对应权益已经发放。你现在可以返回权限页继续操作。`,
     };
   }
 
@@ -303,16 +298,10 @@ function buildCallbackNotice(order: PaymentOrder, callbackTradeStatus: string, c
   }
 
   return {
-    tone: callbackTradeStatus === 'TRADE_SUCCESS' ? 'info' : 'error',
-    title: callbackTradeStatus === 'TRADE_SUCCESS' ? '支付页面已返回，等待后端同步' : '支付结果暂未确认',
-    message: callbackTradeStatus === 'TRADE_SUCCESS'
-      ? `浏览器已经从支付页返回，但订单 ${order.out_trade_no} 还没有到达最终状态。系统会继续自动检查。`
-      : `订单 ${order.out_trade_no} 当前仍然是 ${readablePaymentStatus(order)}。如果你已经完成支付，通常只需要再等待几秒。`,
+    tone: 'info',
+    title: '支付页面已返回，等待后端同步',
+    message: `最新订单 ${order.out_trade_no} 当前仍然是 ${readablePaymentStatus(order)}。如果你已经完成支付，通常只需要再等待几秒。当前是第 ${attempt + 1} 次检查。`,
   };
-}
-
-function isOrderAwaitingSettlement(order: PaymentOrder): boolean {
-  return order.status === 'created' || order.status === 'pending' || (order.status === 'paid' && !order.applied_at);
 }
 
 function isTerminalPaymentState(order: PaymentOrder): boolean {
@@ -380,7 +369,7 @@ function formatLDC(valueInCents: number): string {
   });
 }
 
-function findBestMatchingOrder(orders: PaymentOrder[], preferredOutTradeNo: string, callbackTradeNo: string): PaymentOrder | null {
+function findBestMatchingOrder(orders: PaymentOrder[], preferredOutTradeNo = ''): PaymentOrder | null {
   const normalizedPreferredOutTradeNo = preferredOutTradeNo.trim();
   if (normalizedPreferredOutTradeNo) {
     const exactMatch = orders.find((item) => item.out_trade_no === normalizedPreferredOutTradeNo);
@@ -389,29 +378,5 @@ function findBestMatchingOrder(orders: PaymentOrder[], preferredOutTradeNo: stri
     }
   }
 
-  const normalizedCallbackTradeNo = callbackTradeNo.trim();
-  if (normalizedCallbackTradeNo) {
-    const providerMatch = orders.find((item) => item.provider_trade_no === normalizedCallbackTradeNo);
-    if (providerMatch) {
-      return providerMatch;
-    }
-  }
-
-  const rememberedOrderNo = readRememberedPaymentOrder();
-  if (rememberedOrderNo) {
-    const rememberedMatch = orders.find((item) => item.out_trade_no === rememberedOrderNo);
-    if (rememberedMatch) {
-      return rememberedMatch;
-    }
-  }
-
-  const rememberedCandidates = readRememberedPaymentOrders();
-  for (const candidateOrderNo of rememberedCandidates) {
-    const matchedOrder = orders.find((item) => item.out_trade_no === candidateOrderNo);
-    if (matchedOrder) {
-      return matchedOrder;
-    }
-  }
-
-  return orders.find((item) => isOrderAwaitingSettlement(item)) ?? orders[0] ?? null;
+  return orders[0] ?? null;
 }
