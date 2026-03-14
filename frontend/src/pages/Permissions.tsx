@@ -4,6 +4,7 @@ import { ArrowLeft, ArrowRight, CheckCircle2, Clock3, CreditCard, ExternalLink, 
 import { GlassCard } from '../components/GlassCard';
 import { GlassSelect, type GlassSelectOption } from '../components/GlassSelect';
 import { APIError, createMyPaymentOrder, listMyPaymentOrders, listMyPermissions, listPublicPaymentProducts, refreshMyPaymentOrder } from '../lib/api';
+import { clearRememberedPaymentOrder, rememberLatestPaymentOrder } from '../lib/payment-tracking';
 import type { PaymentOrder, PaymentProduct, User, UserPermission } from '../types/api';
 
 interface PermissionsProps {
@@ -256,11 +257,13 @@ export function Permissions({ authenticated, sessionLoading, user, csrfToken, on
       setPaymentOrders((current) => upsertPaymentOrder(current, order));
       if (order.status === 'paid' && order.applied_at) {
         setPollingOrderNo('');
+        clearRememberedPaymentOrder();
         if (!silent) {
           setPaymentNotice({ tone: 'success', message: `订单 ${order.out_trade_no} 已支付成功，权益已经发放。` });
         }
       } else if (order.status === 'failed' || order.status === 'refunded') {
         setPollingOrderNo('');
+        clearRememberedPaymentOrder();
       }
     } catch (refreshError) {
       if (!silent) {
@@ -286,6 +289,7 @@ export function Permissions({ authenticated, sessionLoading, user, csrfToken, on
       const order = await createMyPaymentOrder({ product_key: product.key, units }, csrfToken);
       setPaymentOrders((current) => upsertPaymentOrder(current, order));
       setPollingOrderNo(order.out_trade_no);
+      rememberLatestPaymentOrder(order.out_trade_no);
 
       const openedWindow = openTrustedPaymentWindow(order.payment_url);
       if (!openedWindow) {

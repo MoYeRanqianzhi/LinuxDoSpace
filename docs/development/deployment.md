@@ -73,6 +73,8 @@ For the split deployment model, the important public URLs are:
 - `APP_ADMIN_VERIFICATION_TTL=30m`
 - `APP_TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128`
 - `LINUXDO_OAUTH_REDIRECT_URL=https://api.example.com/v1/auth/callback`
+- `LINUXDO_CREDIT_NOTIFY_URL=https://api.example.com/v1/payments/linuxdo-credit/notify`
+- `LINUXDO_CREDIT_RETURN_URL=https://app.example.com/payments/callback`
 
 `APP_ALLOWED_ORIGINS` must include both frontend origins.
 
@@ -196,6 +198,13 @@ Public frontend recommended settings:
 - Build command: `npm run build`
 - Build output directory: `dist`
 - Required environment variable: `VITE_API_BASE_URL=https://api.example.com`
+
+Linux Do Credit return-route note:
+
+- Configure the LDC application return URL to `https://app.example.com/payments/callback`
+- This route is a dedicated frontend callback page that refreshes the order
+  explicitly, waits for asynchronous server-side notify processing, and then
+  guides the user back to the permissions page
 
 Admin frontend recommended settings:
 

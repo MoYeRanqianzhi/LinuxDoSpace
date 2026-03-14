@@ -13,13 +13,14 @@ import { Domains } from './pages/Domains';
 import { Emails } from './pages/Emails';
 import { Home } from './pages/Home';
 import { Login } from './pages/Login';
+import { PaymentCallback } from './pages/PaymentCallback';
 import { Permissions } from './pages/Permissions';
 import { Settings } from './pages/Settings';
 import { Supervision } from './pages/Supervision';
 import type { Allocation, ManagedDomain, MeResponse, User } from './types/api';
 
 // TabKey enumerates every client-side page supported by the public frontend.
-type TabKey = 'home' | 'domains' | 'emails' | 'settings' | 'permissions' | 'supervision' | 'login';
+type TabKey = 'home' | 'domains' | 'emails' | 'settings' | 'permissions' | 'supervision' | 'login' | 'payment_callback';
 
 // The anime background preference is browser-local so each visitor can decide
 // whether they want the third-party image layer without affecting anyone else.
@@ -45,6 +46,7 @@ const tabPathMap: Record<TabKey, string> = {
   permissions: '/permissions',
   supervision: '/supervision',
   login: '/login',
+  payment_callback: '/payments/callback',
 };
 
 // pathToTab converts the current pathname into the matching view key.
@@ -62,6 +64,8 @@ function pathToTab(pathname: string): TabKey {
       return 'supervision';
     case '/login':
       return 'login';
+    case '/payments/callback':
+      return 'payment_callback';
     default:
       return 'home';
   }
@@ -369,6 +373,11 @@ export default function App() {
     window.location.assign(getAuthLoginURL(tabPathMap[nextTab]));
   }
 
+  function beginLoginToPath(nextPath: string): void {
+    setAuthBanner('');
+    window.location.assign(getAuthLoginURL(nextPath));
+  }
+
   async function handleLogout(): Promise<void> {
     if (!session.csrfToken) {
       return;
@@ -446,6 +455,17 @@ export default function App() {
             csrfToken={session.csrfToken}
             onLogin={() => beginLogin('permissions')}
             onOpenEmails={() => navigateToTab('emails')}
+          />
+        );
+      case 'payment_callback':
+        return (
+          <PaymentCallback
+            authenticated={session.authenticated}
+            sessionLoading={sessionLoading}
+            user={session.user}
+            csrfToken={session.csrfToken}
+            onLogin={() => beginLoginToPath(`${window.location.pathname}${window.location.search}`)}
+            onOpenPermissions={() => navigateToTab('permissions')}
           />
         );
       case 'supervision':

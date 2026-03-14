@@ -117,10 +117,12 @@ Request example:
 
 ### `GET /v1/my/ldc/orders/{outTradeNo}`
 Returns one specific Linux Do Credit order for the current user.
-This endpoint also performs opportunistic reconciliation:
-- when the order is still pending, the backend may call the upstream query API
-- when the order is already paid but not yet applied locally, the backend
-  retries entitlement application before returning the response
+This endpoint is now read-only and returns the current locally stored state.
+
+### `POST /v1/my/ldc/orders/{outTradeNo}/refresh`
+Explicitly refreshes one current user's Linux Do Credit order against the upstream gateway.
+This endpoint requires `X-CSRF-Token` because it may update local payment state
+and trigger entitlement application.
 
 ### `GET /v1/my/ldc/orders`
 Returns the current authenticated user's recent Linux Do Credit orders.
@@ -522,7 +524,12 @@ Returns the full Linux Do Credit product set, including disabled items.
 Returns recent Linux Do Credit orders across all users for the administrator console.
 
 ### `GET /v1/admin/ldc/orders/{outTradeNo}`
-Returns one specific Linux Do Credit order and, when possible, refreshes it from the upstream gateway before responding.
+Returns one specific Linux Do Credit order without mutating its current state.
+
+### `POST /v1/admin/ldc/orders/{outTradeNo}/refresh`
+Explicitly refreshes one Linux Do Credit order from the upstream gateway.
+This endpoint requires an authenticated, password-verified admin session plus
+`X-CSRF-Token`.
 
 ### `PATCH /v1/admin/ldc/products/{productKey}`
 Updates one administrator-editable Linux Do Credit product row.
