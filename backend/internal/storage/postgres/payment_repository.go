@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -365,7 +366,13 @@ func (s *Store) UpdatePaymentOrderGatewayState(ctx context.Context, input Update
 	row := s.db.QueryRowContext(ctx, `
 UPDATE payment_orders
 SET
-    status = ?,
+    status = CASE
+        WHEN status = 'refunded' THEN status
+        WHEN status = 'paid' AND ? NOT IN ('paid', 'refunded') THEN status
+        WHEN status = 'failed' AND ? IN ('created', 'pending') THEN status
+        WHEN status = 'pending' AND ? = 'created' THEN status
+        ELSE ?
+    END,
     provider_trade_no = COALESCE(NULLIF(?, ''), provider_trade_no),
     payment_url = COALESCE(NULLIF(?, ''), payment_url),
     notify_payload_raw = COALESCE(NULLIF(?, ''), notify_payload_raw),
@@ -375,6 +382,9 @@ SET
 WHERE out_trade_no = ?
 RETURNING id
 `,
+		strings.TrimSpace(input.Status),
+		strings.TrimSpace(input.Status),
+		strings.TrimSpace(input.Status),
 		strings.TrimSpace(input.Status),
 		strings.TrimSpace(input.ProviderTradeNo),
 		strings.TrimSpace(input.PaymentURL),
@@ -395,49 +405,51 @@ RETURNING id
 // ApplyPaymentOrderEntitlement idempotently turns one paid order into actual
 // entitlements plus immutable quantity-ledger entries inside one transaction.
 func (s *Store) ApplyPaymentOrderEntitlement(ctx context.Context, input ApplyPaymentOrderEntitlementInput) (model.PaymentOrder, bool, error) {
+	outTradeNo := strings.TrimSpace(input.OutTradeNo)
+	appliedAt := input.AppliedAt.UTC()
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return model.PaymentOrder{}, false, err
 	}
 	defer tx.Rollback()
 
-	order, err := getPaymentOrderByOutTradeNoTx(ctx, tx, input.OutTradeNo)
+	order, claimed, err := claimPaymentOrderEntitlementTx(ctx, tx, outTradeNo, appliedAt)
 	if err != nil {
 		return model.PaymentOrder{}, false, err
 	}
-	if order.AppliedAt != nil {
-		if err := tx.Commit(); err != nil {
+	if !claimed {
+		order, err = getPaymentOrderByOutTradeNoTx(ctx, tx, outTradeNo)
+		if err != nil {
 			return model.PaymentOrder{}, false, err
 		}
-		return order, false, nil
-	}
-	if order.Status != model.PaymentOrderStatusPaid {
-		return model.PaymentOrder{}, false, fmt.Errorf("payment order %s is not paid", order.OutTradeNo)
+		if order.AppliedAt != nil {
+			if err := tx.Commit(); err != nil {
+				return model.PaymentOrder{}, false, err
+			}
+			return order, false, nil
+		}
+		if order.Status != model.PaymentOrderStatusPaid {
+			return model.PaymentOrder{}, false, fmt.Errorf("payment order %s is not paid", order.OutTradeNo)
+		}
+		return model.PaymentOrder{}, false, fmt.Errorf("payment order %s entitlement claim was not acquired", order.OutTradeNo)
 	}
 
 	switch order.EffectType {
 	case model.PaymentEffectEmailCatchAllSubscriptionDays:
-		if err := applyCatchAllSubscriptionDaysTx(ctx, tx, order, input.AppliedAt.UTC()); err != nil {
+		if err := applyCatchAllSubscriptionDaysTx(ctx, tx, order, appliedAt); err != nil {
 			return model.PaymentOrder{}, false, err
 		}
 	case model.PaymentEffectEmailCatchAllRemainingCount:
-		if err := applyCatchAllRemainingCountTx(ctx, tx, order, input.AppliedAt.UTC()); err != nil {
+		if err := applyCatchAllRemainingCountTx(ctx, tx, order, appliedAt); err != nil {
 			return model.PaymentOrder{}, false, err
 		}
 	case model.PaymentEffectPaymentTestCounter:
-		if err := insertPaymentQuantityRecordTx(ctx, tx, order.UserID, paymentQuantityResourceTestCount, paymentQuantityScopeGateway, order.GrantedTotal, order.Title, order.OutTradeNo, input.AppliedAt.UTC()); err != nil {
+		if err := insertPaymentQuantityRecordTx(ctx, tx, order.UserID, paymentQuantityResourceTestCount, paymentQuantityScopeGateway, order.GrantedTotal, order.Title, order.OutTradeNo, appliedAt); err != nil {
 			return model.PaymentOrder{}, false, err
 		}
 	default:
 		return model.PaymentOrder{}, false, fmt.Errorf("unsupported payment effect type %q", order.EffectType)
-	}
-
-	if _, err := tx.ExecContext(ctx, `
-UPDATE payment_orders
-SET applied_at = ?, updated_at = ?
-WHERE id = ?
-`, formatTime(input.AppliedAt.UTC()), formatTime(input.AppliedAt.UTC()), order.ID); err != nil {
-		return model.PaymentOrder{}, false, err
 	}
 
 	finalOrder, err := getPaymentOrderByOutTradeNoTx(ctx, tx, order.OutTradeNo)
@@ -449,6 +461,39 @@ WHERE id = ?
 		return model.PaymentOrder{}, false, err
 	}
 	return finalOrder, true, nil
+}
+
+// claimPaymentOrderEntitlementTx atomically reserves one paid order for
+// entitlement application by setting `applied_at` before side effects run.
+//
+// If any later grant step fails, the surrounding transaction rollback removes
+// the claim so another retry can safely attempt the entitlement again.
+func claimPaymentOrderEntitlementTx(ctx context.Context, tx *queryTx, outTradeNo string, appliedAt time.Time) (model.PaymentOrder, bool, error) {
+	row := tx.QueryRowContext(ctx, `
+UPDATE payment_orders
+SET applied_at = ?, updated_at = ?
+WHERE out_trade_no = ? AND status = ? AND applied_at IS NULL
+RETURNING out_trade_no
+`,
+		formatTime(appliedAt),
+		formatTime(appliedAt),
+		outTradeNo,
+		model.PaymentOrderStatusPaid,
+	)
+
+	var claimedOutTradeNo string
+	if err := row.Scan(&claimedOutTradeNo); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.PaymentOrder{}, false, nil
+		}
+		return model.PaymentOrder{}, false, err
+	}
+
+	order, err := getPaymentOrderByOutTradeNoTx(ctx, tx, claimedOutTradeNo)
+	if err != nil {
+		return model.PaymentOrder{}, false, err
+	}
+	return order, true, nil
 }
 
 // getPaymentOrderByID reloads one joined order row by local primary key.
@@ -520,6 +565,7 @@ SELECT
 FROM payment_orders po
 INNER JOIN users u ON u.id = po.user_id
 WHERE po.out_trade_no = ?
+FOR UPDATE
 `, strings.TrimSpace(outTradeNo))
 	return scanPaymentOrder(row)
 }

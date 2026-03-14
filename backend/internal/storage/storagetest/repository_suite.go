@@ -761,14 +761,18 @@ func RunRepositoryBehaviorSuite(t *testing.T, newStore Factory) {
 			t.Fatalf("mark concurrent payment order paid: %v", err)
 		}
 
+		const contenderCount = 8
+
 		var appliedCount atomic.Int32
 		var wg sync.WaitGroup
-		errs := make(chan error, 2)
+		start := make(chan struct{})
+		errs := make(chan error, contenderCount)
 
-		for range 2 {
+		for i := 0; i < contenderCount; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
+				<-start
 				_, applied, applyErr := store.ApplyPaymentOrderEntitlement(ctx, storage.ApplyPaymentOrderEntitlementInput{
 					OutTradeNo: order.OutTradeNo,
 					AppliedAt:  paidAt,
@@ -783,6 +787,7 @@ func RunRepositoryBehaviorSuite(t *testing.T, newStore Factory) {
 			}()
 		}
 
+		close(start)
 		wg.Wait()
 		close(errs)
 		for applyErr := range errs {
@@ -814,6 +819,100 @@ func RunRepositoryBehaviorSuite(t *testing.T, newStore Factory) {
 		}
 		if paymentReferenceCount != 1 {
 			t.Fatalf("expected exactly one payment-order quantity record after concurrent apply, got %d", paymentReferenceCount)
+		}
+	})
+
+	t.Run("payment order gateway state keeps terminal statuses monotonic", func(t *testing.T) {
+		ctx := context.Background()
+		store := newStore(t)
+
+		user := newTestUser(t, ctx, store, "paid-state-owner")
+		product, err := store.GetPaymentProduct(ctx, "payment_test")
+		if err != nil {
+			t.Fatalf("load payment product: %v", err)
+		}
+
+		paidAt := time.Now().UTC().Truncate(time.Second)
+		order, err := store.CreatePaymentOrder(ctx, storage.CreatePaymentOrderInput{
+			UserID:          user.ID,
+			ProductKey:      product.Key,
+			ProductName:     product.DisplayName,
+			Title:           product.DisplayName,
+			GatewayType:     model.PaymentGatewayLinuxDOCredit,
+			OutTradeNo:      "ORDER-PAID-MONOTONIC",
+			Status:          model.PaymentOrderStatusCreated,
+			Units:           1,
+			GrantQuantity:   product.GrantQuantity,
+			GrantedTotal:    product.GrantQuantity,
+			GrantUnit:       product.GrantUnit,
+			UnitPriceCents:  product.UnitPriceCents,
+			TotalPriceCents: product.UnitPriceCents,
+			EffectType:      product.EffectType,
+		})
+		if err != nil {
+			t.Fatalf("create payment order: %v", err)
+		}
+
+		order, err = store.UpdatePaymentOrderGatewayState(ctx, storage.UpdatePaymentOrderGatewayStateInput{
+			OutTradeNo:      order.OutTradeNo,
+			Status:          model.PaymentOrderStatusPaid,
+			ProviderTradeNo: "gateway-paid-monotonic",
+			PaidAt:          &paidAt,
+		})
+		if err != nil {
+			t.Fatalf("mark payment order paid: %v", err)
+		}
+		if order.Status != model.PaymentOrderStatusPaid {
+			t.Fatalf("expected paid status after initial update, got %q", order.Status)
+		}
+
+		paidCheckAt := paidAt.Add(time.Minute)
+		order, err = store.UpdatePaymentOrderGatewayState(ctx, storage.UpdatePaymentOrderGatewayStateInput{
+			OutTradeNo:    order.OutTradeNo,
+			Status:        model.PaymentOrderStatusPending,
+			LastCheckedAt: &paidCheckAt,
+		})
+		if err != nil {
+			t.Fatalf("attempt to downgrade paid order: %v", err)
+		}
+		if order.Status != model.PaymentOrderStatusPaid {
+			t.Fatalf("expected paid order status to remain monotonic, got %q", order.Status)
+		}
+		if order.PaidAt == nil {
+			t.Fatalf("expected paid_at to remain set after attempted downgrade")
+		}
+		if order.LastCheckedAt == nil || !order.LastCheckedAt.Equal(paidCheckAt) {
+			t.Fatalf("expected paid order last_checked_at %s after attempted downgrade, got %+v", paidCheckAt.Format(time.RFC3339Nano), order.LastCheckedAt)
+		}
+
+		refundedCheckAt := paidAt.Add(2 * time.Minute)
+		order, err = store.UpdatePaymentOrderGatewayState(ctx, storage.UpdatePaymentOrderGatewayStateInput{
+			OutTradeNo:    order.OutTradeNo,
+			Status:        model.PaymentOrderStatusRefunded,
+			LastCheckedAt: &refundedCheckAt,
+		})
+		if err != nil {
+			t.Fatalf("mark payment order refunded: %v", err)
+		}
+		if order.Status != model.PaymentOrderStatusRefunded {
+			t.Fatalf("expected refunded status after terminal transition, got %q", order.Status)
+		}
+
+		stalePaidCheckAt := paidAt.Add(3 * time.Minute)
+		order, err = store.UpdatePaymentOrderGatewayState(ctx, storage.UpdatePaymentOrderGatewayStateInput{
+			OutTradeNo:      order.OutTradeNo,
+			Status:          model.PaymentOrderStatusPaid,
+			ProviderTradeNo: "gateway-paid-stale",
+			LastCheckedAt:   &stalePaidCheckAt,
+		})
+		if err != nil {
+			t.Fatalf("attempt to downgrade refunded order: %v", err)
+		}
+		if order.Status != model.PaymentOrderStatusRefunded {
+			t.Fatalf("expected refunded order status to remain monotonic, got %q", order.Status)
+		}
+		if order.LastCheckedAt == nil || !order.LastCheckedAt.Equal(stalePaidCheckAt) {
+			t.Fatalf("expected refunded order last_checked_at %s after stale paid update, got %+v", stalePaidCheckAt.Format(time.RFC3339Nano), order.LastCheckedAt)
 		}
 	})
 
