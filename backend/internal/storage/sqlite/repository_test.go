@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"linuxdospace/backend/internal/model"
+	"linuxdospace/backend/internal/storage"
 )
 
 // TestMigrateRemainsIdempotentAfterAddingAdminSessionVerification ensures the
@@ -217,11 +218,174 @@ func TestUpdateAllocationReassignsPrimary(t *testing.T) {
 	}
 }
 
+// TestCreateAllocationReassignsPrimaryOnCreate verifies that promoting a new
+// allocation to primary automatically demotes the old primary in repository
+// code before the database unique index is even involved.
+func TestCreateAllocationReassignsPrimaryOnCreate(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+
+	user := newTestUser(t, ctx, store, "primary-owner")
+	managedDomain := newTestManagedDomain(t, ctx, store, "linuxdo.space")
+
+	originalPrimary := newTestAllocation(t, ctx, store, user, managedDomain, "alpha", "active", true)
+	replacementPrimary, err := store.CreateAllocation(ctx, CreateAllocationInput{
+		UserID:           user.ID,
+		ManagedDomainID:  managedDomain.ID,
+		Prefix:           "beta",
+		NormalizedPrefix: "beta",
+		FQDN:             "beta." + managedDomain.RootDomain,
+		IsPrimary:        true,
+		Source:           "test",
+		Status:           "active",
+	})
+	if err != nil {
+		t.Fatalf("create replacement primary allocation: %v", err)
+	}
+	if !replacementPrimary.IsPrimary {
+		t.Fatalf("expected replacement allocation to stay primary")
+	}
+
+	reloadedOriginalPrimary, err := store.GetAllocationByID(ctx, originalPrimary.ID)
+	if err != nil {
+		t.Fatalf("reload original primary allocation: %v", err)
+	}
+	if reloadedOriginalPrimary.IsPrimary {
+		t.Fatalf("expected original primary allocation to be demoted after replacement")
+	}
+
+	primaryCount := countPrimaryAllocationsForUserDomain(t, ctx, store, user.ID, managedDomain.ID)
+	if primaryCount != 1 {
+		t.Fatalf("expected exactly one primary allocation after replacement, got %d", primaryCount)
+	}
+}
+
+// TestConsumeOAuthStateConcurrentStoresOnlyOneSucceeds verifies that two
+// independent SQLite store instances cannot both consume the same OAuth state.
+func TestConsumeOAuthStateConcurrentStoresOnlyOneSucceeds(t *testing.T) {
+	ctx := context.Background()
+	databasePath := filepath.Join(t.TempDir(), "linuxdospace-race.sqlite")
+
+	firstStore := newTestStoreAtPath(t, databasePath)
+	secondStore := newTestStoreAtPath(t, databasePath)
+	for _, store := range []*Store{firstStore, secondStore} {
+		if _, err := store.db.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
+			t.Fatalf("set sqlite busy_timeout: %v", err)
+		}
+	}
+
+	state := model.OAuthState{
+		ID:           "oauth-state-concurrent",
+		CodeVerifier: "verifier",
+		NextPath:     "/oauth/callback",
+		ExpiresAt:    time.Now().UTC().Add(5 * time.Minute),
+		CreatedAt:    time.Now().UTC(),
+	}
+	if err := firstStore.SaveOAuthState(ctx, state); err != nil {
+		t.Fatalf("save oauth state: %v", err)
+	}
+
+	type consumeResult struct {
+		state model.OAuthState
+		err   error
+	}
+
+	start := make(chan struct{})
+	results := make(chan consumeResult, 2)
+
+	consume := func(store *Store) {
+		<-start
+		item, err := store.ConsumeOAuthState(ctx, state.ID)
+		results <- consumeResult{state: item, err: err}
+	}
+
+	go consume(firstStore)
+	go consume(secondStore)
+	close(start)
+
+	successCount := 0
+	notFoundCount := 0
+	for resultIndex := 0; resultIndex < 2; resultIndex++ {
+		result := <-results
+		if result.err == nil {
+			successCount++
+			if result.state.ID != state.ID {
+				t.Fatalf("expected consumed oauth state %q, got %q", state.ID, result.state.ID)
+			}
+			continue
+		}
+		if !storage.IsNotFound(result.err) {
+			t.Fatalf("expected not-found from losing consumer, got %v", result.err)
+		}
+		notFoundCount++
+	}
+
+	if successCount != 1 {
+		t.Fatalf("expected exactly one successful oauth state consume, got %d", successCount)
+	}
+	if notFoundCount != 1 {
+		t.Fatalf("expected exactly one not-found loser, got %d", notFoundCount)
+	}
+	if _, err := firstStore.GetOAuthState(ctx, state.ID); !storage.IsNotFound(err) {
+		t.Fatalf("expected oauth state %q to be gone after concurrent consume, got err=%v", state.ID, err)
+	}
+}
+
+// TestPrimaryAllocationUniqueIndexRejectsSecondPrimary verifies that the
+// SQLite partial unique index prevents two primary allocations for one user and
+// one managed domain even when a caller bypasses repository safeguards.
+func TestPrimaryAllocationUniqueIndexRejectsSecondPrimary(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+
+	user := newTestUser(t, ctx, store, "primary-index-owner")
+	managedDomain := newTestManagedDomain(t, ctx, store, "linuxdo.space")
+
+	primaryAllocation := newTestAllocation(t, ctx, store, user, managedDomain, "first-primary", "active", true)
+	secondaryAllocation := newTestAllocation(t, ctx, store, user, managedDomain, "second-primary", "active", false)
+
+	if _, err := store.db.ExecContext(ctx, `
+UPDATE allocations
+SET is_primary = 1, updated_at = ?
+WHERE id = ?
+`, formatTime(time.Now().UTC()), secondaryAllocation.ID); err == nil {
+		t.Fatalf("expected unique index to reject a second primary allocation")
+	}
+
+	primaryCount := countPrimaryAllocationsForUserDomain(t, ctx, store, user.ID, managedDomain.ID)
+	if primaryCount != 1 {
+		t.Fatalf("expected exactly one primary allocation after failed direct update, got %d", primaryCount)
+	}
+
+	reloadedPrimaryAllocation, err := store.GetAllocationByID(ctx, primaryAllocation.ID)
+	if err != nil {
+		t.Fatalf("reload original primary allocation: %v", err)
+	}
+	if !reloadedPrimaryAllocation.IsPrimary {
+		t.Fatalf("expected original primary allocation to remain primary")
+	}
+
+	reloadedSecondaryAllocation, err := store.GetAllocationByID(ctx, secondaryAllocation.ID)
+	if err != nil {
+		t.Fatalf("reload secondary allocation: %v", err)
+	}
+	if reloadedSecondaryAllocation.IsPrimary {
+		t.Fatalf("expected secondary allocation to remain non-primary after failed direct update")
+	}
+}
+
 // newTestStore 创建一个只用于当前测试的 sqlite store，并自动执行迁移。
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
 
-	store, err := NewStore(filepath.Join(t.TempDir(), "linuxdospace-test.sqlite"))
+	return newTestStoreAtPath(t, filepath.Join(t.TempDir(), "linuxdospace-test.sqlite"))
+}
+
+// newTestStoreAtPath 创建一个使用指定数据库路径的 sqlite store，并自动执行迁移。
+func newTestStoreAtPath(t *testing.T, databasePath string) *Store {
+	t.Helper()
+
+	store, err := NewStore(databasePath)
 	if err != nil {
 		t.Fatalf("new test store: %v", err)
 	}
@@ -280,9 +444,32 @@ func newTestManagedDomain(t *testing.T, ctx context.Context, store *Store, rootD
 	return item
 }
 
-// newTestAllocation 写入一条分配记录，方便后续为其补充 DNS 审计日志。
-func newTestAllocation(t *testing.T, ctx context.Context, store *Store, user model.User, managedDomain model.ManagedDomain, prefix string, status string) model.Allocation {
+// countPrimaryAllocationsForUserDomain returns the database-level number of
+// rows still marked as primary for one owner/domain pair.
+func countPrimaryAllocationsForUserDomain(t *testing.T, ctx context.Context, store *Store, userID int64, managedDomainID int64) int {
 	t.Helper()
+
+	row := store.db.QueryRowContext(ctx, `
+SELECT COUNT(1)
+FROM allocations
+WHERE user_id = ? AND managed_domain_id = ? AND is_primary = 1
+`, userID, managedDomainID)
+
+	var count int
+	if err := row.Scan(&count); err != nil {
+		t.Fatalf("count primary allocations for user %d domain %d: %v", userID, managedDomainID, err)
+	}
+	return count
+}
+
+// newTestAllocation 写入一条分配记录，方便后续为其补充 DNS 审计日志。
+func newTestAllocation(t *testing.T, ctx context.Context, store *Store, user model.User, managedDomain model.ManagedDomain, prefix string, status string, isPrimary ...bool) model.Allocation {
+	t.Helper()
+
+	primary := false
+	if len(isPrimary) > 0 {
+		primary = isPrimary[0]
+	}
 
 	item, err := store.CreateAllocation(ctx, CreateAllocationInput{
 		UserID:           user.ID,
@@ -290,7 +477,7 @@ func newTestAllocation(t *testing.T, ctx context.Context, store *Store, user mod
 		Prefix:           prefix,
 		NormalizedPrefix: prefix,
 		FQDN:             prefix + "." + managedDomain.RootDomain,
-		IsPrimary:        false,
+		IsPrimary:        primary,
 		Source:           "test",
 		Status:           status,
 	})

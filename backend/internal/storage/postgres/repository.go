@@ -323,37 +323,20 @@ WHERE id = ?
 
 // ConsumeOAuthState 原子地读取并删除一次性 OAuth state。
 func (s *Store) ConsumeOAuthState(ctx context.Context, stateID string) (model.OAuthState, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return model.OAuthState{}, err
-	}
-	defer tx.Rollback()
-
-	row := tx.QueryRowContext(ctx, `
-SELECT
+	// 用单条 DELETE ... RETURNING 语句完成“读取并消费”，避免两个并发请求
+	// 在“先 SELECT 后 DELETE”的窗口里同时读到同一条一次性 state。
+	row := s.db.QueryRowContext(ctx, `
+DELETE FROM oauth_states
+WHERE id = ?
+RETURNING
     id,
     code_verifier,
     next_path,
     expires_at,
     created_at
-FROM oauth_states
-WHERE id = ?
 `, stateID)
 
-	state, err := scanOAuthState(row)
-	if err != nil {
-		return model.OAuthState{}, err
-	}
-
-	if _, err := tx.ExecContext(ctx, `DELETE FROM oauth_states WHERE id = ?`, stateID); err != nil {
-		return model.OAuthState{}, err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return model.OAuthState{}, err
-	}
-
-	return state, nil
+	return scanOAuthState(row)
 }
 
 // DeleteOAuthState 删除一条已完成或已废弃的 OAuth state。
@@ -614,12 +597,14 @@ func (s *Store) CreateAllocation(ctx context.Context, input CreateAllocationInpu
 	}
 	defer tx.Rollback()
 
+	now := time.Now().UTC()
+
 	if input.IsPrimary {
 		if _, err := tx.ExecContext(ctx, `
 UPDATE allocations
 SET is_primary = 0, updated_at = ?
-WHERE user_id = ? AND managed_domain_id = ?
-`, formatTime(time.Now().UTC()), input.UserID, input.ManagedDomainID); err != nil {
+WHERE user_id = ? AND managed_domain_id = ? AND is_primary = 1
+`, formatTime(now), input.UserID, input.ManagedDomainID); err != nil {
 			return model.Allocation{}, err
 		}
 	}
@@ -658,8 +643,8 @@ RETURNING
 		boolToInt(input.IsPrimary),
 		input.Source,
 		input.Status,
-		formatTime(time.Now().UTC()),
-		formatTime(time.Now().UTC()),
+		formatTime(now),
+		formatTime(now),
 	)
 
 	var allocation model.Allocation
