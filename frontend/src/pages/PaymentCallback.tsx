@@ -23,7 +23,7 @@ interface CallbackNotice {
   message: string;
 }
 
-const maxRefreshAttempts = 8;
+const maxRefreshAttempts = 20;
 const refreshIntervalMilliseconds = 3000;
 
 // PaymentCallback is the dedicated browser return route for Linux Do Credit.
@@ -101,26 +101,9 @@ export function PaymentCallback({
   }
 
   async function resolveCandidateOrderNo(): Promise<string> {
-    if (callbackOutTradeNo) {
-      return callbackOutTradeNo;
-    }
-
-    const rememberedOrderNo = readRememberedPaymentOrder();
-    if (rememberedOrderNo) {
-      return rememberedOrderNo;
-    }
-
     const orders = await listMyPaymentOrders();
-    const rememberedCandidates = readRememberedPaymentOrders();
-    for (const candidateOrderNo of rememberedCandidates) {
-      const matchedOrder = orders.find((item) => item.out_trade_no === candidateOrderNo);
-      if (matchedOrder) {
-        return matchedOrder.out_trade_no;
-      }
-    }
-
-    const preferredOrder = orders.find((item) => isOrderAwaitingSettlement(item)) ?? orders[0];
-    return preferredOrder?.out_trade_no ?? '';
+    const matchedOrder = findBestMatchingOrder(orders, callbackOutTradeNo, callbackTradeNo);
+    return matchedOrder?.out_trade_no ?? '';
   }
 
   async function refreshOrder(outTradeNo: string, nextAttempt: number): Promise<void> {
@@ -179,20 +162,8 @@ export function PaymentCallback({
   async function tryLoadFallbackOrder(): Promise<PaymentOrder | null> {
     try {
       const orders = await listMyPaymentOrders();
-      if (resolvedOrderNo) {
-        const exactMatch = orders.find((item) => item.out_trade_no === resolvedOrderNo);
-        if (exactMatch) {
-          return exactMatch;
-        }
-      }
-      const rememberedCandidates = readRememberedPaymentOrders();
-      for (const candidateOrderNo of rememberedCandidates) {
-        const matchedOrder = orders.find((item) => item.out_trade_no === candidateOrderNo);
-        if (matchedOrder) {
-          return matchedOrder;
-        }
-      }
-      return orders.find((item) => isOrderAwaitingSettlement(item)) ?? orders[0] ?? null;
+      const matchedOrder = findBestMatchingOrder(orders, resolvedOrderNo || callbackOutTradeNo, callbackTradeNo);
+      return matchedOrder ?? null;
     } catch {
       return null;
     }
@@ -407,4 +378,40 @@ function formatLDC(valueInCents: number): string {
     minimumFractionDigits: valueInCents % 100 === 0 ? 0 : 2,
     maximumFractionDigits: 2,
   });
+}
+
+function findBestMatchingOrder(orders: PaymentOrder[], preferredOutTradeNo: string, callbackTradeNo: string): PaymentOrder | null {
+  const normalizedPreferredOutTradeNo = preferredOutTradeNo.trim();
+  if (normalizedPreferredOutTradeNo) {
+    const exactMatch = orders.find((item) => item.out_trade_no === normalizedPreferredOutTradeNo);
+    if (exactMatch) {
+      return exactMatch;
+    }
+  }
+
+  const normalizedCallbackTradeNo = callbackTradeNo.trim();
+  if (normalizedCallbackTradeNo) {
+    const providerMatch = orders.find((item) => item.provider_trade_no === normalizedCallbackTradeNo);
+    if (providerMatch) {
+      return providerMatch;
+    }
+  }
+
+  const rememberedOrderNo = readRememberedPaymentOrder();
+  if (rememberedOrderNo) {
+    const rememberedMatch = orders.find((item) => item.out_trade_no === rememberedOrderNo);
+    if (rememberedMatch) {
+      return rememberedMatch;
+    }
+  }
+
+  const rememberedCandidates = readRememberedPaymentOrders();
+  for (const candidateOrderNo of rememberedCandidates) {
+    const matchedOrder = orders.find((item) => item.out_trade_no === candidateOrderNo);
+    if (matchedOrder) {
+      return matchedOrder;
+    }
+  }
+
+  return orders.find((item) => isOrderAwaitingSettlement(item)) ?? orders[0] ?? null;
 }
