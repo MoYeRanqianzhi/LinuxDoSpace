@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { motion } from 'motion/react';
+import { AnimatePresence, motion } from 'motion/react';
 import { ArrowLeft, ArrowRight, CheckCircle2, Clock3, CreditCard, ExternalLink, Key, List, LoaderCircle, Send, ShieldAlert, ShieldPlus, Ticket, XCircle } from 'lucide-react';
 import { GlassCard } from '../components/GlassCard';
 import { GlassSelect, type GlassSelectOption } from '../components/GlassSelect';
@@ -518,6 +518,34 @@ function PaymentExchangeSection({
   onCreateOrder,
   onRefreshOrder,
 }: PaymentExchangeSectionProps) {
+  const [selectedProductKey, setSelectedProductKey] = useState('');
+  const [ordersOpen, setOrdersOpen] = useState(false);
+
+  useEffect(() => {
+    if (products.length === 0) {
+      setSelectedProductKey('');
+      return;
+    }
+    if (!products.some((item) => item.key === selectedProductKey)) {
+      setSelectedProductKey(products[0].key);
+    }
+  }, [products, selectedProductKey]);
+
+  const productOptions = useMemo<GlassSelectOption[]>(
+    () => products.map((item) => ({ value: item.key, label: item.display_name })),
+    [products],
+  );
+  const selectedProduct = useMemo(
+    () => products.find((item) => item.key === selectedProductKey) ?? null,
+    [products, selectedProductKey],
+  );
+  const selectedQuantity = selectedProduct ? Math.max(1, units[selectedProduct.key] ?? 1) : 1;
+  const selectedTotalPriceCents = selectedProduct ? selectedProduct.unit_price_cents * selectedQuantity : 0;
+  const selectedTotalGrant = selectedProduct ? selectedProduct.grant_quantity * selectedQuantity : 0;
+  const creating = selectedProduct ? creatingProductKey === selectedProduct.key : false;
+  const pendingOrderCount = orders.filter((order) => isOrderWaitingForRefresh(order)).length;
+  const selectedProductBehavior = selectedProduct ? describePaymentProductBehavior(selectedProduct) : null;
+
   return (
     <div className="mt-10 space-y-6">
       <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }}>
@@ -533,16 +561,37 @@ function PaymentExchangeSection({
                 当前兑换区已经接入真实后端。你可以直接创建 LDC 订单，系统会在支付完成后自动轮询并刷新本地权益状态。邮箱泛解析相关项目只负责增加订阅或额度，本身不会替代权限审核流程。
               </p>
             </div>
-            {!authenticated ? (
+            <div className="flex flex-wrap gap-3">
               <button
                 type="button"
-                onClick={onLogin}
-                className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 px-5 py-3 text-sm font-semibold text-white shadow-lg transition hover:from-emerald-600 hover:to-teal-700"
+                onClick={() => {
+                  if (!authenticated) {
+                    onLogin();
+                    return;
+                  }
+                  setOrdersOpen(true);
+                }}
+                className="inline-flex items-center justify-center gap-2 rounded-2xl border border-emerald-200 bg-white/70 px-5 py-3 text-sm font-semibold text-emerald-700 shadow-sm transition hover:bg-emerald-50 dark:border-emerald-900/40 dark:bg-black/30 dark:text-emerald-300 dark:hover:bg-emerald-900/20"
               >
-                <ArrowRight size={16} />
-                登录后兑换
+                <Ticket size={16} />
+                查看全部订单
+                {authenticated && orders.length > 0 ? (
+                  <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-bold text-emerald-700 dark:text-emerald-300">
+                    {pendingOrderCount > 0 ? `${pendingOrderCount} 待处理 / ${orders.length}` : `${orders.length} 条`}
+                  </span>
+                ) : null}
               </button>
-            ) : null}
+              {!authenticated ? (
+                <button
+                  type="button"
+                  onClick={onLogin}
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 px-5 py-3 text-sm font-semibold text-white shadow-lg transition hover:from-emerald-600 hover:to-teal-700"
+                >
+                  <ArrowRight size={16} />
+                  登录后兑换
+                </button>
+              ) : null}
+            </div>
           </div>
         </GlassCard>
       </motion.div>
@@ -552,150 +601,220 @@ function PaymentExchangeSection({
       {notice ? <InlineNotice tone={notice.tone} message={notice.message} /> : null}
       {loading ? <InlineNotice tone="info" message="正在同步 LDC 商品与订单状态..." /> : null}
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
-        <div className="space-y-6">
-          {products.map((product) => {
-            const quantity = Math.max(1, units[product.key] ?? 1);
-            const totalPriceCents = product.unit_price_cents * quantity;
-            const totalGrant = product.grant_quantity * quantity;
-            const creating = creatingProductKey === product.key;
+      <GlassCard>
+        {!loading && products.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-white/25 bg-white/25 px-5 py-8 text-sm leading-7 text-gray-600 dark:border-white/10 dark:bg-black/15 dark:text-gray-300">
+            当前没有可展示的 LDC 兑换项目。管理员可以先在后台启用或调整商品配置。
+          </div>
+        ) : (
+          <div className="space-y-6">
+            <div className="grid gap-5 lg:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
+              <div className="space-y-5">
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">选择兑换项目</label>
+                  <GlassSelect
+                    options={productOptions}
+                    value={selectedProductKey}
+                    onChange={setSelectedProductKey}
+                    placeholder={loading ? '正在加载兑换项目...' : '请选择一个兑换项目'}
+                    disabled={loading || products.length === 0}
+                  />
+                </div>
 
-            return (
-              <div key={product.key}>
-                <GlassCard>
-                <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
-                  <div className="flex-1">
+                {selectedProduct ? (
+                  <div className="rounded-[1.75rem] border border-white/20 bg-white/35 p-6 dark:border-white/10 dark:bg-black/20">
                     <div className="flex flex-wrap items-center gap-3">
-                      <div className="rounded-2xl bg-emerald-100 px-3 py-1 text-sm font-semibold text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">{product.display_name}</div>
-                      <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${product.enabled ? 'bg-sky-100 text-sky-700 dark:bg-sky-900/25 dark:text-sky-300' : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'}`}>
-                        {product.enabled ? '可兑换' : '已关闭'}
+                      <div className="rounded-2xl bg-emerald-100 px-3 py-1 text-sm font-semibold text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">
+                        {selectedProduct.display_name}
+                      </div>
+                      <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${selectedProduct.enabled ? 'bg-sky-100 text-sky-700 dark:bg-sky-900/25 dark:text-sky-300' : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'}`}>
+                        {selectedProduct.enabled ? '可兑换' : '已关闭'}
                       </span>
                     </div>
-                    <p className="mt-4 text-sm leading-7 text-gray-600 dark:text-gray-300">{product.description}</p>
-                    <div className="mt-4 grid gap-3 md:grid-cols-3">
-                      <StatCard title="单价" value={`${formatLDC(product.unit_price_cents)} LDC`} />
-                      <StatCard title="单份权益" value={formatGrantAmount(product.grant_quantity, product.grant_unit)} />
-                      <StatCard title="总权益" value={formatGrantAmount(totalGrant, product.grant_unit)} />
+
+                    <div className="mt-4 text-xl font-bold text-gray-900 dark:text-white">
+                      {selectedProductBehavior?.headline ?? selectedProduct.display_name}
+                    </div>
+                    <p className="mt-3 text-sm leading-7 text-gray-600 dark:text-gray-300">{selectedProduct.description}</p>
+                    {selectedProductBehavior?.detail ? (
+                      <p className="mt-3 text-sm leading-7 text-gray-600 dark:text-gray-300">{selectedProductBehavior.detail}</p>
+                    ) : null}
+
+                    <div className="mt-5 grid gap-3 md:grid-cols-3">
+                      <StatCard title="单价" value={`${formatLDC(selectedProduct.unit_price_cents)} LDC`} />
+                      <StatCard title="单份权益" value={formatGrantAmount(selectedProduct.grant_quantity, selectedProduct.grant_unit)} />
+                      <StatCard title="总权益" value={formatGrantAmount(selectedTotalGrant, selectedProduct.grant_unit)} />
                     </div>
                   </div>
-
-                  <div className="w-full max-w-sm rounded-3xl border border-white/20 bg-white/35 p-5 dark:border-white/10 dark:bg-black/20">
-                    <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">兑换数量</label>
-                    <input
-                      type="number"
-                      min={1}
-                      step={1}
-                      value={quantity}
-                      onChange={(event) => onChangeUnits(product.key, Number(event.target.value))}
-                      className="w-full rounded-2xl border border-gray-200 bg-white/70 px-4 py-3 text-gray-900 outline-none transition focus:ring-2 focus:ring-emerald-500 dark:border-gray-700 dark:bg-black/40 dark:text-white"
-                    />
-                    <div className="mt-3 text-sm leading-7 text-gray-600 dark:text-gray-300">
-                      本次合计：<span className="font-semibold text-gray-900 dark:text-white">{formatLDC(totalPriceCents)} LDC</span>
-                    </div>
-                    <button
-                      type="button"
-                      disabled={!product.enabled || creating}
-                      onClick={() => onCreateOrder(product)}
-                      className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 px-5 py-3 text-sm font-semibold text-white shadow-lg transition hover:from-emerald-600 hover:to-teal-700 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      {creating ? <LoaderCircle size={16} className="animate-spin" /> : <CreditCard size={16} />}
-                      {authenticated ? (creating ? '创建订单中...' : '立即创建 LDC 订单') : '登录后兑换'}
-                    </button>
-                    <div className="mt-3 text-xs leading-6 text-gray-500 dark:text-gray-400">
-                      创建成功后会在新标签页打开支付页，当前页面会自动轮询订单状态直到支付成功并完成权益发放。
-                    </div>
-                  </div>
-                </div>
-                </GlassCard>
-              </div>
-            );
-          })}
-
-          {!loading && products.length === 0 ? (
-            <GlassCard>
-              <div className="rounded-2xl border border-dashed border-white/25 bg-white/25 px-5 py-8 text-sm leading-7 text-gray-600 dark:border-white/10 dark:bg-black/15 dark:text-gray-300">
-                当前没有可展示的 LDC 兑换项目。管理员可以先在后台启用或调整商品配置。
-              </div>
-            </GlassCard>
-          ) : null}
-        </div>
-
-        <GlassCard className="overflow-hidden p-0">
-          <div className="border-b border-white/20 bg-white/20 px-5 py-4 dark:border-white/10 dark:bg-black/20">
-            <div className="flex items-center gap-2 text-lg font-bold text-gray-900 dark:text-white">
-              <Ticket size={18} className="text-emerald-500" />
-              最近订单
-            </div>
-            <div className="mt-1 text-sm text-gray-600 dark:text-gray-300">这里只展示你最近创建的 LDC 订单。待支付订单支持手动刷新，也会自动轮询。</div>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="min-w-full border-collapse text-left">
-              <thead>
-                <tr className="border-b border-white/10 bg-white/10 dark:border-white/5 dark:bg-black/10">
-                  <th className="px-5 py-4 text-sm font-semibold text-gray-900 dark:text-white">项目</th>
-                  <th className="px-5 py-4 text-sm font-semibold text-gray-900 dark:text-white">金额</th>
-                  <th className="px-5 py-4 text-sm font-semibold text-gray-900 dark:text-white">状态</th>
-                  <th className="px-5 py-4 text-sm font-semibold text-gray-900 dark:text-white">时间</th>
-                  <th className="px-5 py-4 text-right text-sm font-semibold text-gray-900 dark:text-white">操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {orders.map((order) => {
-                  const waiting = order.status === 'created' || order.status === 'pending' || (order.status === 'paid' && !order.applied_at);
-                  const status = describePaymentOrderStatus(order);
-                  return (
-                    <tr key={order.out_trade_no} className="border-b border-white/10 text-sm hover:bg-white/30 dark:border-white/5 dark:hover:bg-white/5">
-                      <td className="px-5 py-4">
-                        <div className="font-semibold text-gray-900 dark:text-white">{order.product_name}</div>
-                        <div className="mt-1 font-mono text-xs text-gray-500 dark:text-gray-400">{order.out_trade_no}</div>
-                      </td>
-                      <td className="px-5 py-4 text-gray-700 dark:text-gray-200">{formatLDC(order.total_price_cents)} LDC</td>
-                      <td className="px-5 py-4">
-                        <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${status.className}`}>{status.label}</span>
-                      </td>
-                      <td className="px-5 py-4 text-gray-600 dark:text-gray-300">
-                        <div>{formatDate(order.created_at)}</div>
-                        <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">{order.applied_at ? `发放 ${formatDate(order.applied_at)}` : order.paid_at ? `支付 ${formatDate(order.paid_at)}` : '尚未完成支付'}</div>
-                      </td>
-                      <td className="px-5 py-4">
-                        <div className="flex justify-end gap-2">
-                          {order.payment_url ? (
-                            <button
-                              type="button"
-                              onClick={() => openTrustedPaymentWindow(order.payment_url)}
-                              className="rounded-xl p-2 text-emerald-500 transition hover:bg-emerald-100 dark:hover:bg-emerald-900/25"
-                              aria-label={`打开订单 ${order.out_trade_no} 的支付页`}
-                            >
-                              <ExternalLink size={16} />
-                            </button>
-                          ) : null}
-                          {waiting ? (
-                            <button
-                              type="button"
-                              onClick={() => onRefreshOrder(order.out_trade_no)}
-                              className="rounded-xl px-3 py-2 text-xs font-semibold text-sky-700 transition hover:bg-sky-100 dark:text-sky-300 dark:hover:bg-sky-900/25"
-                            >
-                              刷新状态
-                            </button>
-                          ) : null}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-                {!loading && orders.length === 0 ? (
-                  <tr>
-                    <td colSpan={5} className="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
-                      {authenticated ? '当前还没有任何 LDC 订单。' : '登录后可查看你自己的 LDC 订单记录。'}
-                    </td>
-                  </tr>
                 ) : null}
-              </tbody>
-            </table>
+              </div>
+
+              <div className="rounded-[1.75rem] border border-white/20 bg-white/35 p-6 dark:border-white/10 dark:bg-black/20">
+                <div className="text-sm font-semibold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">本次操作</div>
+                <div className="mt-3 text-lg font-bold text-gray-900 dark:text-white">
+                  {selectedProductBehavior?.actionTitle ?? '请选择一个兑换项目'}
+                </div>
+                <div className="mt-3 text-sm leading-7 text-gray-600 dark:text-gray-300">
+                  {selectedProductBehavior?.actionDescription ?? '选择项目后，这里会显示对应的兑换内容、金额和操作入口。'}
+                </div>
+
+                <div className="mt-5">
+                  <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {selectedProductBehavior?.quantityLabel ?? '兑换数量'}
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={selectedQuantity}
+                    disabled={!selectedProduct}
+                    onChange={(event) => {
+                      if (!selectedProduct) return;
+                      onChangeUnits(selectedProduct.key, Number(event.target.value));
+                    }}
+                    className="w-full rounded-2xl border border-gray-200 bg-white/70 px-4 py-3 text-gray-900 outline-none transition focus:ring-2 focus:ring-emerald-500 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-700 dark:bg-black/40 dark:text-white"
+                  />
+                </div>
+
+                <div className="mt-4 rounded-2xl border border-white/15 bg-white/45 px-4 py-4 text-sm leading-7 text-gray-700 dark:border-white/10 dark:bg-black/25 dark:text-gray-200">
+                  <div>
+                    本次合计：
+                    <span className="ml-2 font-semibold text-gray-900 dark:text-white">{formatLDC(selectedTotalPriceCents)} LDC</span>
+                  </div>
+                  {selectedProductBehavior?.totalSummary ? (
+                    <div className="mt-2">{selectedProductBehavior.totalSummary(selectedTotalGrant)}</div>
+                  ) : null}
+                </div>
+
+                <button
+                  type="button"
+                  disabled={!selectedProduct || !selectedProduct.enabled || creating}
+                  onClick={() => {
+                    if (!selectedProduct) return;
+                    onCreateOrder(selectedProduct);
+                  }}
+                  className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 px-5 py-3 text-sm font-semibold text-white shadow-lg transition hover:from-emerald-600 hover:to-teal-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {creating ? <LoaderCircle size={16} className="animate-spin" /> : <CreditCard size={16} />}
+                  {!selectedProduct
+                    ? '请选择项目'
+                    : authenticated
+                      ? (creating ? '创建订单中...' : (selectedProductBehavior?.actionButtonLabel ?? '立即创建订单'))
+                      : '登录后兑换'}
+                </button>
+
+                <div className="mt-3 text-xs leading-6 text-gray-500 dark:text-gray-400">
+                  创建成功后会在新标签页打开支付页。订单详情已经移到“查看全部订单”，避免当前页面继续被订单表挤压。
+                </div>
+              </div>
+            </div>
           </div>
-        </GlassCard>
-      </div>
+        )}
+      </GlassCard>
+
+      <AnimatePresence>
+        {ordersOpen ? (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-6 backdrop-blur-sm"
+            onClick={() => setOrdersOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 20, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 20, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-5xl rounded-[2rem] border border-white/20 bg-white/85 shadow-2xl backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/88"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/15 px-6 py-5 dark:border-white/10">
+                <div>
+                  <div className="flex items-center gap-2 text-lg font-bold text-gray-900 dark:text-white">
+                    <Ticket size={18} className="text-emerald-500" />
+                    全部订单
+                  </div>
+                  <div className="mt-1 text-sm text-gray-600 dark:text-gray-300">待支付订单仍然支持手动刷新，支付页也可以从这里重新打开。</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setOrdersOpen(false)}
+                  className="rounded-2xl border border-white/20 bg-white/70 px-4 py-2 text-sm font-medium text-gray-900 transition hover:bg-white dark:border-white/10 dark:bg-black/35 dark:text-white dark:hover:bg-black/50"
+                >
+                  关闭
+                </button>
+              </div>
+
+              <div className="max-h-[70vh] overflow-auto">
+                <table className="min-w-full border-collapse text-left">
+                  <thead>
+                    <tr className="border-b border-white/10 bg-white/10 dark:border-white/5 dark:bg-black/10">
+                      <th className="px-5 py-4 text-sm font-semibold text-gray-900 dark:text-white">项目</th>
+                      <th className="px-5 py-4 text-sm font-semibold text-gray-900 dark:text-white">金额</th>
+                      <th className="px-5 py-4 text-sm font-semibold text-gray-900 dark:text-white">状态</th>
+                      <th className="px-5 py-4 text-sm font-semibold text-gray-900 dark:text-white">时间</th>
+                      <th className="px-5 py-4 text-right text-sm font-semibold text-gray-900 dark:text-white">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {orders.map((order) => {
+                      const waiting = isOrderWaitingForRefresh(order);
+                      const status = describePaymentOrderStatus(order);
+                      return (
+                        <tr key={order.out_trade_no} className="border-b border-white/10 text-sm hover:bg-white/30 dark:border-white/5 dark:hover:bg-white/5">
+                          <td className="px-5 py-4">
+                            <div className="font-semibold text-gray-900 dark:text-white">{order.product_name}</div>
+                            <div className="mt-1 font-mono text-xs text-gray-500 dark:text-gray-400">{order.out_trade_no}</div>
+                          </td>
+                          <td className="px-5 py-4 text-gray-700 dark:text-gray-200">{formatLDC(order.total_price_cents)} LDC</td>
+                          <td className="px-5 py-4">
+                            <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${status.className}`}>{status.label}</span>
+                          </td>
+                          <td className="px-5 py-4 text-gray-600 dark:text-gray-300">
+                            <div>{formatDate(order.created_at)}</div>
+                            <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">{order.applied_at ? `发放 ${formatDate(order.applied_at)}` : order.paid_at ? `支付 ${formatDate(order.paid_at)}` : '尚未完成支付'}</div>
+                          </td>
+                          <td className="px-5 py-4">
+                            <div className="flex justify-end gap-2">
+                              {order.payment_url ? (
+                                <button
+                                  type="button"
+                                  onClick={() => openTrustedPaymentWindow(order.payment_url)}
+                                  className="rounded-xl p-2 text-emerald-500 transition hover:bg-emerald-100 dark:hover:bg-emerald-900/25"
+                                  aria-label={`打开订单 ${order.out_trade_no} 的支付页`}
+                                >
+                                  <ExternalLink size={16} />
+                                </button>
+                              ) : null}
+                              {waiting ? (
+                                <button
+                                  type="button"
+                                  onClick={() => onRefreshOrder(order.out_trade_no)}
+                                  className="rounded-xl px-3 py-2 text-xs font-semibold text-sky-700 transition hover:bg-sky-100 dark:text-sky-300 dark:hover:bg-sky-900/25"
+                                >
+                                  刷新状态
+                                </button>
+                              ) : null}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {!loading && orders.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="px-5 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+                          {authenticated ? '当前还没有任何 LDC 订单。' : '登录后可查看你自己的 LDC 订单记录。'}
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+            </motion.div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </div>
   );
 }
@@ -966,6 +1085,55 @@ function openTrustedPaymentWindow(rawURL: string): Window | null {
     return window.open(parsedURL.toString(), '_blank', 'noopener,noreferrer');
   } catch {
     return null;
+  }
+}
+
+function isOrderWaitingForRefresh(order: PaymentOrder): boolean {
+  return order.status === 'created' || order.status === 'pending' || (order.status === 'paid' && !order.applied_at);
+}
+
+function describePaymentProductBehavior(product: PaymentProduct) {
+  switch (product.effect_type) {
+    case 'email_catch_all_subscription_days':
+      return {
+        headline: '为邮箱泛解析增加订阅时长',
+        detail: '该项目会直接顺延邮箱泛解析的订阅到期时间。只有已经通过邮箱泛解析权限审核的用户才能实际使用。',
+        quantityLabel: '购买份数',
+        actionTitle: '创建订阅订单',
+        actionDescription: '每份都会按当前配置增加固定订阅天数。支付完成后，后端会自动发放并刷新状态。',
+        actionButtonLabel: '创建订阅订单',
+        totalSummary: (totalGrant: number) => `本次将增加 ${formatGrantAmount(totalGrant, product.grant_unit)} 的订阅时长。`,
+      };
+    case 'email_catch_all_remaining_count':
+      return {
+        headline: '为邮箱泛解析增加可用额度',
+        detail: '该项目会增加邮箱泛解析剩余可用次数。它不会替代权限审核，只负责在权限通过后增加可用资源。',
+        quantityLabel: '购买份数',
+        actionTitle: '创建额度订单',
+        actionDescription: '每份都会按当前配置增加固定额度，适合已经开通邮箱泛解析后继续扩容。',
+        actionButtonLabel: '创建额度订单',
+        totalSummary: (totalGrant: number) => `本次将增加 ${formatGrantAmount(totalGrant, product.grant_unit)} 的可用额度。`,
+      };
+    case 'payment_test_counter':
+      return {
+        headline: '验证支付链路是否工作正常',
+        detail: '该项目不会给主业务权限加额度，只用于验证 LDC 支付、回调和订单状态刷新链路是否正常。',
+        quantityLabel: '测试份数',
+        actionTitle: '创建测试订单',
+        actionDescription: '适合在正式兑换前先做一次小额验证，确认当前账号与支付环境都已经配置正常。',
+        actionButtonLabel: '创建测试订单',
+        totalSummary: (totalGrant: number) => `本次会记录 ${formatGrantAmount(totalGrant, product.grant_unit)} 的支付测试次数。`,
+      };
+    default:
+      return {
+        headline: product.display_name,
+        detail: product.description,
+        quantityLabel: '购买份数',
+        actionTitle: '创建订单',
+        actionDescription: '选择数量后直接创建订单，支付完成后由后端自动发放对应权益。',
+        actionButtonLabel: '创建订单',
+        totalSummary: (totalGrant: number) => `本次将发放 ${formatGrantAmount(totalGrant, product.grant_unit)}。`,
+      };
   }
 }
 
