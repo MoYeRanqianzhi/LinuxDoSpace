@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added per-user proof-of-work welfare challenges under the public permissions page, with server-generated Argon2id puzzles, browser-worker solving, daily UTC claim limits, and atomic reward grants into `email_catch_all_remaining_count`.
 - Added Linux Do Credit purchase products, local payment orders, EasyPay-compatible signature verification, asynchronous notify handling, and idempotent entitlement application for catch-all subscription days, catch-all quota, and payment-test purchases.
 - Added administrator Linux Do Credit order APIs plus a dedicated admin order-management page for cross-user purchase inspection and manual status refresh.
 - Added dual runtime billing modes for `email_catch_all`: subscription time and prepaid remaining count, with subscription taking priority and all catch-all mail still capped by a configurable per-user UTC-day limit.

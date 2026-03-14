@@ -4,6 +4,7 @@ import type {
   APIErrorBody,
   AvailabilityResult,
   CreatePaymentOrderInput,
+  CreatePOWChallengeInput,
   CreateAllocationInput,
   CreateMyEmailTargetInput,
   DNSRecord,
@@ -14,6 +15,10 @@ import type {
   SupervisionEntry,
   PaymentOrder,
   PaymentProduct,
+  POWChallenge,
+  POWStatus,
+  SubmitPOWChallengeInput,
+  SubmitPOWChallengeResult,
   UpsertMyCatchAllEmailRouteInput,
   UpsertMyDefaultEmailRouteInput,
   UpsertDNSRecordInput,
@@ -231,6 +236,34 @@ export function listMyPermissions(): Promise<UserPermission[]> {
 // listMyPaymentOrders returns the authenticated user's recent LDC orders.
 export function listMyPaymentOrders(): Promise<PaymentOrder[]> {
   return request<PaymentOrder[]>('/v1/my/ldc/orders');
+}
+
+// getMyPOWStatus returns the authenticated user's proof-of-work dashboard state.
+export function getMyPOWStatus(): Promise<POWStatus> {
+  return request<POWStatus>('/v1/my/pow/status');
+}
+
+// createMyPOWChallenge replaces any older active challenge with one new puzzle.
+export function createMyPOWChallenge(input: CreatePOWChallengeInput, csrfToken: string): Promise<POWChallenge> {
+  return request<POWChallenge>('/v1/my/pow/challenges', {
+    method: 'POST',
+    headers: {
+      'X-CSRF-Token': csrfToken,
+    },
+    body: JSON.stringify(input),
+  });
+}
+
+// claimMyPOWChallenge submits one browser-computed nonce so the backend can
+// verify the proof of work and grant the reward atomically.
+export function claimMyPOWChallenge(input: SubmitPOWChallengeInput, csrfToken: string): Promise<SubmitPOWChallengeResult> {
+  return request<SubmitPOWChallengeResult>('/v1/my/pow/challenges/claim', {
+    method: 'POST',
+    headers: {
+      'X-CSRF-Token': csrfToken,
+    },
+    body: JSON.stringify(input),
+  });
 }
 
 // getMyPaymentOrder reads one specific order without triggering a refresh.

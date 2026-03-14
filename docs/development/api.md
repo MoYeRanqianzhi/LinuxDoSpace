@@ -98,6 +98,62 @@ Each record contains:
 Returns the current authenticated user's derived non-zero quantity balances.
 The backend sums only non-expired ledger entries and groups them by `resource_key + scope`.
 
+### `GET /v1/my/pow/status`
+Returns the authenticated user's proof-of-work dashboard state.
+
+The payload includes:
+- the currently enabled benefit options
+- the supported difficulty options
+- the fixed daily completion cap
+- how many rewards were already claimed today
+- how many claims remain today
+- the current accumulated `email_catch_all_remaining_count`
+- the current active challenge, when one exists
+
+Important behavior:
+- difficulty is measured in leading zero **bits**, not hexadecimal digits
+- each user can keep only one active challenge at a time
+- generating a new challenge always supersedes the previous active one
+- the backend remains the only trusted source for challenge generation and verification
+
+### `POST /v1/my/pow/challenges`
+Creates or replaces the current authenticated user's active proof-of-work challenge.
+This endpoint requires `X-CSRF-Token`.
+
+Request example:
+
+```json
+{
+  "benefit_key": "email_catch_all_remaining_count",
+  "difficulty": 6
+}
+```
+
+Current constraints:
+- `benefit_key` currently only supports `email_catch_all_remaining_count`
+- `difficulty` must be one of `3`, `6`, `9`, or `12`
+- once the user already claimed 5 rewards in the current UTC day, the backend returns `429`
+
+### `POST /v1/my/pow/challenges/claim`
+Submits one browser-computed nonce for the current authenticated user's active challenge.
+This endpoint requires `X-CSRF-Token`.
+
+The backend:
+- reloads the currently active challenge for the user
+- recomputes the Argon2id hash using the stored challenge token and salt
+- verifies the leading-zero-bit target server-side
+- enforces the per-user UTC-day completion cap
+- atomically grants the reward and writes one immutable quantity-ledger row
+
+Request example:
+
+```json
+{
+  "challenge_id": 42,
+  "nonce": "183"
+}
+```
+
 ### `GET /v1/my/ldc/orders`
 Returns the current authenticated user's recent Linux Do Credit orders.
 

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { ArrowLeft, ArrowRight, CheckCircle2, Clock3, CreditCard, ExternalLink, Key, List, LoaderCircle, Send, ShieldAlert, ShieldPlus, Ticket, XCircle } from 'lucide-react';
+import { POWBenefitSection } from '../components/POWBenefitSection';
 import { GlassCard } from '../components/GlassCard';
 import { GlassSelect, type GlassSelectOption } from '../components/GlassSelect';
 import { APIError, createMyPaymentOrder, listMyPaymentOrders, listMyPermissions, listPublicPaymentProducts, refreshMyPaymentOrder } from '../lib/api';
@@ -486,6 +487,14 @@ export function Permissions({ authenticated, sessionLoading, user, csrfToken, on
         }
         onCreateOrder={(product) => void handleCreatePaymentOrder(product)}
         onRefreshOrder={(outTradeNo) => void refreshOnePaymentOrder(outTradeNo)}
+      />
+
+      <POWBenefitSection
+        authenticated={authenticated}
+        csrfToken={csrfToken}
+        catchAllPermission={permissionMap.get(emailCatchAllPermissionKey) ?? null}
+        onLogin={onLogin}
+        onRewardClaimed={loadPermissions}
       />
     </div>
   );

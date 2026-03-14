@@ -174,6 +174,67 @@ export interface PaymentOrder {
   updated_at: string;
 }
 
+// POWBenefitOption mirrors one currently selectable proof-of-work reward type.
+export interface POWBenefitOption {
+  key: string;
+  display_name: string;
+  description: string;
+  reward_unit: string;
+  enabled: boolean;
+}
+
+// POWDifficultyOption mirrors one selectable proof-of-work difficulty entry.
+export interface POWDifficultyOption {
+  value: number;
+  label: string;
+  description: string;
+  reward_multiplier: number;
+}
+
+// POWChallenge mirrors one backend-generated proof-of-work puzzle row.
+export interface POWChallenge {
+  id: number;
+  benefit_key: string;
+  benefit_display_name: string;
+  difficulty: number;
+  base_reward: number;
+  reward_quantity: number;
+  reward_unit: string;
+  challenge_token: string;
+  salt_hex: string;
+  argon2_variant: string;
+  argon2_memory_kib: number;
+  argon2_iterations: number;
+  argon2_parallelism: number;
+  argon2_hash_length: number;
+  status: string;
+  claimed_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// POWStatus mirrors the full proof-of-work dashboard state returned by the backend.
+export interface POWStatus {
+  benefits: POWBenefitOption[];
+  difficulty_options: POWDifficultyOption[];
+  max_daily_completions: number;
+  completed_today: number;
+  remaining_today: number;
+  current_remaining_count: number;
+  current_challenge?: POWChallenge;
+}
+
+// SubmitPOWChallengeResult mirrors the successful claim payload returned after
+// the backend verifies and grants one proof-of-work reward.
+export interface SubmitPOWChallengeResult {
+  challenge: POWChallenge;
+  granted_quantity: number;
+  reward_unit: string;
+  current_remaining_count: number;
+  completed_today: number;
+  remaining_today: number;
+}
+
 // EmailRouteAvailabilityResult mirrors the public mailbox search result.
 export interface EmailRouteAvailabilityResult {
   root_domain: string;
@@ -290,4 +351,18 @@ export interface CreateMyEmailTargetInput {
 export interface CreatePaymentOrderInput {
   product_key: string;
   units: number;
+}
+
+// CreatePOWChallengeInput mirrors one authenticated request to replace the
+// current proof-of-work challenge.
+export interface CreatePOWChallengeInput {
+  benefit_key: string;
+  difficulty: number;
+}
+
+// SubmitPOWChallengeInput mirrors one browser-computed nonce candidate that
+// should be verified by the backend.
+export interface SubmitPOWChallengeInput {
+  challenge_id: number;
+  nonce: string;
 }
