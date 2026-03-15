@@ -2,7 +2,7 @@ package httpapi
 
 import (
 	"context"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"linuxdospace/backend/internal/model"
@@ -41,11 +41,11 @@ type adminPasswordAttemptStore interface {
 // both session ID and client IP so attackers cannot brute-force the endpoint by
 // rotating only one side of the request identity.
 type adminPasswordLimiter struct {
-	mu            sync.Mutex
 	store         adminPasswordAttemptStore
 	maxFailures   int
 	blockDuration time.Duration
 	stateTTL      time.Duration
+	lastCleanupAt atomic.Int64
 }
 
 // newAdminPasswordLimiter constructs one in-memory limiter tuned for the admin
@@ -66,9 +66,6 @@ func (l *adminPasswordLimiter) Check(ctx context.Context, sessionID string, clie
 		return 0, false
 	}
 
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
 	l.cleanup(ctx, now)
 	blockedUntil := l.maxBlockedUntil(ctx, now, sessionID, clientIP)
 	if blockedUntil.IsZero() {
@@ -84,9 +81,6 @@ func (l *adminPasswordLimiter) RegisterFailure(ctx context.Context, sessionID st
 		return
 	}
 
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
 	l.cleanup(ctx, now)
 	l.registerFailureForKey(ctx, adminPasswordBucketSession, sessionID, now)
 	l.registerFailureForKey(ctx, adminPasswordBucketIP, clientIP, now)
@@ -99,9 +93,6 @@ func (l *adminPasswordLimiter) Reset(ctx context.Context, sessionID string, clie
 	if l == nil {
 		return
 	}
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
 
 	_ = l.deleteAttempt(ctx, adminPasswordBucketSession, sessionID)
 	_ = l.deleteAttempt(ctx, adminPasswordBucketIP, clientIP)
@@ -136,6 +127,21 @@ func (l *adminPasswordLimiter) cleanup(ctx context.Context, now time.Time) {
 	if l.store == nil {
 		return
 	}
+
+	cleanupInterval := l.stateTTL / 4
+	if cleanupInterval <= 0 {
+		cleanupInterval = time.Minute
+	}
+
+	lastCleanupAt := l.lastCleanupAt.Load()
+	nowUnix := now.UTC().UnixNano()
+	if lastCleanupAt != 0 && nowUnix-lastCleanupAt < cleanupInterval.Nanoseconds() {
+		return
+	}
+	if !l.lastCleanupAt.CompareAndSwap(lastCleanupAt, nowUnix) {
+		return
+	}
+
 	_ = l.store.DeleteStaleAdminPasswordAttempts(ctx, now.Add(-l.stateTTL), now)
 }
 
