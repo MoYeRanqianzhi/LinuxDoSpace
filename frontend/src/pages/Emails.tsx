@@ -61,7 +61,6 @@ interface ChipDescriptor {
 
 const catchAllPermissionKey = 'email_catch_all';
 const fallbackRootDomain = 'linuxdo.space';
-const emailCatchAllMaintenanceMessage = '邮箱泛解析功能还在修 bug，敬请期待。';
 
 // Emails keeps mailbox search public while forcing authenticated users to bind
 // forwarding targets first and only then select verified targets for routing.
@@ -731,23 +730,105 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
                 </div>
               </div>
 
-              <InlineNotice tone="info" message={emailCatchAllMaintenanceMessage} />
-              <div className="rounded-2xl border border-amber-300/35 bg-amber-50/80 p-4 text-sm leading-7 text-amber-900 dark:border-amber-500/20 dark:bg-amber-950/25 dark:text-amber-100">
-                当前仅暂时保留展示区块，申请、承诺书查看和转发配置入口已临时下线，避免继续触发错误流程。
-              </div>
-              <div className="grid gap-3 md:grid-cols-2">
-                <InfoStat title="目标地址" value={catchAllAddress} mono />
-                <InfoStat title="当前状态" value="维护中" />
-              </div>
-              {/* 原有邮箱泛解析申请与配置控件暂时下线，等待真实 catch-all 方案修复后再恢复。 */}
-              {/*
               {permissionError ? <InlineNotice tone="error" message={`权限数据加载失败：${permissionError}`} /> : null}
               {catchAllNotice ? <InlineNotice tone={catchAllNotice.tone} message={catchAllNotice.message} /> : null}
               {catchAllTargetNeedsVerification && catchAllRoute?.target_email ? (
                 <InlineNotice tone="info" message={`当前已保存的邮箱泛解析目标邮箱 ${catchAllRoute.target_email} 尚未完成验证。完成验证后刷新状态，或改选其他已验证目标邮箱。`} />
               ) : null}
-              {!permission && !permissionError ? <InlineNotice tone="info" message="当前后端没有返回邮箱泛解析权限配置，因此暂时无法申请或管理此功能。" /> : null}
-              */}
+              {!permission && !permissionError ? <InlineNotice tone="info" message="当前后端没有返回邮箱泛解析权限配置，暂时无法管理此功能。" /> : null}
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <InfoStat title="目标地址" value={catchAllAddress} mono />
+                <InfoStat title="当前状态" value={describePermissionStatusLabel(permission?.status)} />
+              </div>
+
+              {permission ? (
+                <>
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <InfoStat title="审核状态" value={describePermissionStatusLabel(permission.status)} />
+                    <InfoStat title="最低等级" value={`TL ${permission.min_trust_level}`} />
+                    <InfoStat title="当前模式" value={describeCatchAllAccessMode(permission)} />
+                  </div>
+
+                  {permission.eligibility_reasons.length > 0 ? (
+                    <div className="rounded-2xl border border-amber-300/35 bg-amber-50/80 p-4 text-sm leading-7 text-amber-900 dark:border-amber-500/20 dark:bg-amber-950/25 dark:text-amber-100">
+                      <div className="mb-2 font-semibold">当前暂不可直接申请：</div>
+                      <div className="space-y-1">
+                        {permission.eligibility_reasons.map((reason) => (
+                          <div key={reason}>- {formatEligibilityReason(reason, permission)}</div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {permission.application ? (
+                    <div className="rounded-2xl border border-white/15 bg-white/35 p-4 text-sm leading-7 text-gray-700 dark:border-white/10 dark:bg-black/20 dark:text-gray-200">
+                      <div>最近申请：{formatDate(permission.application.created_at)}</div>
+                      <div>最近变更：{formatDate(permission.application.updated_at)}</div>
+                      <div>审核备注：{permission.application.review_note || '暂无审核备注'}</div>
+                    </div>
+                  ) : null}
+
+                  {permission.can_manage_route ? (
+                    <form className="space-y-4" onSubmit={(event) => void handleSaveCatchAll(event)}>
+                      <div className="space-y-2">
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">已验证的转发目标</label>
+                        <GlassSelect
+                          options={selectableTargetOptions}
+                          value={catchAllTarget}
+                          onChange={setCatchAllTarget}
+                          placeholder={verifiedTargets.length > 0 ? '请选择已验证的目标邮箱' : '暂无已验证的目标邮箱'}
+                          disabled={savingCatchAll}
+                        />
+                        <div className="text-sm leading-7 text-gray-600 dark:text-gray-300">保存后会把整段命名空间 {catchAllAddress} 转发到所选目标邮箱。只有已经绑定到你账号且完成 Cloudflare 验证的邮箱，才允许被设置为转发目标。</div>
+                      </div>
+
+                      <ToggleSwitch
+                        title="启用邮箱泛解析转发"
+                        description="关闭后会保留命名空间地址，但暂停整个命名空间的邮件转发。"
+                        checked={catchAllEnabled}
+                        onCheckedChange={setCatchAllEnabled}
+                        disabled={savingCatchAll}
+                      />
+
+                      <div className="rounded-2xl border border-white/15 bg-white/35 p-4 text-sm leading-7 text-gray-700 dark:border-white/10 dark:bg-black/20 dark:text-gray-200">
+                        当前 catch-all 额度与订阅状态由后端实时判断。父域默认邮箱仍然走 Cloudflare 精确转发，子域命名空间邮件则由服务端 relay 处理。
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={savingCatchAll}
+                        className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-violet-500 to-fuchsia-600 px-5 py-3 font-semibold text-white shadow-lg transition hover:from-violet-600 hover:to-fuchsia-700 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {savingCatchAll ? <LoaderCircle className="animate-spin" size={18} /> : <Sparkles size={18} />}
+                        保存邮箱泛解析
+                      </button>
+                    </form>
+                  ) : (
+                    <div className="rounded-2xl border border-white/15 bg-white/35 p-4 text-sm leading-7 text-gray-700 dark:border-white/10 dark:bg-black/20 dark:text-gray-200">
+                      <div className="mb-4">当前还没有获得邮箱泛解析配置权限。你可以先查看承诺书，再通过按钮提交申请。</div>
+                      <div className="flex flex-wrap gap-3">
+                        <button
+                          type="button"
+                          onClick={() => setPledgeModalOpen(true)}
+                          className="rounded-2xl border border-white/20 bg-white/70 px-4 py-3 font-medium text-gray-900 transition hover:bg-white dark:border-white/10 dark:bg-black/35 dark:text-white dark:hover:bg-black/50"
+                        >
+                          查看承诺书
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!permission.can_apply || applyingPermission}
+                          onClick={() => setPledgeModalOpen(true)}
+                          className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-sky-500 to-cyan-500 px-5 py-3 font-semibold text-white shadow-lg transition hover:from-sky-600 hover:to-cyan-600 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {applyingPermission ? <LoaderCircle className="animate-spin" size={18} /> : <Sparkles size={18} />}
+                          {permission.can_apply ? '查看承诺书并申请' : '当前不可申请'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </>
+              ) : null}
             </GlassCard>
           </div>
         </div>
@@ -908,6 +989,31 @@ function describeSearchStatus(status: SearchStatus): ChipDescriptor {
       return { label: '查询失败', className: 'bg-red-100 text-red-700 dark:bg-red-900/25 dark:text-red-300' };
     default:
       return { label: '等待查询', className: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300' };
+  }
+}
+
+function describePermissionStatusLabel(status?: PermissionStatus): string {
+  switch (status) {
+    case 'approved':
+      return '已通过';
+    case 'pending':
+      return '待审核';
+    case 'rejected':
+      return '未通过';
+    default:
+      return '尚未申请';
+  }
+}
+
+function describeCatchAllAccessMode(permission: UserPermission): string {
+  if (!permission.catch_all_access) return '未开通';
+  switch (permission.catch_all_access.access_mode) {
+    case 'subscription':
+      return '订阅时长';
+    case 'quantity':
+      return '按量额度';
+    default:
+      return permission.status === 'approved' ? '已授权' : '未开通';
   }
 }
 

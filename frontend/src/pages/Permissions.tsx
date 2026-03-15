@@ -45,8 +45,6 @@ interface PaymentNotice {
 }
 
 const emailCatchAllPermissionKey = 'email_catch_all';
-const emailCatchAllMaintenanceEnabled = true;
-const emailCatchAllMaintenanceMessage = '邮箱泛解析功能还在修 bug，敬请期待。';
 
 // builtinCatalog 恢复原权限页的多入口结构，同时明确哪些入口已经真实接入。
 const builtinCatalog: CatalogItem[] = [
@@ -56,8 +54,8 @@ const builtinCatalog: CatalogItem[] = [
     selectLabel: '二级域名邮箱泛解析',
     typeLabel: '邮箱泛解析',
     stage: 'live',
-    description: '该权限当前正在修复实现问题，前端入口已临时切换为维护状态。真实 catch-all 方案确认后会恢复申请与配置流程。',
-    hint: '还在修 bug，敬请期待。',
+    description: '为与你用户名同名的默认二级域名开启整段邮件命名空间的泛解析转发。',
+    hint: '登录后可查看真实权限状态，并前往邮箱页面提交申请或管理转发目标。',
     target: (user) => `*@${normalizeIdentity(user?.username ?? 'username')}.linuxdo.space`,
   },
   {
@@ -317,7 +315,6 @@ export function Permissions({ authenticated, sessionLoading, user, csrfToken, on
       onLogin();
       return;
     }
-    if (emailCatchAllMaintenanceEnabled && selectedItem?.key === emailCatchAllPermissionKey) return;
     if (selectedItem?.key === emailCatchAllPermissionKey) onOpenEmails();
   }
 
@@ -428,22 +425,10 @@ export function Permissions({ authenticated, sessionLoading, user, csrfToken, on
                 ) : null}
 
                 <div className="mt-6 flex flex-wrap gap-3">
-                  {emailCatchAllMaintenanceEnabled && selectedItem.key === emailCatchAllPermissionKey ? (
-                    <>
-                      <div className="w-full rounded-2xl border border-amber-300/35 bg-amber-50/80 px-4 py-4 text-sm leading-7 text-amber-900 dark:border-amber-500/20 dark:bg-amber-950/25 dark:text-amber-100">
-                        {emailCatchAllMaintenanceMessage}
-                      </div>
-                      <button type="button" disabled className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 px-6 py-3 font-medium text-white opacity-60">
-                        <ArrowRight size={18} />
-                        维护中，暂不可申请
-                      </button>
-                    </>
-                  ) : (
-                    <button type="button" onClick={openLiveEntry} className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 px-6 py-3 font-medium text-white shadow-lg transition hover:from-emerald-600 hover:to-teal-700">
-                      <ArrowRight size={18} />
-                      {buildLiveEntryButtonLabel(authenticated, selectedPermission, selectedItem.key)}
-                    </button>
-                  )}
+                  <button type="button" onClick={openLiveEntry} className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 px-6 py-3 font-medium text-white shadow-lg transition hover:from-emerald-600 hover:to-teal-700">
+                    <ArrowRight size={18} />
+                    {buildLiveEntryButtonLabel(authenticated, selectedPermission, selectedItem.key)}
+                  </button>
                 </div>
               </>
             ) : (
@@ -575,19 +560,19 @@ function PaymentExchangeSection({
               </p>
             </div>
             <div className="flex flex-wrap gap-3">
-              <button
-                type="button"
-                onClick={() => {
+                <button
+                  type="button"
+                  onClick={() => {
                   if (!authenticated) {
                     onLogin();
                     return;
                   }
                   setOrdersOpen(true);
                 }}
-                className="inline-flex items-center justify-center gap-2 rounded-2xl border border-emerald-200 bg-white/70 px-5 py-3 text-sm font-semibold text-emerald-700 shadow-sm transition hover:bg-emerald-50 dark:border-emerald-900/40 dark:bg-black/30 dark:text-emerald-300 dark:hover:bg-emerald-900/20"
-              >
-                <Ticket size={16} />
-                查看全部订单
+                  className="inline-flex min-w-[12rem] items-center justify-center gap-2 whitespace-nowrap rounded-2xl border border-emerald-200 bg-white/70 px-6 py-3 text-sm font-semibold text-emerald-700 shadow-sm transition hover:bg-emerald-50 dark:border-emerald-900/40 dark:bg-black/30 dark:text-emerald-300 dark:hover:bg-emerald-900/20"
+                >
+                  <Ticket size={16} />
+                  查看全部订单
                 {authenticated && orders.length > 0 ? (
                   <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-bold text-emerald-700 dark:text-emerald-300">
                     {pendingOrderCount > 0 ? `${pendingOrderCount} 待处理 / ${orders.length}` : `${orders.length} 条`}
@@ -1010,7 +995,6 @@ function describePaymentOrderStatus(order: PaymentOrder) {
 }
 
 function buildLiveEntryButtonLabel(authenticated: boolean, permission: UserPermission | null, key: string): string {
-  if (emailCatchAllMaintenanceEnabled && key === emailCatchAllPermissionKey) return '维护中，暂不可申请';
   if (!authenticated) return '登录后申请';
   if (permission?.can_manage_route) return '前往邮箱页面管理';
   if (permission?.can_apply) return '前往邮箱页面申请';
