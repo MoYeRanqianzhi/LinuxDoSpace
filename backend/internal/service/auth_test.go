@@ -14,6 +14,8 @@ import (
 	"linuxdospace/backend/internal/model"
 	"linuxdospace/backend/internal/storage"
 	"linuxdospace/backend/internal/storage/sqlite"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // staticOAuthClient is a deterministic OAuth stub used to exercise the real
@@ -390,6 +392,67 @@ func TestVerifyAdminPasswordRotatesSession(t *testing.T) {
 	}
 	if reloadedSession.AdminVerifiedAt == nil {
 		t.Fatalf("expected stored rotated session to remain admin-verified")
+	}
+}
+
+// TestVerifyAdminPasswordUsesPerAdminHash verifies that the service prefers the
+// current admin user's dedicated bcrypt hash over the legacy shared password.
+func TestVerifyAdminPasswordUsesPerAdminHash(t *testing.T) {
+	ctx := context.Background()
+	store := newAuthTestStore(t)
+
+	user, err := store.UpsertUser(ctx, sqlite.UpsertUserInput{
+		LinuxDOUserID:  607,
+		Username:       "user2996",
+		DisplayName:    "User 2996",
+		AvatarURL:      "https://example.com/avatar.png",
+		TrustLevel:     4,
+		IsLinuxDOAdmin: false,
+		IsAppAdmin:     true,
+	})
+	if err != nil {
+		t.Fatalf("upsert admin user: %v", err)
+	}
+
+	session, err := store.CreateSession(ctx, sqlite.CreateSessionInput{
+		ID:                   "per-admin-hash-session",
+		UserID:               user.ID,
+		CSRFToken:            "csrf-per-admin-hash",
+		UserAgentFingerprint: "test-user-agent",
+		ExpiresAt:            time.Now().UTC().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	adminHash, err := bcrypt.GenerateFromPassword([]byte("dedicated-secret"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("generate admin hash: %v", err)
+	}
+
+	service := NewAuthService(config.Config{
+		App: config.AppConfig{
+			SessionTTL:           time.Hour,
+			SessionBindUserAgent: true,
+			AdminVerificationTTL: 30 * time.Minute,
+			AdminUsernames:       []string{"user2996"},
+			AdminPassword:        "legacy-shared-password",
+			AdminPasswordHashes: map[string]string{
+				"user2996": string(adminHash),
+			},
+		},
+	}, store, nil)
+
+	if _, err := service.VerifyAdminPassword(ctx, session, user, "legacy-shared-password"); err == nil {
+		t.Fatalf("expected legacy shared password to be ignored when a per-admin hash exists")
+	}
+
+	rotatedSession, err := service.VerifyAdminPassword(ctx, session, user, "dedicated-secret")
+	if err != nil {
+		t.Fatalf("verify dedicated admin password: %v", err)
+	}
+	if rotatedSession.AdminVerifiedAt == nil {
+		t.Fatalf("expected per-admin hash verification to succeed")
 	}
 }
 

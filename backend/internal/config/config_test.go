@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // TestLoadDisablesAdminConsoleByDefault verifies that the backend no longer
@@ -41,7 +43,7 @@ func TestLoadRejectsPartialAdminConfiguration(t *testing.T) {
 			name:             "missing password",
 			adminUsernames:   "MoYeRanQianZhi,user2996",
 			adminPassword:    "",
-			expectedFragment: "APP_ADMIN_PASSWORD is required",
+			expectedFragment: "APP_ADMIN_PASSWORD or APP_ADMIN_PASSWORD_HASHES is required",
 		},
 		{
 			name:             "missing usernames",
@@ -82,7 +84,7 @@ func TestLoadRequiresExplicitAdminConfigInProduction(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected production admin misconfiguration to fail")
 	}
-	if !strings.Contains(err.Error(), "APP_ADMIN_USERNAMES and APP_ADMIN_PASSWORD are required") {
+	if !strings.Contains(err.Error(), "APP_ADMIN_USERNAMES and either APP_ADMIN_PASSWORD or APP_ADMIN_PASSWORD_HASHES are required") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -105,6 +107,37 @@ func TestLoadAcceptsExplicitAdminConfigInProduction(t *testing.T) {
 	}
 	if cfg.App.AdminPassword != "strong-password" {
 		t.Fatalf("expected configured admin password to survive load, got %q", cfg.App.AdminPassword)
+	}
+}
+
+// TestLoadAcceptsPerAdminPasswordHashes verifies that deployments can switch to
+// per-admin bcrypt hashes without using the legacy shared plaintext password.
+func TestLoadAcceptsPerAdminPasswordHashes(t *testing.T) {
+	adminHash, err := bcrypt.GenerateFromPassword([]byte("mo-secret"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("generate admin hash: %v", err)
+	}
+	secondHash, err := bcrypt.GenerateFromPassword([]byte("u2996-secret"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("generate second admin hash: %v", err)
+	}
+
+	t.Setenv("APP_SESSION_SECRET", "test-session-secret")
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("APP_SESSION_SECURE", "true")
+	t.Setenv("APP_ADMIN_USERNAMES", "MoYeRanQianZhi,user2996")
+	t.Setenv("APP_ADMIN_PASSWORD", "")
+	t.Setenv("APP_ADMIN_PASSWORD_HASHES", `{"MoYeRanQianZhi":"`+string(adminHash)+`","user2996":"`+string(secondHash)+`"}`)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load config with per-admin hashes: %v", err)
+	}
+	if len(cfg.App.AdminPasswordHashes) != 2 {
+		t.Fatalf("expected 2 admin password hashes, got %+v", cfg.App.AdminPasswordHashes)
+	}
+	if cfg.App.AdminPasswordHashes["moyeranqianzhi"] == "" {
+		t.Fatalf("expected normalized lowercase hash entry for MoYeRanQianZhi")
 	}
 }
 

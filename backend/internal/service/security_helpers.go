@@ -1,8 +1,14 @@
 package service
 
 import (
+	"crypto/subtle"
 	"log"
+	"strings"
 	"time"
+
+	"linuxdospace/backend/internal/config"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // AdminVerificationIsFresh reports whether one administrator password check is
@@ -34,4 +40,26 @@ func logPostMutationFailure(action string, err error) {
 		return
 	}
 	log.Printf("post-mutation bookkeeping failed for %s: %v", action, err)
+}
+
+// VerifyAdminPasswordAgainstConfig validates the submitted administrator
+// second-factor password against either the per-admin bcrypt hash map or the
+// legacy shared plaintext fallback. Per-admin hashes win when configured for
+// the current username so deployments can roll out stronger isolation without
+// breaking the existing login form.
+func VerifyAdminPasswordAgainstConfig(app config.AppConfig, username string, password string) bool {
+	normalizedUsername := strings.ToLower(strings.TrimSpace(username))
+	if normalizedUsername == "" || strings.TrimSpace(password) == "" {
+		return false
+	}
+
+	if expectedHash, ok := app.AdminPasswordHashes[normalizedUsername]; ok {
+		return bcrypt.CompareHashAndPassword([]byte(expectedHash), []byte(password)) == nil
+	}
+
+	expected := strings.TrimSpace(app.AdminPassword)
+	if expected == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(password), []byte(expected)) == 1
 }

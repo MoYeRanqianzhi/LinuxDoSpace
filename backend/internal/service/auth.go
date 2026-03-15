@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"crypto/subtle"
 	"fmt"
 	"strings"
 	"time"
@@ -247,8 +246,7 @@ func (s *AuthService) VerifyAdminPassword(ctx context.Context, session model.Ses
 		return session, nil
 	}
 
-	expected := s.cfg.App.AdminPassword
-	if subtle.ConstantTimeCompare([]byte(password), []byte(expected)) != 1 {
+	if !VerifyAdminPasswordAgainstConfig(s.cfg.App, actor.Username, password) {
 		logAuditWriteFailure("admin.session.verify_password_failed", s.store.WriteAuditLog(ctx, storage.AuditLogInput{
 			ActorUserID:  &actor.ID,
 			Action:       "admin.session.verify_password_failed",
