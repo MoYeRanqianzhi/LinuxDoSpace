@@ -328,6 +328,17 @@ export function createMyEmailTarget(input: CreateMyEmailTargetInput, csrfToken: 
   });
 }
 
+// resendMyEmailTargetVerification asks the backend to trigger a fresh
+// verification email for one still-pending target mailbox.
+export function resendMyEmailTargetVerification(targetID: number, csrfToken: string): Promise<UserEmailTarget> {
+  return request<UserEmailTarget>(`/v1/my/email-targets/${targetID}/resend-verification`, {
+    method: 'POST',
+    headers: {
+      'X-CSRF-Token': csrfToken,
+    },
+  });
+}
+
 // upsertDefaultEmailRoute saves the forwarding target for the implicit default mailbox.
 export function upsertDefaultEmailRoute(input: UpsertMyDefaultEmailRouteInput, csrfToken: string): Promise<UserEmailRoute> {
   return request<UserEmailRoute>('/v1/my/email-routes/default', {

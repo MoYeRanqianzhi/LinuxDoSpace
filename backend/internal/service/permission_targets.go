@@ -105,6 +105,90 @@ func (s *PermissionService) CreateMyEmailTarget(ctx context.Context, user model.
 	return userEmailTargetViewFromModel(item), nil
 }
 
+// ResendMyEmailTargetVerification retriggers the Cloudflare verification email
+// for one still-pending target mailbox owned by the current user.
+func (s *PermissionService) ResendMyEmailTargetVerification(ctx context.Context, user model.User, targetID int64) (UserEmailTargetView, error) {
+	if targetID <= 0 {
+		return UserEmailTargetView{}, ValidationError("targetID is required")
+	}
+
+	items, err := s.db.ListEmailTargetsByOwner(ctx, user.ID)
+	if err != nil {
+		return UserEmailTargetView{}, InternalError("failed to load user email targets", err)
+	}
+
+	var item *model.EmailTarget
+	for index := range items {
+		if items[index].ID == targetID {
+			item = &items[index]
+			break
+		}
+	}
+	if item == nil {
+		return UserEmailTargetView{}, NotFoundError("email target not found")
+	}
+
+	refreshed, err := s.syncSingleEmailTargetWithCloudflare(ctx, *item, false)
+	if err != nil {
+		return UserEmailTargetView{}, err
+	}
+	if refreshed.VerifiedAt != nil {
+		return UserEmailTargetView{}, ConflictError("该目标邮箱已完成验证，无需重新发送验证邮件")
+	}
+
+	accountID, err := s.resolveEmailRoutingAccountID(ctx)
+	if err != nil {
+		return UserEmailTargetView{}, err
+	}
+
+	snapshots, err := s.listCloudflareEmailTargetSnapshots(ctx)
+	if err != nil {
+		return UserEmailTargetView{}, err
+	}
+	if snapshot, found := snapshots[strings.ToLower(strings.TrimSpace(refreshed.Email))]; found && strings.TrimSpace(snapshot.AddressID) != "" {
+		if deleteErr := s.cf.DeleteEmailRoutingDestinationAddress(ctx, accountID, snapshot.AddressID); deleteErr != nil {
+			return UserEmailTargetView{}, wrapEmailRoutingUnavailable("failed to delete cloudflare email routing destination address before resending verification", deleteErr)
+		}
+	}
+
+	created, err := s.cf.CreateEmailRoutingDestinationAddress(ctx, accountID, refreshed.Email)
+	if err != nil {
+		return UserEmailTargetView{}, wrapEmailRoutingUnavailable("failed to recreate cloudflare email routing destination address", err)
+	}
+
+	var sentAt *time.Time
+	if created.Verified == nil {
+		now := time.Now().UTC()
+		sentAt = &now
+	}
+
+	updated, err := s.db.UpdateEmailTarget(ctx, storage.UpdateEmailTargetInput{
+		ID:                     refreshed.ID,
+		CloudflareAddressID:    strings.TrimSpace(created.ID),
+		VerifiedAt:             created.Verified,
+		LastVerificationSentAt: sentAt,
+	})
+	if err != nil {
+		return UserEmailTargetView{}, InternalError("failed to update email target after resending verification", err)
+	}
+
+	metadata, _ := json.Marshal(map[string]any{
+		"email_target_id":       updated.ID,
+		"email":                 updated.Email,
+		"verification_status":   emailTargetVerificationStatus(updated),
+		"cloudflare_address_id": updated.CloudflareAddressID,
+	})
+	logAuditWriteFailure("email_target.resend_verification", s.db.WriteAuditLog(ctx, storage.AuditLogInput{
+		ActorUserID:  &user.ID,
+		Action:       "email_target.resend_verification",
+		ResourceType: "email_target",
+		ResourceID:   strconv.FormatInt(updated.ID, 10),
+		MetadataJSON: string(metadata),
+	}))
+
+	return userEmailTargetViewFromModel(updated), nil
+}
+
 // requireVerifiedOwnedEmailTarget enforces that one forwarding target email is
 // already bound to the current user and verified by Cloudflare.
 func (s *PermissionService) requireVerifiedOwnedEmailTarget(ctx context.Context, user model.User, targetEmail string) (model.EmailTarget, error) {

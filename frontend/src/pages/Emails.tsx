@@ -19,11 +19,12 @@ import { ToggleSwitch } from '../components/ToggleSwitch';
 import {
   APIError,
   checkPublicEmailRouteAvailability,
-  createMyEmailTarget,
-  listMyEmailRoutes,
-  listMyEmailTargets,
-  listMyPermissions,
-  submitPermissionApplication,
+    createMyEmailTarget,
+    listMyEmailRoutes,
+    listMyEmailTargets,
+    listMyPermissions,
+    resendMyEmailTargetVerification,
+    submitPermissionApplication,
   upsertCatchAllEmailRoute,
   upsertDefaultEmailRoute,
 } from '../lib/api';
@@ -90,6 +91,7 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
 
   const [newTargetEmail, setNewTargetEmail] = useState('');
   const [creatingTarget, setCreatingTarget] = useState(false);
+  const [resendingTargetID, setResendingTargetID] = useState<number | null>(null);
   const [targetNotice, setTargetNotice] = useState<SectionNotice | null>(null);
 
   const [applyingPermission, setApplyingPermission] = useState(false);
@@ -310,6 +312,28 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
       tone: 'info',
       message: '已刷新目标邮箱状态。若你刚完成邮箱确认，现在应该能看到最新验证结果。',
     });
+  }
+
+  async function handleResendTargetVerification(targetID: number): Promise<void> {
+    if (!csrfToken) {
+      setTargetNotice({ tone: 'error', message: '当前会话缺少 CSRF Token，请重新登录后再试。' });
+      return;
+    }
+
+    try {
+      setResendingTargetID(targetID);
+      setTargetNotice(null);
+      const updatedTarget = await resendMyEmailTargetVerification(targetID, csrfToken);
+      setEmailTargets((currentTargets) => upsertEmailTarget(currentTargets, updatedTarget));
+      setTargetNotice({
+        tone: 'success',
+        message: `已重新向 ${updatedTarget.email} 发送 Cloudflare 验证邮件，请前往目标邮箱查收。`,
+      });
+    } catch (error) {
+      setTargetNotice({ tone: 'error', message: readableErrorMessage(error, '重新发送验证邮件失败。') });
+    } finally {
+      setResendingTargetID(null);
+    }
   }
 
   async function handleSaveDefault(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -659,7 +683,18 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
                             {item.cloudflare_address_id ? '已在 Cloudflare 建立目标邮箱绑定' : '等待 Cloudflare 创建目标邮箱绑定'}
                           </td>
                           <td className="px-5 py-4 align-top text-sm text-gray-600 dark:text-gray-300">
-                            {item.last_verification_sent_at ? `验证邮件发送于 ${formatDate(item.last_verification_sent_at)}` : `最近更新于 ${formatDate(item.updated_at)}`}
+                            <div>{item.last_verification_sent_at ? `验证邮件发送于 ${formatDate(item.last_verification_sent_at)}` : `最近更新于 ${formatDate(item.updated_at)}`}</div>
+                            {!item.verified ? (
+                              <button
+                                type="button"
+                                onClick={() => void handleResendTargetVerification(item.id)}
+                                disabled={resendingTargetID === item.id}
+                                className="mt-3 inline-flex items-center gap-2 rounded-xl border border-sky-200 bg-white/70 px-3 py-2 text-xs font-semibold text-sky-700 transition hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-sky-800/40 dark:bg-black/20 dark:text-sky-300 dark:hover:bg-sky-900/20"
+                              >
+                                {resendingTargetID === item.id ? <LoaderCircle className="animate-spin" size={14} /> : <RefreshCw size={14} />}
+                                重新发送验证
+                              </button>
+                            ) : null}
                           </td>
                         </tr>
                       );

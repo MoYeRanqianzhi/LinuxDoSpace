@@ -229,6 +229,19 @@ func (r *objectResponse[T]) cfErrors() []cloudflareAPIError {
 	return r.Errors
 }
 
+type emptyResponse struct {
+	Success bool                 `json:"success"`
+	Errors  []cloudflareAPIError `json:"errors"`
+}
+
+func (r *emptyResponse) cfSuccess() bool {
+	return r.Success
+}
+
+func (r *emptyResponse) cfErrors() []cloudflareAPIError {
+	return r.Errors
+}
+
 // cloudflareResponse is the narrow contract required by doJSON to decode a
 // response and surface API-level errors consistently.
 type cloudflareResponse interface {
@@ -416,6 +429,14 @@ func (c *Client) ListEmailRoutingDestinationAddresses(ctx context.Context, accou
 // while still using the documented Cloudflare request body.
 func (c *Client) CreateEmailRoutingDestinationAddress(ctx context.Context, accountID string, email string) (EmailRoutingDestinationAddress, error) {
 	return c.CreateEmailRoutingAddress(ctx, accountID, CreateEmailRoutingAddressInput{Email: email})
+}
+
+// DeleteEmailRoutingDestinationAddress removes one destination address so the
+// caller can recreate it and trigger a fresh verification email.
+func (c *Client) DeleteEmailRoutingDestinationAddress(ctx context.Context, accountID string, addressID string) error {
+	var response emptyResponse
+	endpoint := fmt.Sprintf("%s/accounts/%s/email/routing/addresses/%s", apiBaseURL, strings.TrimSpace(accountID), strings.TrimSpace(addressID))
+	return c.doJSON(ctx, http.MethodDelete, endpoint, nil, &response)
 }
 
 // EnableEmailRoutingDNS ensures Cloudflare Email Routing is enabled for the

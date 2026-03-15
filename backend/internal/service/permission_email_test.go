@@ -24,6 +24,7 @@ type fakeEmailRoutingCloudflare struct {
 	requiredDNSByZoneSubdomain map[string]map[string][]cloudflare.EmailRoutingDNSRecord
 	dnsRecordsByZone           map[string][]cloudflare.DNSRecord
 	addressesByAccount         map[string][]cloudflare.EmailRoutingDestinationAddress
+	deletedAddresses           []string
 	deletedRule                []string
 	createdAddresses           []string
 	enabledDNSZones            []string
@@ -172,6 +173,22 @@ func (f *fakeEmailRoutingCloudflare) CreateEmailRoutingDestinationAddress(ctx co
 	f.addressesByAccount[accountID] = append(f.addressesByAccount[accountID], created)
 	f.createdAddresses = append(f.createdAddresses, normalizedEmail)
 	return created, nil
+}
+
+// DeleteEmailRoutingDestinationAddress removes one in-memory destination
+// address so tests can emulate a resend-verification flow.
+func (f *fakeEmailRoutingCloudflare) DeleteEmailRoutingDestinationAddress(ctx context.Context, accountID string, addressID string) error {
+	addresses := f.addressesByAccount[accountID]
+	filtered := make([]cloudflare.EmailRoutingDestinationAddress, 0, len(addresses))
+	for _, item := range addresses {
+		if item.ID == strings.TrimSpace(addressID) {
+			f.deletedAddresses = append(f.deletedAddresses, strings.TrimSpace(addressID))
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	f.addressesByAccount[accountID] = filtered
+	return nil
 }
 
 // EnableEmailRoutingDNS records that Email Routing DNS bootstrap was requested.

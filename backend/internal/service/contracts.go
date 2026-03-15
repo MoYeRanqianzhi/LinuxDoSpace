@@ -35,6 +35,7 @@ type CloudflareClient interface {
 	DeleteDNSRecord(ctx context.Context, zoneID string, recordID string) error
 	ListEmailRoutingDestinationAddresses(ctx context.Context, accountID string) ([]cloudflare.EmailRoutingDestinationAddress, error)
 	CreateEmailRoutingDestinationAddress(ctx context.Context, accountID string, email string) (cloudflare.EmailRoutingDestinationAddress, error)
+	DeleteEmailRoutingDestinationAddress(ctx context.Context, accountID string, addressID string) error
 	EnableEmailRoutingDNS(ctx context.Context, zoneID string) ([]cloudflare.EmailRoutingDNSRecord, error)
 	ListEmailRoutingDNSRecords(ctx context.Context, zoneID string, subdomain string) ([]cloudflare.EmailRoutingDNSRecord, error)
 	ListEmailRoutingRules(ctx context.Context, zoneID string) ([]cloudflare.EmailRoutingRule, error)

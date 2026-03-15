@@ -100,6 +100,31 @@ func (a *API) handleCreateMyEmailTarget(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusCreated, item)
 }
 
+// handleResendMyEmailTargetVerification retriggers the Cloudflare verification
+// email for one still-pending target mailbox owned by the current user.
+func (a *API) handleResendMyEmailTargetVerification(w http.ResponseWriter, r *http.Request) {
+	session, user, ok := a.requireActor(w, r)
+	if !ok {
+		return
+	}
+	if !a.enforceCSRF(w, r, session) {
+		return
+	}
+
+	targetID, err := pathInt64(r, "targetID")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	item, err := a.permissionService.ResendMyEmailTargetVerification(r.Context(), *user, targetID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
 // handleUpsertDefaultEmailRoute writes the authenticated user's forwarding
 // target for the always-owned default mailbox.
 func (a *API) handleUpsertDefaultEmailRoute(w http.ResponseWriter, r *http.Request) {
