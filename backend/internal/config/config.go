@@ -99,22 +99,34 @@ const (
 // MailConfig stores the email-forwarding execution mode and the SMTP relay
 // settings used when LinuxDoSpace receives mail itself.
 type MailConfig struct {
-	ForwardingBackend string
-	RelayEnabled      bool
-	EnsureDNS         bool
-	SMTPAddr          string
-	Domain            string
-	MXTarget          string
-	MXPriority        int
-	SPFValue          string
-	MaxRecipients     int
-	MaxMessageBytes   int64
-	ReadTimeout       time.Duration
-	WriteTimeout      time.Duration
-	ForwardHost       string
-	ForwardUsername   string
-	ForwardPassword   string
-	ForwardFrom       string
+	ForwardingBackend    string
+	RelayEnabled         bool
+	EnsureDNS            bool
+	SMTPAddr             string
+	Domain               string
+	MXTarget             string
+	MXPriority           int
+	SPFValue             string
+	MaxRecipients        int
+	MaxMessageBytes      int64
+	ReadTimeout          time.Duration
+	WriteTimeout         time.Duration
+	ResolveTimeout       time.Duration
+	EnqueueTimeout       time.Duration
+	MaxConcurrentIngress int
+	QueueWorkers         int
+	QueuePollInterval    time.Duration
+	QueueLeaseDuration   time.Duration
+	MaxAttempts          int
+	RetryBaseDelay       time.Duration
+	RetryMaxDelay        time.Duration
+	CleanupInterval      time.Duration
+	DeliveredRetention   time.Duration
+	FailedRetention      time.Duration
+	ForwardHost          string
+	ForwardUsername      string
+	ForwardPassword      string
+	ForwardFrom          string
 }
 
 // Load reads configuration from environment variables and applies defaults.
@@ -173,22 +185,34 @@ func Load() (Config, error) {
 			DefaultUserQuota:    mustParseInt(getEnv("CLOUDFLARE_DEFAULT_USER_QUOTA", "1")),
 		},
 		Mail: MailConfig{
-			ForwardingBackend: strings.ToLower(getEnv("EMAIL_FORWARDING_BACKEND", EmailForwardingBackendCloudflare)),
-			RelayEnabled:      mustParseBool(getEnv("MAIL_RELAY_ENABLED", "false")),
-			EnsureDNS:         mustParseBool(getEnv("MAIL_RELAY_ENSURE_DNS", "true")),
-			SMTPAddr:          getEnv("MAIL_RELAY_SMTP_ADDR", ":2525"),
-			Domain:            getEnv("MAIL_RELAY_DOMAIN", "mail.linuxdo.space"),
-			MXTarget:          getEnv("MAIL_RELAY_MX_TARGET", "mail.linuxdo.space"),
-			MXPriority:        mustParseInt(getEnv("MAIL_RELAY_MX_PRIORITY", "10")),
-			SPFValue:          getEnv("MAIL_RELAY_SPF_VALUE", "v=spf1 -all"),
-			MaxRecipients:     mustParseInt(getEnv("MAIL_RELAY_MAX_RECIPIENTS", "50")),
-			MaxMessageBytes:   mustParseInt64(getEnv("MAIL_RELAY_MAX_MESSAGE_BYTES", "26214400")),
-			ReadTimeout:       mustParseDuration(getEnv("MAIL_RELAY_READ_TIMEOUT", "30s")),
-			WriteTimeout:      mustParseDuration(getEnv("MAIL_RELAY_WRITE_TIMEOUT", "30s")),
-			ForwardHost:       strings.TrimSpace(os.Getenv("MAIL_RELAY_FORWARD_HOST")),
-			ForwardUsername:   strings.TrimSpace(os.Getenv("MAIL_RELAY_FORWARD_USERNAME")),
-			ForwardPassword:   strings.TrimSpace(os.Getenv("MAIL_RELAY_FORWARD_PASSWORD")),
-			ForwardFrom:       strings.TrimSpace(os.Getenv("MAIL_RELAY_FORWARD_FROM")),
+			ForwardingBackend:    strings.ToLower(getEnv("EMAIL_FORWARDING_BACKEND", EmailForwardingBackendCloudflare)),
+			RelayEnabled:         mustParseBool(getEnv("MAIL_RELAY_ENABLED", "false")),
+			EnsureDNS:            mustParseBool(getEnv("MAIL_RELAY_ENSURE_DNS", "true")),
+			SMTPAddr:             getEnv("MAIL_RELAY_SMTP_ADDR", ":2525"),
+			Domain:               getEnv("MAIL_RELAY_DOMAIN", "mail.linuxdo.space"),
+			MXTarget:             getEnv("MAIL_RELAY_MX_TARGET", "mail.linuxdo.space"),
+			MXPriority:           mustParseInt(getEnv("MAIL_RELAY_MX_PRIORITY", "10")),
+			SPFValue:             getEnv("MAIL_RELAY_SPF_VALUE", "v=spf1 -all"),
+			MaxRecipients:        mustParseInt(getEnv("MAIL_RELAY_MAX_RECIPIENTS", "50")),
+			MaxMessageBytes:      mustParseInt64(getEnv("MAIL_RELAY_MAX_MESSAGE_BYTES", "26214400")),
+			ReadTimeout:          mustParseDuration(getEnv("MAIL_RELAY_READ_TIMEOUT", "30s")),
+			WriteTimeout:         mustParseDuration(getEnv("MAIL_RELAY_WRITE_TIMEOUT", "30s")),
+			ResolveTimeout:       mustParseDuration(getEnv("MAIL_RELAY_RESOLVE_TIMEOUT", "5s")),
+			EnqueueTimeout:       mustParseDuration(getEnv("MAIL_RELAY_ENQUEUE_TIMEOUT", "15s")),
+			MaxConcurrentIngress: mustParseInt(getEnv("MAIL_RELAY_MAX_CONCURRENT_INGRESS", "32")),
+			QueueWorkers:         mustParseInt(getEnv("MAIL_RELAY_WORKERS", "16")),
+			QueuePollInterval:    mustParseDuration(getEnv("MAIL_RELAY_QUEUE_POLL_INTERVAL", "2s")),
+			QueueLeaseDuration:   mustParseDuration(getEnv("MAIL_RELAY_QUEUE_LEASE_DURATION", "2m")),
+			MaxAttempts:          mustParseInt(getEnv("MAIL_RELAY_MAX_ATTEMPTS", "10")),
+			RetryBaseDelay:       mustParseDuration(getEnv("MAIL_RELAY_RETRY_BASE_DELAY", "15s")),
+			RetryMaxDelay:        mustParseDuration(getEnv("MAIL_RELAY_RETRY_MAX_DELAY", "15m")),
+			CleanupInterval:      mustParseDuration(getEnv("MAIL_RELAY_CLEANUP_INTERVAL", "15m")),
+			DeliveredRetention:   mustParseDuration(getEnv("MAIL_RELAY_DELIVERED_RETENTION", "24h")),
+			FailedRetention:      mustParseDuration(getEnv("MAIL_RELAY_FAILED_RETENTION", "168h")),
+			ForwardHost:          strings.TrimSpace(os.Getenv("MAIL_RELAY_FORWARD_HOST")),
+			ForwardUsername:      strings.TrimSpace(os.Getenv("MAIL_RELAY_FORWARD_USERNAME")),
+			ForwardPassword:      strings.TrimSpace(os.Getenv("MAIL_RELAY_FORWARD_PASSWORD")),
+			ForwardFrom:          strings.TrimSpace(os.Getenv("MAIL_RELAY_FORWARD_FROM")),
 		},
 		LoadedAtUTC: time.Now().UTC(),
 	}
@@ -420,6 +444,45 @@ func validateMailConfig(mail MailConfig) error {
 		}
 		if mail.WriteTimeout <= 0 {
 			return fmt.Errorf("MAIL_RELAY_WRITE_TIMEOUT must be greater than 0")
+		}
+		if mail.ResolveTimeout <= 0 {
+			return fmt.Errorf("MAIL_RELAY_RESOLVE_TIMEOUT must be greater than 0")
+		}
+		if mail.EnqueueTimeout <= 0 {
+			return fmt.Errorf("MAIL_RELAY_ENQUEUE_TIMEOUT must be greater than 0")
+		}
+		if mail.MaxConcurrentIngress < 1 {
+			return fmt.Errorf("MAIL_RELAY_MAX_CONCURRENT_INGRESS must be at least 1")
+		}
+		if mail.QueueWorkers < 1 {
+			return fmt.Errorf("MAIL_RELAY_WORKERS must be at least 1")
+		}
+		if mail.QueuePollInterval <= 0 {
+			return fmt.Errorf("MAIL_RELAY_QUEUE_POLL_INTERVAL must be greater than 0")
+		}
+		if mail.QueueLeaseDuration <= 0 {
+			return fmt.Errorf("MAIL_RELAY_QUEUE_LEASE_DURATION must be greater than 0")
+		}
+		if mail.MaxAttempts < 1 {
+			return fmt.Errorf("MAIL_RELAY_MAX_ATTEMPTS must be at least 1")
+		}
+		if mail.RetryBaseDelay <= 0 {
+			return fmt.Errorf("MAIL_RELAY_RETRY_BASE_DELAY must be greater than 0")
+		}
+		if mail.RetryMaxDelay <= 0 {
+			return fmt.Errorf("MAIL_RELAY_RETRY_MAX_DELAY must be greater than 0")
+		}
+		if mail.RetryMaxDelay < mail.RetryBaseDelay {
+			return fmt.Errorf("MAIL_RELAY_RETRY_MAX_DELAY must be greater than or equal to MAIL_RELAY_RETRY_BASE_DELAY")
+		}
+		if mail.CleanupInterval <= 0 {
+			return fmt.Errorf("MAIL_RELAY_CLEANUP_INTERVAL must be greater than 0")
+		}
+		if mail.DeliveredRetention <= 0 {
+			return fmt.Errorf("MAIL_RELAY_DELIVERED_RETENTION must be greater than 0")
+		}
+		if mail.FailedRetention <= 0 {
+			return fmt.Errorf("MAIL_RELAY_FAILED_RETENTION must be greater than 0")
 		}
 		if mail.MXPriority < 0 {
 			return fmt.Errorf("MAIL_RELAY_MX_PRIORITY must be at least 0")

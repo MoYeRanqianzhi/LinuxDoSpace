@@ -4,6 +4,7 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestLoadDisablesAdminConsoleByDefault verifies that the backend no longer
@@ -275,6 +276,21 @@ func TestLoadAcceptsDatabaseRelayConfiguration(t *testing.T) {
 	if cfg.Mail.SPFValue != "v=spf1 -all" {
 		t.Fatalf("expected default relay spf value, got %q", cfg.Mail.SPFValue)
 	}
+	if cfg.Mail.ResolveTimeout != 5*time.Second {
+		t.Fatalf("expected default resolve timeout 5s, got %v", cfg.Mail.ResolveTimeout)
+	}
+	if cfg.Mail.EnqueueTimeout != 15*time.Second {
+		t.Fatalf("expected default enqueue timeout 15s, got %v", cfg.Mail.EnqueueTimeout)
+	}
+	if cfg.Mail.MaxConcurrentIngress != 32 {
+		t.Fatalf("expected default max concurrent ingress 32, got %d", cfg.Mail.MaxConcurrentIngress)
+	}
+	if cfg.Mail.QueueWorkers != 16 {
+		t.Fatalf("expected default queue workers 16, got %d", cfg.Mail.QueueWorkers)
+	}
+	if cfg.Mail.MaxAttempts != 10 {
+		t.Fatalf("expected default max attempts 10, got %d", cfg.Mail.MaxAttempts)
+	}
 }
 
 // TestLoadAcceptsDatabaseRelayDirectMXFallback verifies the built-in relay can
@@ -335,6 +351,30 @@ func TestLoadRejectsRelayAuthWithoutHost(t *testing.T) {
 		t.Fatalf("expected auth without forward host to fail")
 	}
 	if !strings.Contains(err.Error(), "MAIL_RELAY_FORWARD_HOST is required when MAIL_RELAY_FORWARD_USERNAME or MAIL_RELAY_FORWARD_PASSWORD is set") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestLoadRejectsRetryWindowInversion verifies that the durable mail queue
+// cannot boot with a retry cap smaller than the base retry delay.
+func TestLoadRejectsRetryWindowInversion(t *testing.T) {
+	t.Setenv("APP_SESSION_SECRET", "test-session-secret")
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("APP_ADMIN_USERNAMES", "")
+	t.Setenv("APP_ADMIN_PASSWORD", "")
+	t.Setenv("EMAIL_FORWARDING_BACKEND", EmailForwardingBackendDatabaseRelay)
+	t.Setenv("MAIL_RELAY_ENABLED", "true")
+	t.Setenv("MAIL_RELAY_SMTP_ADDR", ":2525")
+	t.Setenv("MAIL_RELAY_DOMAIN", "mail.linuxdo.space")
+	t.Setenv("MAIL_RELAY_FORWARD_FROM", "relay@mail.linuxdo.space")
+	t.Setenv("MAIL_RELAY_RETRY_BASE_DELAY", "30s")
+	t.Setenv("MAIL_RELAY_RETRY_MAX_DELAY", "10s")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatalf("expected inverted retry window to fail validation")
+	}
+	if !strings.Contains(err.Error(), "MAIL_RELAY_RETRY_MAX_DELAY must be greater than or equal to MAIL_RELAY_RETRY_BASE_DELAY") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

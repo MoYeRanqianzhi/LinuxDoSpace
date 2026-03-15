@@ -79,6 +79,12 @@ type Store interface {
 	GetEmailCatchAllDailyUsage(ctx context.Context, userID int64, usageDate string) (model.EmailCatchAllDailyUsage, error)
 	ConsumeEmailCatchAll(ctx context.Context, input ConsumeEmailCatchAllInput) (model.EmailCatchAllConsumeResult, error)
 	RefundEmailCatchAll(ctx context.Context, input RefundEmailCatchAllInput) error
+	EnqueueMailDeliveryBatch(ctx context.Context, input EnqueueMailDeliveryBatchInput) ([]model.MailDeliveryJob, error)
+	ClaimMailDeliveryJobs(ctx context.Context, input ClaimMailDeliveryJobsInput) ([]model.MailDeliveryJob, error)
+	MarkMailDeliveryJobDelivered(ctx context.Context, input MarkMailDeliveryJobDeliveredInput) (model.MailDeliveryJob, error)
+	MarkMailDeliveryJobRetry(ctx context.Context, input MarkMailDeliveryJobRetryInput) (model.MailDeliveryJob, error)
+	MarkMailDeliveryJobFailed(ctx context.Context, input MarkMailDeliveryJobFailedInput) (model.MailDeliveryJob, error)
+	CleanupMailDeliveryJobs(ctx context.Context, input CleanupMailDeliveryJobsInput) (int64, error)
 	GetActivePOWChallengeByUser(ctx context.Context, userID int64) (model.POWChallenge, error)
 	CreateOrReplacePOWChallenge(ctx context.Context, input CreateOrReplacePOWChallengeInput) (model.POWChallenge, error)
 	CountClaimedPOWChallengesByUser(ctx context.Context, userID int64, start time.Time, end time.Time) (int, error)

@@ -916,6 +916,236 @@ func RunRepositoryBehaviorSuite(t *testing.T, newStore Factory) {
 		}
 	})
 
+	t.Run("mail delivery queue refunds catch-all quota only after terminal failure", func(t *testing.T) {
+		ctx := context.Background()
+		store := newStore(t)
+
+		user := newTestUser(t, ctx, store, "mail-queue-owner")
+		dailyLimitOverride := int64(5)
+		if _, err := store.UpsertEmailCatchAllAccess(ctx, storage.UpsertEmailCatchAllAccessInput{
+			UserID:             user.ID,
+			RemainingCount:     2,
+			DailyLimitOverride: &dailyLimitOverride,
+		}); err != nil {
+			t.Fatalf("seed email catch-all access: %v", err)
+		}
+
+		now := time.Now().UTC().Truncate(time.Second)
+		jobs, err := store.EnqueueMailDeliveryBatch(ctx, storage.EnqueueMailDeliveryBatchInput{
+			OriginalEnvelopeFrom: "sender@example.com",
+			RawMessage:           []byte("Subject: queue-test\r\n\r\nbody"),
+			MaxAttempts:          2,
+			QueuedAt:             now,
+			Groups: []storage.EnqueueMailDeliveryGroupInput{
+				{
+					OriginalRecipients:   []string{"hello@mail-queue-owner.linuxdo.space"},
+					TargetRecipients:     []string{"target@example.com"},
+					CatchAllOwnerUserIDs: []int64{user.ID},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("enqueue mail delivery batch: %v", err)
+		}
+		if len(jobs) != 1 {
+			t.Fatalf("expected one queued mail job, got %d", len(jobs))
+		}
+		if len(jobs[0].Reservations) != 1 {
+			t.Fatalf("expected one reservation on queued mail job, got %+v", jobs[0].Reservations)
+		}
+
+		access, err := store.GetEmailCatchAllAccessByUser(ctx, user.ID)
+		if err != nil {
+			t.Fatalf("load catch-all access after enqueue: %v", err)
+		}
+		if access.RemainingCount != 1 {
+			t.Fatalf("expected remaining count to decrement to 1 after enqueue, got %d", access.RemainingCount)
+		}
+
+		usage, err := store.GetEmailCatchAllDailyUsage(ctx, user.ID, now.Format("2006-01-02"))
+		if err != nil {
+			t.Fatalf("load catch-all usage after enqueue: %v", err)
+		}
+		if usage.UsedCount != 1 {
+			t.Fatalf("expected one reserved daily usage after enqueue, got %d", usage.UsedCount)
+		}
+
+		claimed, err := store.ClaimMailDeliveryJobs(ctx, storage.ClaimMailDeliveryJobsInput{
+			Limit:         1,
+			LeaseDuration: time.Minute,
+			Now:           now,
+		})
+		if err != nil {
+			t.Fatalf("claim queued mail delivery job: %v", err)
+		}
+		if len(claimed) != 1 {
+			t.Fatalf("expected one claimed mail job, got %d", len(claimed))
+		}
+		if claimed[0].AttemptCount != 1 {
+			t.Fatalf("expected attempt_count 1 after first claim, got %d", claimed[0].AttemptCount)
+		}
+
+		retried, err := store.MarkMailDeliveryJobRetry(ctx, storage.MarkMailDeliveryJobRetryInput{
+			ID:            claimed[0].ID,
+			LastError:     "temporary upstream failure",
+			NextAttemptAt: now.Add(time.Minute),
+			UpdatedAt:     now.Add(10 * time.Second),
+		})
+		if err != nil {
+			t.Fatalf("mark mail delivery retry: %v", err)
+		}
+		if retried.Status != model.MailDeliveryJobStatusQueued {
+			t.Fatalf("expected retry to return job to queued status, got %q", retried.Status)
+		}
+
+		access, err = store.GetEmailCatchAllAccessByUser(ctx, user.ID)
+		if err != nil {
+			t.Fatalf("reload catch-all access after retry: %v", err)
+		}
+		if access.RemainingCount != 1 {
+			t.Fatalf("expected retry to keep remaining count reserved at 1, got %d", access.RemainingCount)
+		}
+
+		claimed, err = store.ClaimMailDeliveryJobs(ctx, storage.ClaimMailDeliveryJobsInput{
+			Limit:         1,
+			LeaseDuration: time.Minute,
+			Now:           now.Add(time.Minute),
+		})
+		if err != nil {
+			t.Fatalf("claim retried mail delivery job: %v", err)
+		}
+		if len(claimed) != 1 {
+			t.Fatalf("expected one claimed mail job on second attempt, got %d", len(claimed))
+		}
+		if claimed[0].AttemptCount != 2 {
+			t.Fatalf("expected attempt_count 2 after second claim, got %d", claimed[0].AttemptCount)
+		}
+
+		failed, err := store.MarkMailDeliveryJobFailed(ctx, storage.MarkMailDeliveryJobFailedInput{
+			ID:        claimed[0].ID,
+			LastError: "permanent upstream failure",
+			FailedAt:  now.Add(2 * time.Minute),
+		})
+		if err != nil {
+			t.Fatalf("mark mail delivery failed: %v", err)
+		}
+		if failed.Status != model.MailDeliveryJobStatusFailed {
+			t.Fatalf("expected job to become failed, got %q", failed.Status)
+		}
+
+		access, err = store.GetEmailCatchAllAccessByUser(ctx, user.ID)
+		if err != nil {
+			t.Fatalf("reload catch-all access after failure: %v", err)
+		}
+		if access.RemainingCount != 2 {
+			t.Fatalf("expected terminal failure to refund remaining count to 2, got %d", access.RemainingCount)
+		}
+
+		usage, err = store.GetEmailCatchAllDailyUsage(ctx, user.ID, now.Format("2006-01-02"))
+		if err != nil {
+			t.Fatalf("reload catch-all usage after failure: %v", err)
+		}
+		if usage.UsedCount != 0 {
+			t.Fatalf("expected terminal failure to refund daily usage back to 0, got %d", usage.UsedCount)
+		}
+	})
+
+	t.Run("mail delivery queue reclaims stale processing jobs and cleans delivered jobs", func(t *testing.T) {
+		ctx := context.Background()
+		store := newStore(t)
+
+		now := time.Now().UTC().Truncate(time.Second)
+		jobs, err := store.EnqueueMailDeliveryBatch(ctx, storage.EnqueueMailDeliveryBatchInput{
+			OriginalEnvelopeFrom: "sender@example.com",
+			RawMessage:           []byte("Subject: reclaim-test\r\n\r\nbody"),
+			MaxAttempts:          3,
+			QueuedAt:             now,
+			Groups: []storage.EnqueueMailDeliveryGroupInput{
+				{
+					OriginalRecipients: []string{"hello@alice.linuxdo.space"},
+					TargetRecipients:   []string{"target@example.com"},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("enqueue mail delivery batch for reclaim test: %v", err)
+		}
+		if len(jobs) != 1 {
+			t.Fatalf("expected one queued job for reclaim test, got %d", len(jobs))
+		}
+
+		leaseDuration := 30 * time.Second
+		firstClaim, err := store.ClaimMailDeliveryJobs(ctx, storage.ClaimMailDeliveryJobsInput{
+			Limit:         1,
+			LeaseDuration: leaseDuration,
+			Now:           now,
+		})
+		if err != nil {
+			t.Fatalf("first claim mail delivery job: %v", err)
+		}
+		if len(firstClaim) != 1 || firstClaim[0].AttemptCount != 1 {
+			t.Fatalf("expected first claim attempt_count 1, got %+v", firstClaim)
+		}
+
+		secondClaim, err := store.ClaimMailDeliveryJobs(ctx, storage.ClaimMailDeliveryJobsInput{
+			Limit:         1,
+			LeaseDuration: leaseDuration,
+			Now:           now.Add(10 * time.Second),
+		})
+		if err != nil {
+			t.Fatalf("second claim before lease expiry: %v", err)
+		}
+		if len(secondClaim) != 0 {
+			t.Fatalf("expected no claim before lease expiry, got %+v", secondClaim)
+		}
+
+		reclaimed, err := store.ClaimMailDeliveryJobs(ctx, storage.ClaimMailDeliveryJobsInput{
+			Limit:         1,
+			LeaseDuration: leaseDuration,
+			Now:           now.Add(leaseDuration + time.Second),
+		})
+		if err != nil {
+			t.Fatalf("claim stale processing mail job: %v", err)
+		}
+		if len(reclaimed) != 1 || reclaimed[0].AttemptCount != 2 {
+			t.Fatalf("expected stale job to be reclaimed with attempt_count 2, got %+v", reclaimed)
+		}
+
+		delivered, err := store.MarkMailDeliveryJobDelivered(ctx, storage.MarkMailDeliveryJobDeliveredInput{
+			ID:          reclaimed[0].ID,
+			DeliveredAt: now.Add(2 * leaseDuration),
+		})
+		if err != nil {
+			t.Fatalf("mark reclaimed mail job delivered: %v", err)
+		}
+		if delivered.Status != model.MailDeliveryJobStatusDelivered {
+			t.Fatalf("expected delivered status after success, got %q", delivered.Status)
+		}
+
+		deletedJobs, err := store.CleanupMailDeliveryJobs(ctx, storage.CleanupMailDeliveryJobsInput{
+			DeliveredBefore: now.Add(24 * time.Hour),
+			FailedBefore:    now.Add(24 * time.Hour),
+		})
+		if err != nil {
+			t.Fatalf("cleanup delivered mail jobs: %v", err)
+		}
+		if deletedJobs != 1 {
+			t.Fatalf("expected cleanup to delete one delivered mail job, got %d", deletedJobs)
+		}
+
+		claimedAfterCleanup, err := store.ClaimMailDeliveryJobs(ctx, storage.ClaimMailDeliveryJobsInput{
+			Limit:         1,
+			LeaseDuration: leaseDuration,
+			Now:           now.Add(25 * time.Hour),
+		})
+		if err != nil {
+			t.Fatalf("claim after cleanup: %v", err)
+		}
+		if len(claimedAfterCleanup) != 0 {
+			t.Fatalf("expected no mail jobs after cleanup, got %+v", claimedAfterCleanup)
+		}
+	})
+
 	t.Run("admin application upsert stays idempotent per applicant target", func(t *testing.T) {
 		ctx := context.Background()
 		store := newStore(t)

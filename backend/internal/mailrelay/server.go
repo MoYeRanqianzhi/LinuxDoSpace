@@ -6,7 +6,6 @@ import (
 	"io"
 	"log"
 	"strings"
-	"sync"
 	"time"
 
 	smtp "github.com/emersion/go-smtp"
@@ -27,19 +26,20 @@ type Server struct {
 }
 
 // NewServer constructs the SMTP listener from runtime configuration, the
-// database-backed recipient resolver, the catch-all access manager, and the
-// outbound SMTP forwarder.
-func NewServer(mail config.MailConfig, resolver RecipientResolver, accessManager CatchAllAccessManager, forwarder MessageForwarder, logger smtp.Logger) *Server {
+// database-backed recipient resolver, and the durable delivery queue.
+func NewServer(mail config.MailConfig, resolver RecipientResolver, queueStore QueueStore, logger smtp.Logger) *Server {
 	if logger == nil {
 		logger = log.Default()
 	}
 
 	backend := &smtpBackend{
-		resolver:       resolver,
-		accessManager:  accessManager,
-		forwarder:      forwarder,
-		logger:         logger,
-		forwardTimeout: deriveForwardTimeout(mail),
+		resolver:             resolver,
+		queue:                NewPersistentQueue(mail, queueStore),
+		logger:               logger,
+		resolveTimeout:       mail.ResolveTimeout,
+		enqueueTimeout:       mail.EnqueueTimeout,
+		maxConcurrentIngress: mail.MaxConcurrentIngress,
+		ingressSlots:         make(chan struct{}, mail.MaxConcurrentIngress),
 	}
 
 	server := smtp.NewServer(backend)
@@ -66,21 +66,24 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 // smtpBackend creates one SMTP session per inbound TCP connection.
 type smtpBackend struct {
-	resolver       RecipientResolver
-	accessManager  CatchAllAccessManager
-	forwarder      MessageForwarder
-	logger         smtp.Logger
-	forwardTimeout time.Duration
+	resolver             RecipientResolver
+	queue                DeliveryQueue
+	logger               smtp.Logger
+	resolveTimeout       time.Duration
+	enqueueTimeout       time.Duration
+	maxConcurrentIngress int
+	ingressSlots         chan struct{}
 }
 
 // NewSession allocates the per-connection SMTP session state.
 func (b *smtpBackend) NewSession(c *smtp.Conn) (smtp.Session, error) {
 	return &smtpSession{
 		resolver:       b.resolver,
-		accessManager:  b.accessManager,
-		forwarder:      b.forwarder,
+		queue:          b.queue,
 		logger:         b.logger,
-		forwardTimeout: b.forwardTimeout,
+		resolveTimeout: b.resolveTimeout,
+		enqueueTimeout: b.enqueueTimeout,
+		ingressSlots:   b.ingressSlots,
 		recipients:     make([]ResolvedRecipient, 0, 4),
 	}, nil
 }
@@ -88,10 +91,11 @@ func (b *smtpBackend) NewSession(c *smtp.Conn) (smtp.Session, error) {
 // smtpSession stores the current envelope state for one SMTP transaction.
 type smtpSession struct {
 	resolver       RecipientResolver
-	accessManager  CatchAllAccessManager
-	forwarder      MessageForwarder
+	queue          DeliveryQueue
 	logger         smtp.Logger
-	forwardTimeout time.Duration
+	resolveTimeout time.Duration
+	enqueueTimeout time.Duration
+	ingressSlots   chan struct{}
 	mailFrom       string
 	recipients     []ResolvedRecipient
 }
@@ -111,7 +115,10 @@ func (s *smtpSession) Mail(from string, opts *smtp.MailOptions) error {
 // Rcpt resolves one recipient against the local database before the message
 // body is accepted, so unknown or disabled mailboxes fail early at RCPT time.
 func (s *smtpSession) Rcpt(to string, opts *smtp.RcptOptions) error {
-	resolved, err := s.resolver.ResolveRecipient(context.Background(), to)
+	resolveCtx, cancel := context.WithTimeout(context.Background(), s.resolveTimeout)
+	defer cancel()
+
+	resolved, err := s.resolver.ResolveRecipient(resolveCtx, to)
 	if err != nil {
 		return recipientSMTPError(err)
 	}
@@ -130,6 +137,15 @@ func (s *smtpSession) Data(r io.Reader) error {
 		}
 	}
 
+	if !s.acquireIngressSlot() {
+		return &smtp.SMTPError{
+			Code:         451,
+			EnhancedCode: smtp.EnhancedCode{4, 3, 2},
+			Message:      "mail relay is busy, please retry later",
+		}
+	}
+	defer s.releaseIngressSlot()
+
 	rawMessage, err := io.ReadAll(r)
 	if err != nil {
 		return &smtp.SMTPError{
@@ -139,97 +155,15 @@ func (s *smtpSession) Data(r io.Reader) error {
 		}
 	}
 
-	plans := make([]forwardGroupPlan, 0, len(s.recipients))
-	for _, group := range groupRecipientsByTarget(s.recipients) {
-		reservations, reservationErr := s.reserveCatchAllUsageForGroup(group)
-		if reservationErr != nil {
-			for _, prepared := range plans {
-				s.releaseCatchAllReservations(prepared.Reservations)
-			}
-			return catchAllAccessSMTPError(reservationErr)
-		}
-		plans = append(plans, forwardGroupPlan{
-			Group:        group,
-			Reservations: reservations,
-		})
-	}
+	enqueueCtx, cancel := context.WithTimeout(context.Background(), s.enqueueTimeout)
+	defer cancel()
 
-	return s.forwardGroupsConcurrently(rawMessage, plans)
-}
-
-// forwardGroupPlan stores one final target inbox together with the already
-// reserved catch-all quota that must be released if this forward action fails.
-type forwardGroupPlan struct {
-	Group        groupedRecipients
-	Reservations []CatchAllUsageReservation
-}
-
-// forwardGroupResult captures the completion status of one concurrent forward
-// action so the SMTP session can surface the first failure after fan-out ends.
-type forwardGroupResult struct {
-	Group groupedRecipients
-	Err   error
-}
-
-// forwardGroupsConcurrently removes the per-target serial bottleneck inside one
-// SMTP DATA transaction. go-smtp already handles connection concurrency; this
-// helper makes one accepted message fan out to all target inboxes in parallel.
-func (s *smtpSession) forwardGroupsConcurrently(rawMessage []byte, plans []forwardGroupPlan) error {
-	if len(plans) == 0 {
-		return nil
-	}
-
-	results := make(chan forwardGroupResult, len(plans))
-	forwardBaseCtx, cancelAll := context.WithCancel(context.Background())
-	defer cancelAll()
-
-	var firstFailure sync.Once
-	var waitGroup sync.WaitGroup
-	for _, plan := range plans {
-		waitGroup.Add(1)
-		go func(plan forwardGroupPlan) {
-			defer waitGroup.Done()
-
-			forwardCtx, cancel := context.WithTimeout(forwardBaseCtx, s.forwardTimeout)
-			defer cancel()
-
-			err := s.forwarder.Forward(forwardCtx, ForwardRequest{
-				OriginalEnvelopeFrom: s.mailFrom,
-				OriginalEnvelopeTo:   plan.Group.OriginalRecipients,
-				TargetRecipients:     []string{plan.Group.TargetEmail},
-				RawMessage:           rawMessage,
-			})
-			if err != nil {
-				s.releaseCatchAllReservations(plan.Reservations)
-				firstFailure.Do(cancelAll)
-			}
-			results <- forwardGroupResult{
-				Group: plan.Group,
-				Err:   err,
-			}
-		}(plan)
-	}
-
-	waitGroup.Wait()
-	close(results)
-
-	var firstErr error
-	for result := range results {
-		if result.Err == nil {
-			continue
-		}
-		s.logger.Printf(
-			"linuxdospace mail relay forward failed: target=%s recipients=%v err=%v",
-			result.Group.TargetEmail,
-			result.Group.OriginalRecipients,
-			result.Err,
-		)
-		if firstErr == nil {
-			firstErr = result.Err
-		}
-	}
-	if firstErr != nil {
-		return forwardSMTPError(firstErr)
+	if err := s.queue.Enqueue(enqueueCtx, EnqueueRequest{
+		OriginalEnvelopeFrom: s.mailFrom,
+		RawMessage:           rawMessage,
+		Groups:               groupRecipientsByTarget(s.recipients),
+	}); err != nil {
+		return queueSMTPError(err)
 	}
 	return nil
 }
@@ -285,43 +219,6 @@ func groupRecipientsByTarget(recipients []ResolvedRecipient) []groupedRecipients
 	}
 
 	return groups
-}
-
-// reserveCatchAllUsageForGroup reserves catch-all quota exactly once per owner
-// and final forward action for the current target group.
-func (s *smtpSession) reserveCatchAllUsageForGroup(group groupedRecipients) ([]CatchAllUsageReservation, error) {
-	if s.accessManager == nil || len(group.CatchAllOwnerUserIDs) == 0 {
-		return nil, nil
-	}
-
-	reservations := make([]CatchAllUsageReservation, 0, len(group.CatchAllOwnerUserIDs))
-	for _, ownerUserID := range group.CatchAllOwnerUserIDs {
-		reservation, err := s.accessManager.Reserve(context.Background(), ownerUserID, 1)
-		if err != nil {
-			s.releaseCatchAllReservations(reservations)
-			return nil, err
-		}
-		reservations = append(reservations, reservation)
-	}
-	return reservations, nil
-}
-
-// releaseCatchAllReservations best-effort rolls back reservations that were
-// created for a group whose upstream SMTP forward failed.
-func (s *smtpSession) releaseCatchAllReservations(reservations []CatchAllUsageReservation) {
-	if s.accessManager == nil {
-		return
-	}
-	for _, reservation := range reservations {
-		if err := s.accessManager.Release(context.Background(), reservation); err != nil {
-			s.logger.Printf(
-				"linuxdospace mail relay failed to release catch-all reservation: user_id=%d usage_date=%s err=%v",
-				reservation.UserID,
-				reservation.UsageDate,
-				err,
-			)
-		}
-	}
 }
 
 // uniqueCatchAllOwners starts one group with the single owner that should be
@@ -416,6 +313,56 @@ func forwardSMTPError(err error) error {
 			EnhancedCode: smtp.EnhancedCode{4, 4, 0},
 			Message:      "failed to forward message upstream",
 		}
+	}
+}
+
+// queueSMTPError converts durable-queue failures into SMTP DATA errors.
+func queueSMTPError(err error) error {
+	switch {
+	case errors.Is(err, ErrCatchAllAccessUnavailable), errors.Is(err, ErrCatchAllDailyLimitExceeded):
+		return catchAllAccessSMTPError(err)
+	case errors.Is(err, context.DeadlineExceeded):
+		return &smtp.SMTPError{
+			Code:         451,
+			EnhancedCode: smtp.EnhancedCode{4, 4, 1},
+			Message:      "mail delivery queue timed out",
+		}
+	default:
+		return &smtp.SMTPError{
+			Code:         451,
+			EnhancedCode: smtp.EnhancedCode{4, 4, 0},
+			Message:      "failed to queue message for delivery",
+		}
+	}
+}
+
+// acquireIngressSlot applies backpressure before the session reads the full
+// message body into memory so the server cannot accept unlimited concurrent
+// DATA uploads under burst load.
+func (s *smtpSession) acquireIngressSlot() bool {
+	if s == nil || cap(s.ingressSlots) == 0 {
+		return true
+	}
+
+	timer := time.NewTimer(s.enqueueTimeout)
+	defer timer.Stop()
+
+	select {
+	case s.ingressSlots <- struct{}{}:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+// releaseIngressSlot frees one previously acquired DATA concurrency slot.
+func (s *smtpSession) releaseIngressSlot() {
+	if s == nil || cap(s.ingressSlots) == 0 {
+		return
+	}
+	select {
+	case <-s.ingressSlots:
+	default:
 	}
 }
 

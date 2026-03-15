@@ -117,13 +117,23 @@ func main() {
 
 	var smtpServer *mailrelay.Server
 	if cfg.UsesDatabaseMailRelay() && cfg.Mail.RelayEnabled {
-		smtpServer = mailrelay.NewServer(
+		if cfg.Mail.ForwardHost == "" {
+			log.Printf("linuxdospace mail relay is using direct MX delivery fallback; configure MAIL_RELAY_FORWARD_HOST for stronger outbound reliability")
+		}
+
+		dispatcher := mailrelay.NewDispatcher(
 			cfg.Mail,
-			mailrelay.NewDBResolver(store),
-			mailrelay.NewDBCatchAllAccessManager(store),
+			store,
 			mailrelay.NewSMTPForwarder(cfg.Mail),
 			log.Default(),
 		)
+		smtpServer = mailrelay.NewServer(
+			cfg.Mail,
+			mailrelay.NewDBResolver(store),
+			store,
+			log.Default(),
+		)
+		go dispatcher.Run(ctx)
 		go func() {
 			log.Printf("linuxdospace mail relay listening on %s", cfg.Mail.SMTPAddr)
 			serverErrors <- runtimeServerError{name: "smtp", err: smtpServer.ListenAndServe()}
@@ -139,6 +149,7 @@ func main() {
 			runtimeErr = fmt.Errorf("%s server failed: %w", serverError.name, serverError.err)
 		}
 	}
+	stop()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

@@ -212,6 +212,66 @@ type RefundEmailCatchAllInput struct {
 	Now          time.Time
 }
 
+// EnqueueMailDeliveryGroupInput describes one final outbound delivery action
+// derived from a set of inbound SMTP recipients that all resolve to the same
+// verified target mailbox.
+type EnqueueMailDeliveryGroupInput struct {
+	OriginalRecipients   []string
+	TargetRecipients     []string
+	CatchAllOwnerUserIDs []int64
+}
+
+// EnqueueMailDeliveryBatchInput describes one atomic "accept SMTP mail and
+// persist delivery jobs" transaction. The storage layer must either reserve
+// any required catch-all quota and enqueue every group, or commit nothing.
+type EnqueueMailDeliveryBatchInput struct {
+	OriginalEnvelopeFrom string
+	RawMessage           []byte
+	Groups               []EnqueueMailDeliveryGroupInput
+	MaxAttempts          int
+	QueuedAt             time.Time
+}
+
+// ClaimMailDeliveryJobsInput describes one worker lease request for ready
+// queued jobs and stale processing jobs whose previous worker lease expired.
+type ClaimMailDeliveryJobsInput struct {
+	Limit         int
+	LeaseDuration time.Duration
+	Now           time.Time
+}
+
+// MarkMailDeliveryJobDeliveredInput describes one terminal success update after
+// the remote SMTP side accepted the message.
+type MarkMailDeliveryJobDeliveredInput struct {
+	ID          int64
+	DeliveredAt time.Time
+}
+
+// MarkMailDeliveryJobRetryInput describes one transient failure update that
+// should return the job to the queue with a later retry time.
+type MarkMailDeliveryJobRetryInput struct {
+	ID            int64
+	LastError     string
+	NextAttemptAt time.Time
+	UpdatedAt     time.Time
+}
+
+// MarkMailDeliveryJobFailedInput describes one terminal failure update that
+// must also refund any reserved catch-all quota in the same transaction.
+type MarkMailDeliveryJobFailedInput struct {
+	ID        int64
+	LastError string
+	FailedAt  time.Time
+}
+
+// CleanupMailDeliveryJobsInput describes the retention cutoffs used to delete
+// old terminal mail-delivery jobs and any orphaned raw messages they leave
+// behind.
+type CleanupMailDeliveryJobsInput struct {
+	DeliveredBefore time.Time
+	FailedBefore    time.Time
+}
+
 // UpsertPaymentProductInput describes one administrator-managed purchasable
 // Linux Do Credit product row.
 type UpsertPaymentProductInput struct {
