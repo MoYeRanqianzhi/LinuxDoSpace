@@ -11,16 +11,16 @@ import (
 	"time"
 )
 
-// TestSMTPForwarderDirectMXFallback verifies that the outbound forwarder still
-// delivers mail when no explicit upstream relay host is configured and the
-// deployment instead falls back to the recipient domain's MX records.
-func TestSMTPForwarderDirectMXFallback(t *testing.T) {
+// TestSMTPForwarderDirectMXDelivery verifies that the outbound forwarder
+// delivers mail directly to the recipient domain's MX hosts.
+func TestSMTPForwarderDirectMXDelivery(t *testing.T) {
 	server := newFakeSMTPServer(t)
 	defer server.Close()
 
 	forwarder := &SMTPForwarder{
-		addr: "",
-		from: "relay@mail.linuxdo.space",
+		from:        "relay@mail.linuxdo.space",
+		helloDomain: "mail.linuxdo.space",
+		mxCacheTTL:  time.Hour,
 		lookupMX: func(ctx context.Context, name string) ([]*net.MX, error) {
 			return []*net.MX{{Host: "mx.example.test.", Pref: 10}}, nil
 		},
@@ -30,6 +30,11 @@ func TestSMTPForwarderDirectMXFallback(t *testing.T) {
 			}
 			return (&net.Dialer{}).DialContext(ctx, network, server.Address())
 		},
+		now: func() time.Time {
+			return time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC)
+		},
+		mxCache:       make(map[string]mxCacheEntry),
+		domainLimiter: newDomainConcurrencyLimiter(4),
 	}
 
 	err := forwarder.Forward(context.Background(), ForwardRequest{
@@ -39,10 +44,13 @@ func TestSMTPForwarderDirectMXFallback(t *testing.T) {
 		RawMessage:           []byte("Subject: test\r\n\r\nbody"),
 	})
 	if err != nil {
-		t.Fatalf("forward through direct mx fallback: %v", err)
+		t.Fatalf("forward through direct mx delivery: %v", err)
 	}
 
 	session := server.WaitForSession(t)
+	if session.hello != "EHLO mail.linuxdo.space" {
+		t.Fatalf("expected explicit EHLO domain, got %q", session.hello)
+	}
 	if session.mailFrom != "FROM:<relay@mail.linuxdo.space>" {
 		t.Fatalf("expected relay envelope sender, got %q", session.mailFrom)
 	}
@@ -54,15 +62,95 @@ func TestSMTPForwarderDirectMXFallback(t *testing.T) {
 	}
 }
 
+// TestSMTPForwarderCachesMXLookups verifies that repeated delivery to the same
+// domain reuses the in-memory MX cache instead of hitting DNS every time.
+func TestSMTPForwarderCachesMXLookups(t *testing.T) {
+	server := newFakeSMTPServer(t)
+	defer server.Close()
+
+	lookupCount := 0
+	forwarder := &SMTPForwarder{
+		from:            "relay@mail.linuxdo.space",
+		helloDomain:     "mail.linuxdo.space",
+		mxLookupTimeout: time.Second,
+		mxCacheTTL:      time.Hour,
+		lookupMX: func(ctx context.Context, name string) ([]*net.MX, error) {
+			lookupCount++
+			return []*net.MX{{Host: "mx.example.test.", Pref: 10}}, nil
+		},
+		dialContext: func(ctx context.Context, network string, address string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, server.Address())
+		},
+		now: func() time.Time {
+			return time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC)
+		},
+		mxCache:       make(map[string]mxCacheEntry),
+		domainLimiter: newDomainConcurrencyLimiter(4),
+	}
+
+	send := func() {
+		t.Helper()
+		err := forwarder.Forward(context.Background(), ForwardRequest{
+			OriginalEnvelopeFrom: "sender@example.org",
+			OriginalEnvelopeTo:   []string{"alias@alice.linuxdo.space"},
+			TargetRecipients:     []string{"target@example.com"},
+			RawMessage:           []byte("Subject: test\r\n\r\nbody"),
+		})
+		if err != nil {
+			t.Fatalf("forward message with mx cache: %v", err)
+		}
+		_ = server.WaitForSession(t)
+	}
+
+	send()
+	send()
+
+	if lookupCount != 1 {
+		t.Fatalf("expected one MX lookup thanks to cache reuse, got %d", lookupCount)
+	}
+}
+
+// TestDomainConcurrencyLimiterBlocksUntilRelease verifies that the per-domain
+// limiter really enforces its cap instead of allowing unlimited same-domain
+// bursts.
+func TestDomainConcurrencyLimiterBlocksUntilRelease(t *testing.T) {
+	limiter := newDomainConcurrencyLimiter(1)
+	domain := "example.com"
+
+	if err := limiter.acquire(context.Background(), domain); err != nil {
+		t.Fatalf("acquire first slot: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- limiter.acquire(ctx, domain)
+	}()
+
+	select {
+	case err := <-waitCh:
+		t.Fatalf("expected second acquire to block until timeout, got %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	limiter.release(domain)
+	if err := <-waitCh; err != nil {
+		t.Fatalf("expected second acquire to proceed after release, got %v", err)
+	}
+}
+
 // fakeSMTPSession stores the SMTP conversation captured by the test server.
 type fakeSMTPSession struct {
+	hello    string
 	mailFrom string
 	rcptTo   []string
 	message  string
 }
 
 // fakeSMTPServer implements just enough of the SMTP protocol for the forwarder
-// tests to assert MAIL FROM, RCPT TO, DATA, and QUIT behavior.
+// tests to assert EHLO, MAIL FROM, RCPT TO, DATA, and QUIT behavior.
 type fakeSMTPServer struct {
 	t        *testing.T
 	listener net.Listener
@@ -83,7 +171,7 @@ func newFakeSMTPServer(t *testing.T) *fakeSMTPServer {
 	server := &fakeSMTPServer{
 		t:         t,
 		listener:  listener,
-		sessionCh: make(chan fakeSMTPSession, 1),
+		sessionCh: make(chan fakeSMTPSession, 2),
 	}
 	go server.serve()
 	return server
@@ -151,6 +239,7 @@ func (s *fakeSMTPServer) handleConnection(conn net.Conn) {
 
 		switch {
 		case strings.HasPrefix(command, "EHLO "), strings.HasPrefix(command, "HELO "):
+			session.hello = command
 			writeLine("250-fake-smtp.local")
 			writeLine("250 PIPELINING")
 		case strings.HasPrefix(command, "MAIL "):

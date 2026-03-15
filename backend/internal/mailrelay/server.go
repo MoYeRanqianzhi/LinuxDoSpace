@@ -15,7 +15,7 @@ import (
 
 const (
 	// defaultForwardTimeout bounds one outbound forwarding attempt so an
-	// unresponsive upstream SMTP relay cannot block the inbound session forever.
+	// unresponsive remote MX host cannot block one queue worker forever.
 	defaultForwardTimeout = 60 * time.Second
 )
 
@@ -305,7 +305,7 @@ func forwardSMTPError(err error) error {
 		return &smtp.SMTPError{
 			Code:         451,
 			EnhancedCode: smtp.EnhancedCode{4, 4, 1},
-			Message:      "upstream smtp relay timed out",
+			Message:      "remote smtp delivery timed out",
 		}
 	default:
 		return &smtp.SMTPError{

@@ -55,11 +55,14 @@ When `EMAIL_FORWARDING_BACKEND=database_relay`, also configure:
 - `MAIL_RELAY_ENSURE_DNS=true`
 - `MAIL_RELAY_SMTP_ADDR=:2525`
 - `MAIL_RELAY_DOMAIN`
+- `MAIL_RELAY_HELO_DOMAIN`
 - `MAIL_RELAY_MX_TARGET`
 - `MAIL_RELAY_MX_PRIORITY`
 - `MAIL_RELAY_SPF_VALUE`
-- `MAIL_RELAY_FORWARD_HOST`
 - `MAIL_RELAY_FORWARD_FROM`
+- `MAIL_RELAY_MX_LOOKUP_TIMEOUT`
+- `MAIL_RELAY_MX_CACHE_TTL`
+- `MAIL_RELAY_MAX_DOMAIN_CONCURRENCY`
 
 Cloudflare Email Routing also requires the API token to include Email Routing Addresses and Email Routing Rules permissions in addition to the existing DNS permissions.
 
@@ -134,4 +137,4 @@ After local startup, verify:
 - If the frontend reports a non-JSON API response, check `VITE_API_BASE_URL` and reverse-proxy routing first.
 - If mailbox forwarding save fails, verify that the target mailbox has already completed Cloudflare destination-address verification.
 - If `database_relay` mode is enabled and inbound mail never arrives, verify LinuxDoSpace created the managed MX/TXT records you expect, the MX target resolves correctly, and host port `25` reaches the container's SMTP listener on `2525`.
-- If `database_relay` mode is enabled and mail is accepted but not forwarded, verify `MAIL_RELAY_FORWARD_HOST`, authentication, and the upstream relay logs.
+- If `database_relay` mode is enabled and mail is accepted but not forwarded, verify outbound TCP `25` egress, remote MX reachability, `PTR/rDNS`, `MAIL_RELAY_HELO_DOMAIN`, and recipient-domain SMTP replies.

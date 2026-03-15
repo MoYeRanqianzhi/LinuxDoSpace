@@ -104,6 +104,7 @@ type MailConfig struct {
 	EnsureDNS            bool
 	SMTPAddr             string
 	Domain               string
+	HELODomain           string
 	MXTarget             string
 	MXPriority           int
 	SPFValue             string
@@ -123,9 +124,9 @@ type MailConfig struct {
 	CleanupInterval      time.Duration
 	DeliveredRetention   time.Duration
 	FailedRetention      time.Duration
-	ForwardHost          string
-	ForwardUsername      string
-	ForwardPassword      string
+	MXLookupTimeout      time.Duration
+	MXCacheTTL           time.Duration
+	MaxDomainConcurrency int
 	ForwardFrom          string
 }
 
@@ -190,6 +191,7 @@ func Load() (Config, error) {
 			EnsureDNS:            mustParseBool(getEnv("MAIL_RELAY_ENSURE_DNS", "true")),
 			SMTPAddr:             getEnv("MAIL_RELAY_SMTP_ADDR", ":2525"),
 			Domain:               getEnv("MAIL_RELAY_DOMAIN", "mail.linuxdo.space"),
+			HELODomain:           getEnv("MAIL_RELAY_HELO_DOMAIN", "mail.linuxdo.space"),
 			MXTarget:             getEnv("MAIL_RELAY_MX_TARGET", "mail.linuxdo.space"),
 			MXPriority:           mustParseInt(getEnv("MAIL_RELAY_MX_PRIORITY", "10")),
 			SPFValue:             getEnv("MAIL_RELAY_SPF_VALUE", "v=spf1 -all"),
@@ -209,9 +211,9 @@ func Load() (Config, error) {
 			CleanupInterval:      mustParseDuration(getEnv("MAIL_RELAY_CLEANUP_INTERVAL", "15m")),
 			DeliveredRetention:   mustParseDuration(getEnv("MAIL_RELAY_DELIVERED_RETENTION", "24h")),
 			FailedRetention:      mustParseDuration(getEnv("MAIL_RELAY_FAILED_RETENTION", "168h")),
-			ForwardHost:          strings.TrimSpace(os.Getenv("MAIL_RELAY_FORWARD_HOST")),
-			ForwardUsername:      strings.TrimSpace(os.Getenv("MAIL_RELAY_FORWARD_USERNAME")),
-			ForwardPassword:      strings.TrimSpace(os.Getenv("MAIL_RELAY_FORWARD_PASSWORD")),
+			MXLookupTimeout:      mustParseDuration(getEnv("MAIL_RELAY_MX_LOOKUP_TIMEOUT", "5s")),
+			MXCacheTTL:           mustParseDuration(getEnv("MAIL_RELAY_MX_CACHE_TTL", "10m")),
+			MaxDomainConcurrency: mustParseInt(getEnv("MAIL_RELAY_MAX_DOMAIN_CONCURRENCY", "8")),
 			ForwardFrom:          strings.TrimSpace(os.Getenv("MAIL_RELAY_FORWARD_FROM")),
 		},
 		LoadedAtUTC: time.Now().UTC(),
@@ -426,8 +428,7 @@ func validateDatabaseConfig(database DatabaseConfig) error {
 
 // validateMailConfig keeps the selected forwarding execution mode explicit and
 // fails fast when the built-in relay would start without the minimum settings
-// required to forward mail safely, whether through an explicit upstream relay
-// or through direct MX delivery fallback.
+// required to forward mail safely through direct MX delivery.
 func validateMailConfig(mail MailConfig) error {
 	switch strings.ToLower(strings.TrimSpace(mail.ForwardingBackend)) {
 	case EmailForwardingBackendCloudflare:
@@ -484,6 +485,15 @@ func validateMailConfig(mail MailConfig) error {
 		if mail.FailedRetention <= 0 {
 			return fmt.Errorf("MAIL_RELAY_FAILED_RETENTION must be greater than 0")
 		}
+		if mail.MXLookupTimeout <= 0 {
+			return fmt.Errorf("MAIL_RELAY_MX_LOOKUP_TIMEOUT must be greater than 0")
+		}
+		if mail.MXCacheTTL <= 0 {
+			return fmt.Errorf("MAIL_RELAY_MX_CACHE_TTL must be greater than 0")
+		}
+		if mail.MaxDomainConcurrency < 1 {
+			return fmt.Errorf("MAIL_RELAY_MAX_DOMAIN_CONCURRENCY must be at least 1")
+		}
 		if mail.MXPriority < 0 {
 			return fmt.Errorf("MAIL_RELAY_MX_PRIORITY must be at least 0")
 		}
@@ -494,11 +504,11 @@ func validateMailConfig(mail MailConfig) error {
 			if strings.TrimSpace(mail.Domain) == "" {
 				return fmt.Errorf("MAIL_RELAY_DOMAIN is required when MAIL_RELAY_ENABLED=true")
 			}
+			if strings.TrimSpace(mail.HELODomain) == "" {
+				return fmt.Errorf("MAIL_RELAY_HELO_DOMAIN is required when MAIL_RELAY_ENABLED=true")
+			}
 			if strings.TrimSpace(mail.ForwardFrom) == "" {
 				return fmt.Errorf("MAIL_RELAY_FORWARD_FROM is required when MAIL_RELAY_ENABLED=true")
-			}
-			if strings.TrimSpace(mail.ForwardHost) == "" && (strings.TrimSpace(mail.ForwardUsername) != "" || strings.TrimSpace(mail.ForwardPassword) != "") {
-				return fmt.Errorf("MAIL_RELAY_FORWARD_HOST is required when MAIL_RELAY_FORWARD_USERNAME or MAIL_RELAY_FORWARD_PASSWORD is set")
 			}
 		}
 		if mail.EnsureDNS && strings.TrimSpace(firstNonEmptyString(mail.MXTarget, mail.Domain)) == "" {

@@ -117,10 +117,6 @@ func main() {
 
 	var smtpServer *mailrelay.Server
 	if cfg.UsesDatabaseMailRelay() && cfg.Mail.RelayEnabled {
-		if cfg.Mail.ForwardHost == "" {
-			log.Printf("linuxdospace mail relay is using direct MX delivery fallback; configure MAIL_RELAY_FORWARD_HOST for stronger outbound reliability")
-		}
-
 		dispatcher := mailrelay.NewDispatcher(
 			cfg.Mail,
 			store,

@@ -146,7 +146,7 @@ LinuxDoSpace now supports two mailbox-forwarding execution backends:
 - `EMAIL_FORWARDING_BACKEND=database_relay`
   The backend uses a hybrid model:
   exact mailboxes on the parent root domain still sync to Cloudflare Email Routing,
-  while subdomain-scoped relay namespaces and catch-all delivery are executed by the built-in SMTP listener and forwarded through `MAIL_RELAY_FORWARD_HOST`.
+  while subdomain-scoped relay namespaces and catch-all delivery are executed by the built-in SMTP listener and forwarded by direct MX delivery from this service itself.
 
 The current implementation still uses Cloudflare destination-address verification
 for user-owned forwarding targets in both modes, because that remains the
@@ -175,11 +175,16 @@ Additional requirement for `EMAIL_FORWARDING_BACKEND=database_relay`:
 - `MAIL_RELAY_ENSURE_DNS=true`
 - `MAIL_RELAY_SMTP_ADDR=:2525`
 - `MAIL_RELAY_DOMAIN=mail.example.com`
+- `MAIL_RELAY_HELO_DOMAIN=mail.example.com`
 - `MAIL_RELAY_MX_TARGET=mail.example.com`
 - `MAIL_RELAY_MX_PRIORITY=10`
 - `MAIL_RELAY_SPF_VALUE=v=spf1 -all`
-- `MAIL_RELAY_FORWARD_HOST=smtp.example.com:587`
 - `MAIL_RELAY_FORWARD_FROM=relay@mail.example.com`
+- `MAIL_RELAY_MX_LOOKUP_TIMEOUT=5s`
+- `MAIL_RELAY_MX_CACHE_TTL=10m`
+- `MAIL_RELAY_MAX_CONCURRENT_INGRESS=128`
+- `MAIL_RELAY_WORKERS=64`
+- `MAIL_RELAY_MAX_DOMAIN_CONCURRENCY=8`
 
 Operational DNS note for `database_relay`:
 
@@ -196,17 +201,17 @@ Operational DNS note for `database_relay`:
   records, because they keep using Cloudflare's exact-address forwarding path
 - LinuxDoSpace only updates DNS records carrying its own mail-relay comment, so
   unrelated user TXT/MX records are not rewritten
-- the MX target itself still must resolve to the real SMTP listener host or the
-  upstream mail gateway that passes mail into this service
-- if `MAIL_RELAY_FORWARD_HOST` is left empty, LinuxDoSpace falls back to direct
-  per-domain MX delivery for outbound forwarding; this is useful for initial
-  recovery, but deliverability is usually worse than a dedicated SMTP relay
+- the MX target itself must resolve to the real SMTP listener host running
+  LinuxDoSpace, and that host must accept inbound SMTP on port `25`
+- LinuxDoSpace now always performs direct per-domain MX delivery for outbound
+  forwarding, so operators must prepare SMTP egress, `PTR/rDNS`, `HELO`,
+  `SPF`, and ideally `DKIM`/`DMARC` before expecting stable deliverability
 
 Operational notes:
 
 - destination mailboxes must be verified in Cloudflare before LinuxDoSpace can activate forwarding rules
 - `cloudflare` mode still depends on Cloudflare Email Routing DNS readiness
-- `database_relay` mode depends on the built-in SMTP listener being reachable on the configured MX target and on a working upstream SMTP relay for outbound forwarding
+- `database_relay` mode depends on the built-in SMTP listener being reachable on the configured MX target and on unrestricted outbound SMTP delivery to remote MX hosts
 
 ## Frontend deployment on Cloudflare Pages
 

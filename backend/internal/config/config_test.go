@@ -240,8 +240,8 @@ func TestLoadDefaultsToCloudflareEmailForwarding(t *testing.T) {
 }
 
 // TestLoadAcceptsDatabaseRelayConfiguration verifies the server-side relay mode
-// can be enabled once the required SMTP listener, envelope sender, and optional
-// upstream relay settings are provided explicitly.
+// can be enabled once the required SMTP listener, direct-MX identity, and
+// queue settings are provided explicitly.
 func TestLoadAcceptsDatabaseRelayConfiguration(t *testing.T) {
 	t.Setenv("APP_SESSION_SECRET", "test-session-secret")
 	t.Setenv("APP_ENV", "development")
@@ -251,7 +251,7 @@ func TestLoadAcceptsDatabaseRelayConfiguration(t *testing.T) {
 	t.Setenv("MAIL_RELAY_ENABLED", "true")
 	t.Setenv("MAIL_RELAY_SMTP_ADDR", ":2525")
 	t.Setenv("MAIL_RELAY_DOMAIN", "mail.linuxdo.space")
-	t.Setenv("MAIL_RELAY_FORWARD_HOST", "smtp.example.com:587")
+	t.Setenv("MAIL_RELAY_HELO_DOMAIN", "mail.linuxdo.space")
 	t.Setenv("MAIL_RELAY_FORWARD_FROM", "relay@linuxdo.space")
 
 	cfg, err := Load()
@@ -264,8 +264,8 @@ func TestLoadAcceptsDatabaseRelayConfiguration(t *testing.T) {
 	if !cfg.Mail.RelayEnabled {
 		t.Fatalf("expected smtp relay listener to be enabled")
 	}
-	if cfg.Mail.ForwardHost != "smtp.example.com:587" {
-		t.Fatalf("expected forward host to survive load, got %q", cfg.Mail.ForwardHost)
+	if cfg.Mail.HELODomain != "mail.linuxdo.space" {
+		t.Fatalf("expected helo domain to survive load, got %q", cfg.Mail.HELODomain)
 	}
 	if !cfg.Mail.EnsureDNS {
 		t.Fatalf("expected dns automation to stay enabled by default in database relay mode")
@@ -291,11 +291,21 @@ func TestLoadAcceptsDatabaseRelayConfiguration(t *testing.T) {
 	if cfg.Mail.MaxAttempts != 10 {
 		t.Fatalf("expected default max attempts 10, got %d", cfg.Mail.MaxAttempts)
 	}
+	if cfg.Mail.MXLookupTimeout != 5*time.Second {
+		t.Fatalf("expected default mx lookup timeout 5s, got %v", cfg.Mail.MXLookupTimeout)
+	}
+	if cfg.Mail.MXCacheTTL != 10*time.Minute {
+		t.Fatalf("expected default mx cache ttl 10m, got %v", cfg.Mail.MXCacheTTL)
+	}
+	if cfg.Mail.MaxDomainConcurrency != 8 {
+		t.Fatalf("expected default max domain concurrency 8, got %d", cfg.Mail.MaxDomainConcurrency)
+	}
 }
 
-// TestLoadAcceptsDatabaseRelayDirectMXFallback verifies the built-in relay can
-// start without MAIL_RELAY_FORWARD_HOST and will rely on direct MX delivery.
-func TestLoadAcceptsDatabaseRelayDirectMXFallback(t *testing.T) {
+// TestLoadDefaultsHELODomain verifies that the direct-MX relay keeps a stable
+// SMTP greeting hostname even when the operator leaves the explicit variable
+// unset in development.
+func TestLoadDefaultsHELODomain(t *testing.T) {
 	t.Setenv("APP_SESSION_SECRET", "test-session-secret")
 	t.Setenv("APP_ENV", "development")
 	t.Setenv("APP_ADMIN_USERNAMES", "")
@@ -304,26 +314,21 @@ func TestLoadAcceptsDatabaseRelayDirectMXFallback(t *testing.T) {
 	t.Setenv("MAIL_RELAY_ENABLED", "true")
 	t.Setenv("MAIL_RELAY_SMTP_ADDR", ":2525")
 	t.Setenv("MAIL_RELAY_DOMAIN", "mail.linuxdo.space")
-	t.Setenv("MAIL_RELAY_FORWARD_HOST", "")
-	t.Setenv("MAIL_RELAY_FORWARD_USERNAME", "")
-	t.Setenv("MAIL_RELAY_FORWARD_PASSWORD", "")
+	t.Setenv("MAIL_RELAY_HELO_DOMAIN", "   ")
 	t.Setenv("MAIL_RELAY_FORWARD_FROM", "relay@mail.linuxdo.space")
 
 	cfg, err := Load()
 	if err != nil {
-		t.Fatalf("load config for database mail relay direct mx fallback: %v", err)
+		t.Fatalf("expected blank helo domain to fall back to default, got %v", err)
 	}
-	if cfg.Mail.ForwardHost != "" {
-		t.Fatalf("expected direct mx fallback to keep empty forward host, got %q", cfg.Mail.ForwardHost)
-	}
-	if cfg.Mail.ForwardFrom != "relay@mail.linuxdo.space" {
-		t.Fatalf("expected configured envelope sender to survive load, got %q", cfg.Mail.ForwardFrom)
+	if cfg.Mail.HELODomain != "mail.linuxdo.space" {
+		t.Fatalf("expected helo domain fallback mail.linuxdo.space, got %q", cfg.Mail.HELODomain)
 	}
 }
 
-// TestLoadRejectsRelayAuthWithoutHost ensures operator typos cannot configure
-// SMTP authentication credentials without also specifying the upstream host.
-func TestLoadRejectsRelayAuthWithoutHost(t *testing.T) {
+// TestLoadRejectsInvalidDomainConcurrency verifies that the direct-MX relay
+// fails closed when the per-domain burst cap is not a positive integer.
+func TestLoadRejectsInvalidDomainConcurrency(t *testing.T) {
 	t.Setenv("APP_SESSION_SECRET", "test-session-secret")
 	t.Setenv("APP_ENV", "development")
 	t.Setenv("APP_ADMIN_USERNAMES", "")
@@ -332,25 +337,15 @@ func TestLoadRejectsRelayAuthWithoutHost(t *testing.T) {
 	t.Setenv("MAIL_RELAY_ENABLED", "true")
 	t.Setenv("MAIL_RELAY_SMTP_ADDR", ":2525")
 	t.Setenv("MAIL_RELAY_DOMAIN", "mail.linuxdo.space")
-	t.Setenv("MAIL_RELAY_FORWARD_HOST", "")
-	t.Setenv("MAIL_RELAY_FORWARD_USERNAME", "user")
-	t.Setenv("MAIL_RELAY_FORWARD_PASSWORD", "pass")
-	t.Setenv("MAIL_RELAY_FORWARD_FROM", "")
+	t.Setenv("MAIL_RELAY_HELO_DOMAIN", "mail.linuxdo.space")
+	t.Setenv("MAIL_RELAY_FORWARD_FROM", "relay@mail.linuxdo.space")
+	t.Setenv("MAIL_RELAY_MAX_DOMAIN_CONCURRENCY", "0")
 
 	_, err := Load()
 	if err == nil {
-		t.Fatalf("expected incomplete database relay configuration to fail")
+		t.Fatalf("expected invalid per-domain concurrency to fail")
 	}
-	if !strings.Contains(err.Error(), "MAIL_RELAY_FORWARD_FROM is required") {
-		t.Fatalf("unexpected error for missing forward from: %v", err)
-	}
-
-	t.Setenv("MAIL_RELAY_FORWARD_FROM", "relay@mail.linuxdo.space")
-	_, err = Load()
-	if err == nil {
-		t.Fatalf("expected auth without forward host to fail")
-	}
-	if !strings.Contains(err.Error(), "MAIL_RELAY_FORWARD_HOST is required when MAIL_RELAY_FORWARD_USERNAME or MAIL_RELAY_FORWARD_PASSWORD is set") {
+	if !strings.Contains(err.Error(), "MAIL_RELAY_MAX_DOMAIN_CONCURRENCY must be at least 1") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
