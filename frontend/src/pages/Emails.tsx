@@ -750,6 +750,27 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
                     <InfoStat title="当前模式" value={describeCatchAllAccessMode(permission)} />
                   </div>
 
+                  {permission.catch_all_access ? (
+                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                      <InfoStat
+                        title="订阅到期"
+                        value={permission.catch_all_access.subscription_expires_at ? formatDate(permission.catch_all_access.subscription_expires_at) : '未订阅'}
+                      />
+                      <InfoStat
+                        title="剩余次数"
+                        value={permission.catch_all_access.remaining_count.toLocaleString('zh-CN')}
+                      />
+                      <InfoStat
+                        title="今日剩余"
+                        value={permission.catch_all_access.daily_remaining_count.toLocaleString('zh-CN')}
+                      />
+                      <InfoStat
+                        title="单日上限"
+                        value={permission.catch_all_access.effective_daily_limit.toLocaleString('zh-CN')}
+                      />
+                    </div>
+                  ) : null}
+
                   {permission.eligibility_reasons.length > 0 ? (
                     <div className="rounded-2xl border border-amber-300/35 bg-amber-50/80 p-4 text-sm leading-7 text-amber-900 dark:border-amber-500/20 dark:bg-amber-950/25 dark:text-amber-100">
                       <div className="mb-2 font-semibold">当前暂不可直接申请：</div>
