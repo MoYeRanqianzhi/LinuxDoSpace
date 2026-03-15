@@ -91,13 +91,15 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
 
   const [newTargetEmail, setNewTargetEmail] = useState('');
   const [creatingTarget, setCreatingTarget] = useState(false);
-  const [resendingTargetID, setResendingTargetID] = useState<number | null>(null);
+  const [resendingTargetIDs, setResendingTargetIDs] = useState<Record<number, boolean>>({});
   const [targetNotice, setTargetNotice] = useState<SectionNotice | null>(null);
+  const [targetRowNotices, setTargetRowNotices] = useState<Record<number, SectionNotice>>({});
 
   const [applyingPermission, setApplyingPermission] = useState(false);
   const [pledgeModalOpen, setPledgeModalOpen] = useState(false);
   const loadRequestTokenRef = useRef(0);
   const searchRequestTokenRef = useRef(0);
+  const resendingTargetIDsRef = useRef<Set<number>>(new Set());
 
   const normalizedUsername = useMemo(() => normalizePrefix(user?.username ?? ''), [user?.username]);
   const configuredRootDomain = useMemo(() => {
@@ -167,6 +169,9 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
       setDefaultNotice(null);
       setCatchAllNotice(null);
       setTargetNotice(null);
+      setTargetRowNotices({});
+      setResendingTargetIDs({});
+      resendingTargetIDsRef.current.clear();
       setPledgeModalOpen(false);
       return;
     }
@@ -308,6 +313,7 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
 
   async function handleRefreshTargets(): Promise<void> {
     await loadAuthenticatedData();
+    setTargetRowNotices({});
     setTargetNotice({
       tone: 'info',
       message: '已刷新目标邮箱状态。若你刚完成邮箱确认，现在应该能看到最新验证结果。',
@@ -316,23 +322,42 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
 
   async function handleResendTargetVerification(targetID: number): Promise<void> {
     if (!csrfToken) {
-      setTargetNotice({ tone: 'error', message: '当前会话缺少 CSRF Token，请重新登录后再试。' });
+      setTargetRowNotices((current) => ({
+        ...current,
+        [targetID]: { tone: 'error', message: '当前会话缺少 CSRF Token，请重新登录后再试。' },
+      }));
+      return;
+    }
+    if (resendingTargetIDsRef.current.has(targetID)) {
       return;
     }
 
     try {
-      setResendingTargetID(targetID);
-      setTargetNotice(null);
+      resendingTargetIDsRef.current.add(targetID);
+      setResendingTargetIDs((current) => ({ ...current, [targetID]: true }));
+      setTargetRowNotices((current) => {
+        const next = { ...current };
+        delete next[targetID];
+        return next;
+      });
       const updatedTarget = await resendMyEmailTargetVerification(targetID, csrfToken);
       setEmailTargets((currentTargets) => upsertEmailTarget(currentTargets, updatedTarget));
-      setTargetNotice({
-        tone: 'success',
-        message: `已重新向 ${updatedTarget.email} 发送 Cloudflare 验证邮件，请前往目标邮箱查收。`,
-      });
+      setTargetRowNotices((current) => ({
+        ...current,
+        [targetID]: { tone: 'success', message: `已重新向 ${updatedTarget.email} 发送 Cloudflare 验证邮件，请前往目标邮箱查收。` },
+      }));
     } catch (error) {
-      setTargetNotice({ tone: 'error', message: readableErrorMessage(error, '重新发送验证邮件失败。') });
+      setTargetRowNotices((current) => ({
+        ...current,
+        [targetID]: { tone: 'error', message: readableErrorMessage(error, '重新发送验证邮件失败。') },
+      }));
     } finally {
-      setResendingTargetID(null);
+      resendingTargetIDsRef.current.delete(targetID);
+      setResendingTargetIDs((current) => {
+        const next = { ...current };
+        delete next[targetID];
+        return next;
+      });
     }
   }
 
@@ -685,15 +710,26 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
                           <td className="px-5 py-4 align-top text-sm text-gray-600 dark:text-gray-300">
                             <div>{item.last_verification_sent_at ? `验证邮件发送于 ${formatDate(item.last_verification_sent_at)}` : `最近更新于 ${formatDate(item.updated_at)}`}</div>
                             {!item.verified ? (
-                              <button
-                                type="button"
-                                onClick={() => void handleResendTargetVerification(item.id)}
-                                disabled={resendingTargetID === item.id}
-                                className="mt-3 inline-flex items-center gap-2 rounded-xl border border-sky-200 bg-white/70 px-3 py-2 text-xs font-semibold text-sky-700 transition hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-sky-800/40 dark:bg-black/20 dark:text-sky-300 dark:hover:bg-sky-900/20"
-                              >
-                                {resendingTargetID === item.id ? <LoaderCircle className="animate-spin" size={14} /> : <RefreshCw size={14} />}
-                                重新发送验证
-                              </button>
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => void handleResendTargetVerification(item.id)}
+                                  disabled={Boolean(resendingTargetIDs[item.id])}
+                                  className="mt-3 inline-flex items-center gap-2 rounded-xl border border-sky-200 bg-white/70 px-3 py-2 text-xs font-semibold text-sky-700 transition hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-sky-800/40 dark:bg-black/20 dark:text-sky-300 dark:hover:bg-sky-900/20"
+                                >
+                                  {resendingTargetIDs[item.id] ? <LoaderCircle className="animate-spin" size={14} /> : <RefreshCw size={14} />}
+                                  重新发送验证
+                                </button>
+                                {targetRowNotices[item.id] ? (
+                                  <div className={`mt-3 rounded-2xl px-3 py-2 text-xs leading-6 ${
+                                    targetRowNotices[item.id].tone === 'success'
+                                      ? 'border border-emerald-200/70 bg-emerald-50/80 text-emerald-700 dark:border-emerald-700/40 dark:bg-emerald-950/25 dark:text-emerald-200'
+                                      : 'border border-red-300/60 bg-red-50/80 text-red-700 dark:border-red-500/30 dark:bg-red-950/25 dark:text-red-200'
+                                  }`}>
+                                    {targetRowNotices[item.id].message}
+                                  </div>
+                                ) : null}
+                              </>
                             ) : null}
                           </td>
                         </tr>
