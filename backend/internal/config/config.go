@@ -401,8 +401,9 @@ func validateDatabaseConfig(database DatabaseConfig) error {
 }
 
 // validateMailConfig keeps the selected forwarding execution mode explicit and
-// fails fast when the built-in relay would start without the minimum upstream
-// SMTP settings required to forward mail safely.
+// fails fast when the built-in relay would start without the minimum settings
+// required to forward mail safely, whether through an explicit upstream relay
+// or through direct MX delivery fallback.
 func validateMailConfig(mail MailConfig) error {
 	switch strings.ToLower(strings.TrimSpace(mail.ForwardingBackend)) {
 	case EmailForwardingBackendCloudflare:
@@ -430,11 +431,11 @@ func validateMailConfig(mail MailConfig) error {
 			if strings.TrimSpace(mail.Domain) == "" {
 				return fmt.Errorf("MAIL_RELAY_DOMAIN is required when MAIL_RELAY_ENABLED=true")
 			}
-			if strings.TrimSpace(mail.ForwardHost) == "" {
-				return fmt.Errorf("MAIL_RELAY_FORWARD_HOST is required when MAIL_RELAY_ENABLED=true")
-			}
 			if strings.TrimSpace(mail.ForwardFrom) == "" {
 				return fmt.Errorf("MAIL_RELAY_FORWARD_FROM is required when MAIL_RELAY_ENABLED=true")
+			}
+			if strings.TrimSpace(mail.ForwardHost) == "" && (strings.TrimSpace(mail.ForwardUsername) != "" || strings.TrimSpace(mail.ForwardPassword) != "") {
+				return fmt.Errorf("MAIL_RELAY_FORWARD_HOST is required when MAIL_RELAY_FORWARD_USERNAME or MAIL_RELAY_FORWARD_PASSWORD is set")
 			}
 		}
 		if mail.EnsureDNS && strings.TrimSpace(firstNonEmptyString(mail.MXTarget, mail.Domain)) == "" {

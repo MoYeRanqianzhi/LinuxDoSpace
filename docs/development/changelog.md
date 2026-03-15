@@ -5,6 +5,9 @@
 - Added database-relay ingress DNS backfill on catch-all save and service
   startup, so previously approved namespace mail domains are repaired
   automatically after operators switch MX targets or migrate servers.
+- Added direct MX-delivery fallback for the built-in SMTP relay so namespace
+  mail forwarding can still function when `MAIL_RELAY_FORWARD_HOST` is not yet
+  configured with a dedicated upstream provider.
 - Added administrator-manageable PoW configuration, including a global feature switch, base reward min/max, per-benefit toggles, per-difficulty toggles, and per-user daily completion overrides.
 - Updated the public PoW panel so realtime attempt count, best progress, and elapsed time now appear directly inside the “当前题目” area.
 - Added per-user proof-of-work welfare challenges under the public permissions page, with server-generated Argon2id puzzles, browser-side local solving, daily UTC claim limits, and atomic reward grants into `email_catch_all_remaining_count`.

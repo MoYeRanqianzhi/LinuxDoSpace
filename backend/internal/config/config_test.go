@@ -239,8 +239,8 @@ func TestLoadDefaultsToCloudflareEmailForwarding(t *testing.T) {
 }
 
 // TestLoadAcceptsDatabaseRelayConfiguration verifies the server-side relay mode
-// can be enabled once the required SMTP listener and upstream relay settings
-// are provided explicitly.
+// can be enabled once the required SMTP listener, envelope sender, and optional
+// upstream relay settings are provided explicitly.
 func TestLoadAcceptsDatabaseRelayConfiguration(t *testing.T) {
 	t.Setenv("APP_SESSION_SECRET", "test-session-secret")
 	t.Setenv("APP_ENV", "development")
@@ -277,9 +277,9 @@ func TestLoadAcceptsDatabaseRelayConfiguration(t *testing.T) {
 	}
 }
 
-// TestLoadRejectsIncompleteDatabaseRelayConfiguration ensures the relay cannot
-// start in server-side mode without the minimum upstream SMTP configuration.
-func TestLoadRejectsIncompleteDatabaseRelayConfiguration(t *testing.T) {
+// TestLoadAcceptsDatabaseRelayDirectMXFallback verifies the built-in relay can
+// start without MAIL_RELAY_FORWARD_HOST and will rely on direct MX delivery.
+func TestLoadAcceptsDatabaseRelayDirectMXFallback(t *testing.T) {
 	t.Setenv("APP_SESSION_SECRET", "test-session-secret")
 	t.Setenv("APP_ENV", "development")
 	t.Setenv("APP_ADMIN_USERNAMES", "")
@@ -289,13 +289,52 @@ func TestLoadRejectsIncompleteDatabaseRelayConfiguration(t *testing.T) {
 	t.Setenv("MAIL_RELAY_SMTP_ADDR", ":2525")
 	t.Setenv("MAIL_RELAY_DOMAIN", "mail.linuxdo.space")
 	t.Setenv("MAIL_RELAY_FORWARD_HOST", "")
+	t.Setenv("MAIL_RELAY_FORWARD_USERNAME", "")
+	t.Setenv("MAIL_RELAY_FORWARD_PASSWORD", "")
+	t.Setenv("MAIL_RELAY_FORWARD_FROM", "relay@mail.linuxdo.space")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load config for database mail relay direct mx fallback: %v", err)
+	}
+	if cfg.Mail.ForwardHost != "" {
+		t.Fatalf("expected direct mx fallback to keep empty forward host, got %q", cfg.Mail.ForwardHost)
+	}
+	if cfg.Mail.ForwardFrom != "relay@mail.linuxdo.space" {
+		t.Fatalf("expected configured envelope sender to survive load, got %q", cfg.Mail.ForwardFrom)
+	}
+}
+
+// TestLoadRejectsRelayAuthWithoutHost ensures operator typos cannot configure
+// SMTP authentication credentials without also specifying the upstream host.
+func TestLoadRejectsRelayAuthWithoutHost(t *testing.T) {
+	t.Setenv("APP_SESSION_SECRET", "test-session-secret")
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("APP_ADMIN_USERNAMES", "")
+	t.Setenv("APP_ADMIN_PASSWORD", "")
+	t.Setenv("EMAIL_FORWARDING_BACKEND", EmailForwardingBackendDatabaseRelay)
+	t.Setenv("MAIL_RELAY_ENABLED", "true")
+	t.Setenv("MAIL_RELAY_SMTP_ADDR", ":2525")
+	t.Setenv("MAIL_RELAY_DOMAIN", "mail.linuxdo.space")
+	t.Setenv("MAIL_RELAY_FORWARD_HOST", "")
+	t.Setenv("MAIL_RELAY_FORWARD_USERNAME", "user")
+	t.Setenv("MAIL_RELAY_FORWARD_PASSWORD", "pass")
 	t.Setenv("MAIL_RELAY_FORWARD_FROM", "")
 
 	_, err := Load()
 	if err == nil {
 		t.Fatalf("expected incomplete database relay configuration to fail")
 	}
-	if !strings.Contains(err.Error(), "MAIL_RELAY_FORWARD_HOST is required") {
+	if !strings.Contains(err.Error(), "MAIL_RELAY_FORWARD_FROM is required") {
+		t.Fatalf("unexpected error for missing forward from: %v", err)
+	}
+
+	t.Setenv("MAIL_RELAY_FORWARD_FROM", "relay@mail.linuxdo.space")
+	_, err = Load()
+	if err == nil {
+		t.Fatalf("expected auth without forward host to fail")
+	}
+	if !strings.Contains(err.Error(), "MAIL_RELAY_FORWARD_HOST is required when MAIL_RELAY_FORWARD_USERNAME or MAIL_RELAY_FORWARD_PASSWORD is set") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

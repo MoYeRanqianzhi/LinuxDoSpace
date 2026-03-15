@@ -5,7 +5,9 @@ import (
 	"errors"
 	"log"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 type recordingCatchAllAccessManager struct {
@@ -31,11 +33,25 @@ func (m *recordingCatchAllAccessManager) Release(ctx context.Context, reservatio
 
 type staticForwarder struct {
 	err   error
+	delay time.Duration
+
+	mu    sync.Mutex
 	calls []ForwardRequest
 }
 
 func (f *staticForwarder) Forward(ctx context.Context, request ForwardRequest) error {
+	if f.delay > 0 {
+		timer := time.NewTimer(f.delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	f.mu.Lock()
 	f.calls = append(f.calls, request)
+	f.mu.Unlock()
 	return f.err
 }
 
@@ -107,5 +123,52 @@ func TestSMTPDataReleasesCatchAllReservationOnForwardFailure(t *testing.T) {
 	}
 	if len(manager.releases) != 1 {
 		t.Fatalf("expected one release after forward failure, got %d", len(manager.releases))
+	}
+}
+
+// TestSMTPDataForwardsGroupsConcurrently verifies that one SMTP DATA
+// transaction fans out multiple final target groups in parallel instead of
+// serializing each target inbox behind the previous one.
+func TestSMTPDataForwardsGroupsConcurrently(t *testing.T) {
+	manager := &recordingCatchAllAccessManager{}
+	forwarder := &staticForwarder{delay: 200 * time.Millisecond}
+	session := &smtpSession{
+		accessManager:  manager,
+		forwarder:      forwarder,
+		logger:         log.Default(),
+		forwardTimeout: time.Second,
+		recipients: []ResolvedRecipient{
+			{
+				OriginalRecipient: "one@alice.linuxdo.space",
+				TargetEmail:       "first@example.com",
+				RouteOwnerUserID:  11,
+				UsedCatchAll:      true,
+			},
+			{
+				OriginalRecipient: "two@bob.linuxdo.space",
+				TargetEmail:       "second@example.com",
+				RouteOwnerUserID:  22,
+				UsedCatchAll:      true,
+			},
+		},
+	}
+
+	startedAt := time.Now()
+	if err := session.Data(strings.NewReader("Subject: test\r\n\r\nbody")); err != nil {
+		t.Fatalf("smtp data should succeed for concurrent forwards, got %v", err)
+	}
+	elapsed := time.Since(startedAt)
+
+	if elapsed >= 350*time.Millisecond {
+		t.Fatalf("expected concurrent forwards to finish in under 350ms, got %v", elapsed)
+	}
+	if len(manager.reservations) != 2 {
+		t.Fatalf("expected one reservation per target group, got %d", len(manager.reservations))
+	}
+	if len(manager.releases) != 0 {
+		t.Fatalf("expected no releases on successful concurrent forwards, got %d", len(manager.releases))
+	}
+	if len(forwarder.calls) != 2 {
+		t.Fatalf("expected two forward calls, got %d", len(forwarder.calls))
 	}
 }

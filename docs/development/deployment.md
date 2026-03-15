@@ -179,7 +179,7 @@ Additional requirement for `EMAIL_FORWARDING_BACKEND=database_relay`:
 - `MAIL_RELAY_MX_PRIORITY=10`
 - `MAIL_RELAY_SPF_VALUE=v=spf1 -all`
 - `MAIL_RELAY_FORWARD_HOST=smtp.example.com:587`
-- `MAIL_RELAY_FORWARD_FROM=relay@example.com`
+- `MAIL_RELAY_FORWARD_FROM=relay@mail.example.com`
 
 Operational DNS note for `database_relay`:
 
@@ -198,6 +198,9 @@ Operational DNS note for `database_relay`:
   unrelated user TXT/MX records are not rewritten
 - the MX target itself still must resolve to the real SMTP listener host or the
   upstream mail gateway that passes mail into this service
+- if `MAIL_RELAY_FORWARD_HOST` is left empty, LinuxDoSpace falls back to direct
+  per-domain MX delivery for outbound forwarding; this is useful for initial
+  recovery, but deliverability is usually worse than a dedicated SMTP relay
 
 Operational notes:
 

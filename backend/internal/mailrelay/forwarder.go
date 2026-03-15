@@ -10,6 +10,7 @@ import (
 	"net"
 	stdsmtp "net/smtp"
 	"net/textproto"
+	"sort"
 	"strings"
 
 	"linuxdospace/backend/internal/config"
@@ -56,15 +57,21 @@ type SMTPForwarder struct {
 	username string
 	password string
 	from     string
+
+	dialContext func(ctx context.Context, network string, address string) (net.Conn, error)
+	lookupMX    func(ctx context.Context, name string) ([]*net.MX, error)
 }
 
 // NewSMTPForwarder builds the outbound forwarder from runtime configuration.
 func NewSMTPForwarder(mail config.MailConfig) *SMTPForwarder {
+	dialer := &net.Dialer{}
 	return &SMTPForwarder{
-		addr:     strings.TrimSpace(mail.ForwardHost),
-		username: strings.TrimSpace(mail.ForwardUsername),
-		password: strings.TrimSpace(mail.ForwardPassword),
-		from:     strings.TrimSpace(mail.ForwardFrom),
+		addr:        strings.TrimSpace(mail.ForwardHost),
+		username:    strings.TrimSpace(mail.ForwardUsername),
+		password:    strings.TrimSpace(mail.ForwardPassword),
+		from:        strings.TrimSpace(mail.ForwardFrom),
+		dialContext: dialer.DialContext,
+		lookupMX:    net.DefaultResolver.LookupMX,
 	}
 }
 
@@ -133,25 +140,140 @@ func bufioReaderFromBytes(raw []byte) *bufio.Reader {
 	return bufio.NewReader(bytes.NewReader(raw))
 }
 
-// sendMessage opens one SMTP client connection, upgrades it with STARTTLS when
-// available, performs optional authentication, and sends the final message.
+// sendMessage selects the configured outbound delivery path. Deployments that
+// provide MAIL_RELAY_FORWARD_HOST keep using one explicit upstream SMTP relay,
+// while deployments without that variable fall back to direct per-domain MX
+// delivery so the built-in relay can still forward mail after server migration.
 func (f *SMTPForwarder) sendMessage(ctx context.Context, recipients []string, message []byte) error {
-	if strings.TrimSpace(f.addr) == "" {
-		return fmt.Errorf("upstream smtp relay host is empty")
-	}
 	if strings.TrimSpace(f.from) == "" {
 		return fmt.Errorf("upstream smtp envelope sender is empty")
 	}
+	if strings.TrimSpace(f.addr) != "" {
+		return f.sendMessageViaAddress(ctx, f.addr, recipients, message, true)
+	}
+	return f.sendMessageDirectly(ctx, recipients, message)
+}
 
-	host, _, err := net.SplitHostPort(f.addr)
+// sendMessageDirectly resolves one MX target set per recipient domain and sends
+// the forwarded message straight to those remote mail exchangers on port 25.
+func (f *SMTPForwarder) sendMessageDirectly(ctx context.Context, recipients []string, message []byte) error {
+	recipientsByDomain, err := groupRecipientsByDomain(recipients)
 	if err != nil {
-		return fmt.Errorf("parse upstream smtp host %q: %w", f.addr, err)
+		return err
 	}
 
-	dialer := net.Dialer{}
-	conn, err := dialer.DialContext(ctx, "tcp", f.addr)
+	failures := make([]string, 0)
+	for domain, domainRecipients := range recipientsByDomain {
+		targets, lookupErr := f.lookupDirectDeliveryTargets(ctx, domain)
+		if lookupErr != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", domain, lookupErr))
+			continue
+		}
+
+		var lastErr error
+		for _, target := range targets {
+			if err := f.sendMessageViaAddress(ctx, net.JoinHostPort(target, "25"), domainRecipients, message, false); err == nil {
+				lastErr = nil
+				break
+			} else {
+				lastErr = err
+			}
+		}
+		if lastErr != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", domain, lastErr))
+		}
+	}
+
+	if len(failures) != 0 {
+		return fmt.Errorf("direct mx delivery failed: %s", strings.Join(failures, "; "))
+	}
+	return nil
+}
+
+// lookupDirectDeliveryTargets resolves the remote MX hosts for one recipient
+// domain and falls back to the bare domain when no explicit MX records exist.
+func (f *SMTPForwarder) lookupDirectDeliveryTargets(ctx context.Context, domain string) ([]string, error) {
+	normalizedDomain := strings.ToLower(strings.TrimSpace(domain))
+	if normalizedDomain == "" {
+		return nil, fmt.Errorf("recipient domain is empty")
+	}
+	if f.lookupMX == nil {
+		return nil, fmt.Errorf("mx lookup function is not configured")
+	}
+
+	mxRecords, err := f.lookupMX(ctx, normalizedDomain)
 	if err != nil {
-		return fmt.Errorf("dial upstream smtp relay %s: %w", f.addr, err)
+		return nil, fmt.Errorf("lookup mx for %s: %w", normalizedDomain, err)
+	}
+	if len(mxRecords) == 0 {
+		return []string{normalizedDomain}, nil
+	}
+
+	sort.SliceStable(mxRecords, func(left int, right int) bool {
+		return mxRecords[left].Pref < mxRecords[right].Pref
+	})
+
+	targets := make([]string, 0, len(mxRecords))
+	seen := make(map[string]struct{}, len(mxRecords))
+	for _, item := range mxRecords {
+		host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(item.Host)), ".")
+		if host == "" {
+			continue
+		}
+		if _, exists := seen[host]; exists {
+			continue
+		}
+		seen[host] = struct{}{}
+		targets = append(targets, host)
+	}
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("mx lookup for %s returned only empty hosts", normalizedDomain)
+	}
+	return targets, nil
+}
+
+// groupRecipientsByDomain keeps one SMTP transaction per remote recipient
+// domain because direct MX delivery cannot mix recipients handled by different
+// remote mail exchangers.
+func groupRecipientsByDomain(recipients []string) (map[string][]string, error) {
+	grouped := make(map[string][]string, len(recipients))
+	for _, recipient := range recipients {
+		normalizedRecipient := strings.ToLower(strings.TrimSpace(recipient))
+		if normalizedRecipient == "" {
+			continue
+		}
+		atIndex := strings.LastIndex(normalizedRecipient, "@")
+		if atIndex <= 0 || atIndex == len(normalizedRecipient)-1 {
+			return nil, fmt.Errorf("recipient %q is not a valid email address", recipient)
+		}
+		domain := strings.TrimSpace(normalizedRecipient[atIndex+1:])
+		grouped[domain] = append(grouped[domain], normalizedRecipient)
+	}
+	return grouped, nil
+}
+
+// sendMessageViaAddress opens one SMTP client connection, upgrades it with
+// STARTTLS when available, performs optional authentication, and sends the
+// final message to one concrete remote SMTP server address.
+func (f *SMTPForwarder) sendMessageViaAddress(ctx context.Context, address string, recipients []string, message []byte, allowAuth bool) error {
+	remoteAddress := strings.TrimSpace(address)
+	if remoteAddress == "" {
+		return fmt.Errorf("upstream smtp address is empty")
+	}
+
+	host, _, err := net.SplitHostPort(remoteAddress)
+	if err != nil {
+		return fmt.Errorf("parse upstream smtp host %q: %w", remoteAddress, err)
+	}
+
+	dialContext := f.dialContext
+	if dialContext == nil {
+		dialer := &net.Dialer{}
+		dialContext = dialer.DialContext
+	}
+	conn, err := dialContext(ctx, "tcp", remoteAddress)
+	if err != nil {
+		return fmt.Errorf("dial upstream smtp relay %s: %w", remoteAddress, err)
 	}
 	defer conn.Close()
 
@@ -173,7 +295,7 @@ func (f *SMTPForwarder) sendMessage(ctx context.Context, recipients []string, me
 		}
 	}
 
-	if strings.TrimSpace(f.username) != "" || strings.TrimSpace(f.password) != "" {
+	if allowAuth && (strings.TrimSpace(f.username) != "" || strings.TrimSpace(f.password) != "") {
 		auth := stdsmtp.PlainAuth("", f.username, f.password, host)
 		if err := client.Auth(auth); err != nil {
 			return fmt.Errorf("authenticate with upstream smtp relay: %w", err)

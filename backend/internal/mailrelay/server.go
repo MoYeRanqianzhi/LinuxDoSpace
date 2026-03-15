@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	smtp "github.com/emersion/go-smtp"
@@ -138,33 +139,98 @@ func (s *smtpSession) Data(r io.Reader) error {
 		}
 	}
 
+	plans := make([]forwardGroupPlan, 0, len(s.recipients))
 	for _, group := range groupRecipientsByTarget(s.recipients) {
 		reservations, reservationErr := s.reserveCatchAllUsageForGroup(group)
 		if reservationErr != nil {
+			for _, prepared := range plans {
+				s.releaseCatchAllReservations(prepared.Reservations)
+			}
 			return catchAllAccessSMTPError(reservationErr)
 		}
-
-		forwardCtx, cancel := context.WithTimeout(context.Background(), s.forwardTimeout)
-		forwardErr := s.forwarder.Forward(forwardCtx, ForwardRequest{
-			OriginalEnvelopeFrom: s.mailFrom,
-			OriginalEnvelopeTo:   group.OriginalRecipients,
-			TargetRecipients:     []string{group.TargetEmail},
-			RawMessage:           rawMessage,
+		plans = append(plans, forwardGroupPlan{
+			Group:        group,
+			Reservations: reservations,
 		})
-		cancel()
-
-		if forwardErr != nil {
-			s.releaseCatchAllReservations(reservations)
-			s.logger.Printf(
-				"linuxdospace mail relay forward failed: target=%s recipients=%v err=%v",
-				group.TargetEmail,
-				group.OriginalRecipients,
-				forwardErr,
-			)
-			return forwardSMTPError(forwardErr)
-		}
 	}
 
+	return s.forwardGroupsConcurrently(rawMessage, plans)
+}
+
+// forwardGroupPlan stores one final target inbox together with the already
+// reserved catch-all quota that must be released if this forward action fails.
+type forwardGroupPlan struct {
+	Group        groupedRecipients
+	Reservations []CatchAllUsageReservation
+}
+
+// forwardGroupResult captures the completion status of one concurrent forward
+// action so the SMTP session can surface the first failure after fan-out ends.
+type forwardGroupResult struct {
+	Group groupedRecipients
+	Err   error
+}
+
+// forwardGroupsConcurrently removes the per-target serial bottleneck inside one
+// SMTP DATA transaction. go-smtp already handles connection concurrency; this
+// helper makes one accepted message fan out to all target inboxes in parallel.
+func (s *smtpSession) forwardGroupsConcurrently(rawMessage []byte, plans []forwardGroupPlan) error {
+	if len(plans) == 0 {
+		return nil
+	}
+
+	results := make(chan forwardGroupResult, len(plans))
+	forwardBaseCtx, cancelAll := context.WithCancel(context.Background())
+	defer cancelAll()
+
+	var firstFailure sync.Once
+	var waitGroup sync.WaitGroup
+	for _, plan := range plans {
+		waitGroup.Add(1)
+		go func(plan forwardGroupPlan) {
+			defer waitGroup.Done()
+
+			forwardCtx, cancel := context.WithTimeout(forwardBaseCtx, s.forwardTimeout)
+			defer cancel()
+
+			err := s.forwarder.Forward(forwardCtx, ForwardRequest{
+				OriginalEnvelopeFrom: s.mailFrom,
+				OriginalEnvelopeTo:   plan.Group.OriginalRecipients,
+				TargetRecipients:     []string{plan.Group.TargetEmail},
+				RawMessage:           rawMessage,
+			})
+			if err != nil {
+				s.releaseCatchAllReservations(plan.Reservations)
+				firstFailure.Do(cancelAll)
+			}
+			results <- forwardGroupResult{
+				Group: plan.Group,
+				Err:   err,
+			}
+		}(plan)
+	}
+
+	waitGroup.Wait()
+	close(results)
+
+	var firstErr error
+	for result := range results {
+		if result.Err == nil {
+			continue
+		}
+		s.logger.Printf(
+			"linuxdospace mail relay forward failed: target=%s recipients=%v err=%v",
+			result.Group.TargetEmail,
+			result.Group.OriginalRecipients,
+			result.Err,
+		)
+		if firstErr == nil {
+			firstErr = result.Err
+		}
+	}
+	if firstErr != nil {
+		return forwardSMTPError(firstErr)
+	}
 	return nil
 }
 
