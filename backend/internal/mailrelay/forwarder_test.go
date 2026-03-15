@@ -20,6 +20,7 @@ func TestSMTPForwarderDirectMXDelivery(t *testing.T) {
 	forwarder := &SMTPForwarder{
 		from:        "relay@mail.linuxdo.space",
 		helloDomain: "mail.linuxdo.space",
+		requireTLS:  false,
 		mxCacheTTL:  time.Hour,
 		lookupMX: func(ctx context.Context, name string) ([]*net.MX, error) {
 			return []*net.MX{{Host: "mx.example.test.", Pref: 10}}, nil
@@ -72,6 +73,7 @@ func TestSMTPForwarderCachesMXLookups(t *testing.T) {
 	forwarder := &SMTPForwarder{
 		from:            "relay@mail.linuxdo.space",
 		helloDomain:     "mail.linuxdo.space",
+		requireTLS:      false,
 		mxLookupTimeout: time.Second,
 		mxCacheTTL:      time.Hour,
 		lookupMX: func(ctx context.Context, name string) ([]*net.MX, error) {
@@ -107,6 +109,45 @@ func TestSMTPForwarderCachesMXLookups(t *testing.T) {
 
 	if lookupCount != 1 {
 		t.Fatalf("expected one MX lookup thanks to cache reuse, got %d", lookupCount)
+	}
+}
+
+// TestSMTPForwarderRejectsPlaintextServerWhenTLSRequired verifies that the
+// forwarder fails closed when a remote MX does not advertise STARTTLS and the
+// deployment keeps TLS enforcement enabled.
+func TestSMTPForwarderRejectsPlaintextServerWhenTLSRequired(t *testing.T) {
+	server := newFakeSMTPServer(t)
+	defer server.Close()
+
+	forwarder := &SMTPForwarder{
+		from:        "relay@mail.linuxdo.space",
+		helloDomain: "mail.linuxdo.space",
+		requireTLS:  true,
+		mxCacheTTL:  time.Hour,
+		lookupMX: func(ctx context.Context, name string) ([]*net.MX, error) {
+			return []*net.MX{{Host: "mx.example.test.", Pref: 10}}, nil
+		},
+		dialContext: func(ctx context.Context, network string, address string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, server.Address())
+		},
+		now: func() time.Time {
+			return time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC)
+		},
+		mxCache:       make(map[string]mxCacheEntry),
+		domainLimiter: newDomainConcurrencyLimiter(4),
+	}
+
+	err := forwarder.Forward(context.Background(), ForwardRequest{
+		OriginalEnvelopeFrom: "sender@example.org",
+		OriginalEnvelopeTo:   []string{"alias@alice.linuxdo.space"},
+		TargetRecipients:     []string{"target@example.com"},
+		RawMessage:           []byte("Subject: test\r\n\r\nbody"),
+	})
+	if err == nil {
+		t.Fatalf("expected plaintext smtp server to be rejected when requireTLS=true")
+	}
+	if !strings.Contains(err.Error(), "does not advertise STARTTLS") {
+		t.Fatalf("expected STARTTLS rejection, got %v", err)
 	}
 }
 

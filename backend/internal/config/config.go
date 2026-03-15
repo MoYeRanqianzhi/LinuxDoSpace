@@ -110,6 +110,7 @@ type MailConfig struct {
 	MXTarget             string
 	MXPriority           int
 	SPFValue             string
+	RequireTLS           bool
 	MaxRecipients        int
 	MaxMessageBytes      int64
 	ReadTimeout          time.Duration
@@ -198,6 +199,7 @@ func Load() (Config, error) {
 			MXTarget:             getEnv("MAIL_RELAY_MX_TARGET", "mail.linuxdo.space"),
 			MXPriority:           mustParseInt(getEnv("MAIL_RELAY_MX_PRIORITY", "10")),
 			SPFValue:             getEnv("MAIL_RELAY_SPF_VALUE", "v=spf1 -all"),
+			RequireTLS:           mustParseBool(getEnv("MAIL_RELAY_REQUIRE_TLS", "true")),
 			MaxRecipients:        mustParseInt(getEnv("MAIL_RELAY_MAX_RECIPIENTS", "50")),
 			MaxMessageBytes:      mustParseInt64(getEnv("MAIL_RELAY_MAX_MESSAGE_BYTES", "26214400")),
 			ReadTimeout:          mustParseDuration(getEnv("MAIL_RELAY_READ_TIMEOUT", "30s")),

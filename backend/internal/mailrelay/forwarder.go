@@ -61,6 +61,7 @@ type ForwardRequest struct {
 type SMTPForwarder struct {
 	from                 string
 	helloDomain          string
+	requireTLS           bool
 	mxLookupTimeout      time.Duration
 	mxCacheTTL           time.Duration
 	maxDomainConcurrency int
@@ -150,6 +151,7 @@ func NewSMTPForwarder(mail config.MailConfig) *SMTPForwarder {
 	return &SMTPForwarder{
 		from:                 strings.TrimSpace(mail.ForwardFrom),
 		helloDomain:          strings.TrimSpace(mail.HELODomain),
+		requireTLS:           mail.RequireTLS,
 		mxLookupTimeout:      mail.MXLookupTimeout,
 		mxCacheTTL:           mail.MXCacheTTL,
 		maxDomainConcurrency: mail.MaxDomainConcurrency,
@@ -394,9 +396,9 @@ func groupRecipientsByDomain(recipients []string) (map[string][]string, error) {
 	return grouped, nil
 }
 
-// sendMessageViaAddress opens one SMTP client connection, upgrades it with
-// STARTTLS when available, and sends the final message to one concrete remote
-// SMTP server address.
+// sendMessageViaAddress opens one SMTP client connection, requires STARTTLS by
+// default, and sends the final message to one concrete remote SMTP server
+// address only after the session has been upgraded to TLS.
 func (f *SMTPForwarder) sendMessageViaAddress(ctx context.Context, address string, recipients []string, message []byte) error {
 	remoteAddress := strings.TrimSpace(address)
 	if remoteAddress == "" {
@@ -435,7 +437,12 @@ func (f *SMTPForwarder) sendMessageViaAddress(ctx context.Context, address strin
 		return fmt.Errorf("announce smtp helo %s: %w", f.helloDomain, err)
 	}
 
-	if ok, _ := client.Extension("STARTTLS"); ok {
+	startTLSAvailable, _ := client.Extension("STARTTLS")
+	if !startTLSAvailable {
+		if f.requireTLS {
+			return fmt.Errorf("smtp server %s does not advertise STARTTLS", host)
+		}
+	} else {
 		if err := client.StartTLS(&tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}); err != nil {
 			return fmt.Errorf("starttls with smtp server: %w", err)
 		}
