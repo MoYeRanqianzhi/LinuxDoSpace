@@ -20,11 +20,11 @@ import {
   listAllocationRecords,
   updateDNSRecord,
 } from '../lib/api';
-import type { Allocation, DNSRecord, UpsertDNSRecordInput, User } from '../types/api';
+import type { Allocation, DNSRecord, ManualDNSRecordType, UpsertDNSRecordInput, User } from '../types/api';
 
 // RecordFormState 表示 DNS 记录弹窗中的表单状态。
 interface RecordFormState {
-  type: string;
+  type: ManualDNSRecordType;
   name: string;
   content: string;
   ttl: number;
@@ -63,7 +63,6 @@ const dnsTypeOptions: GlassSelectOption[] = [
   { value: 'AAAA', label: 'AAAA' },
   { value: 'CNAME', label: 'CNAME' },
   { value: 'TXT', label: 'TXT' },
-  { value: 'MX', label: 'MX' },
 ];
 
 // Settings 负责接入用户自己的 allocation 和 DNS 记录管理能力。
@@ -192,7 +191,7 @@ export function Settings({
 
   // openModal 打开记录弹窗，并根据是否传入 record 决定是编辑还是新建。
   function openModal(record?: DNSRecord): void {
-    if (record && !isPlaceholderRecord(record)) {
+    if (record && !isPlaceholderRecord(record) && supportsManualRecordType(record.type)) {
       setEditingRecord(record);
       setFormData({
         type: record.type,
@@ -530,8 +529,16 @@ export function Settings({
                     <td className="p-4 text-right">
                       <div className="flex items-center justify-end gap-2">
                         <button
-                          onClick={() => openModal(record)}
-                          className="p-2 rounded-lg hover:bg-white/50 dark:hover:bg-white/10 text-blue-600 dark:text-blue-400 transition-colors"
+                          onClick={() => {
+                            if (!supportsManualRecordType(record.type)) {
+                              setNotice('MX 记录由系统托管，当前不能在解析面板中手动编辑。');
+                              return;
+                            }
+                            openModal(record);
+                          }}
+                          disabled={!supportsManualRecordType(record.type)}
+                          title={supportsManualRecordType(record.type) ? '编辑记录' : 'MX 记录由系统托管'}
+                          className="p-2 rounded-lg hover:bg-white/50 dark:hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40 text-blue-600 dark:text-blue-400 transition-colors"
                         >
                           <Edit2 size={16} />
                         </button>
@@ -599,7 +606,7 @@ export function Settings({
                     onChange={(value) =>
                       setFormData({
                         ...formData,
-                        type: value,
+                        type: value as ManualDNSRecordType,
                         proxied: supportsProxy(value) ? formData.proxied : false,
                       })
                     }
@@ -646,19 +653,6 @@ export function Settings({
                     />
                   </div>
 
-                  {formData.type === 'MX' && (
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Priority</label>
-                      <input
-                        type="number"
-                        min={0}
-                        value={formData.priority}
-                        onChange={(event) => setFormData({ ...formData, priority: event.target.value })}
-                        placeholder="10"
-                        className="w-full px-4 py-2 rounded-xl bg-white/50 dark:bg-black/50 border border-gray-200 dark:border-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 text-gray-900 dark:text-white"
-                      />
-                    </div>
-                  )}
                 </div>
 
                 <div>
@@ -734,8 +728,13 @@ function buildRecordPayload(formData: RecordFormState): UpsertDNSRecordInput {
     ttl: Number.isFinite(formData.ttl) ? formData.ttl : 1,
     proxied: supportsProxy(formData.type) ? formData.proxied : false,
     comment: formData.comment,
-    priority: formData.type === 'MX' && formData.priority.trim() !== '' ? Number(formData.priority) : undefined,
   };
+}
+
+// supportsManualRecordType 判断某条记录是否仍允许通过用户 DNS 面板继续手动维护。
+// 旧的 MX 记录即使暂时还能看到，也必须交给系统邮件中转逻辑托管。
+function supportsManualRecordType(recordType: string): recordType is ManualDNSRecordType {
+  return ['A', 'AAAA', 'CNAME', 'TXT'].includes(recordType.toUpperCase());
 }
 
 // supportsProxy 判断当前记录类型是否允许开启 Cloudflare 代理。

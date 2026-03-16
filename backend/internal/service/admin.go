@@ -978,6 +978,9 @@ func (s *AdminService) loadAdminAllocation(ctx context.Context, allocationID int
 // buildAdminCloudflareRecordInput validates and converts the admin record form into a Cloudflare request.
 func (s *AdminService) buildAdminCloudflareRecordInput(allocation model.AdminAllocationSummary, request UpsertAdminRecordRequest) (cloudflare.CreateDNSRecordInput, string, error) {
 	recordType := strings.ToUpper(strings.TrimSpace(request.Type))
+	if recordType == "MX" {
+		return cloudflare.CreateDNSRecordInput{}, "", ValidationError("MX records are reserved for the system-managed mail relay")
+	}
 	if !isSupportedRecordType(recordType) {
 		return cloudflare.CreateDNSRecordInput{}, "", ValidationError("unsupported dns record type")
 	}

@@ -20,6 +20,7 @@ import { AdminSwitch } from '../components/AdminSwitch';
 import type {
   AdminAllocationRecord,
   AdminDomainRecord,
+  AdminWritableDNSRecordType,
   AdminUserRecord,
   AllocationStatus,
   CreateAdminAllocationInput,
@@ -82,6 +83,12 @@ function formatDateTime(value: string): string {
     hour: '2-digit',
     minute: '2-digit',
   }).format(new Date(value));
+}
+
+// isWritableAdminRecordType keeps the admin DNS console aligned with the
+// backend rule that MX is reserved for the system-managed mail relay.
+function isWritableAdminRecordType(recordType: string): recordType is AdminWritableDNSRecordType {
+  return ['A', 'AAAA', 'CNAME', 'TXT'].includes(recordType.toUpperCase());
 }
 
 export function DomainsPage({ csrfToken, managedDomains, onManagedDomainsChange }: DomainsPageProps) {
@@ -234,6 +241,10 @@ export function DomainsPage({ csrfToken, managedDomains, onManagedDomainsChange 
 
   async function saveEditedRecord() {
     if (!editingRecord) {
+      return;
+    }
+    if (!isWritableAdminRecordType(editingRecord.type)) {
+      setError('MX 记录由系统邮件中转托管，管理员 DNS 面板不再允许直接修改。');
       return;
     }
     try {
@@ -453,7 +464,7 @@ export function DomainsPage({ csrfToken, managedDomains, onManagedDomainsChange 
                       setCreatingRecordDraft((current) => ({
                         ...current,
                         type: event.target.value as UpsertAdminDomainRecordInput['type'],
-                        proxied: event.target.value === 'TXT' || event.target.value === 'MX' ? false : current.proxied,
+                        proxied: event.target.value === 'TXT' ? false : current.proxied,
                       }))
                     }
                     className="w-full rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
@@ -462,7 +473,6 @@ export function DomainsPage({ csrfToken, managedDomains, onManagedDomainsChange 
                     <option value="AAAA">AAAA</option>
                     <option value="CNAME">CNAME</option>
                     <option value="TXT">TXT</option>
-                    <option value="MX">MX</option>
                   </AdminSelect>
                 </div>
               </div>
@@ -485,30 +495,13 @@ export function DomainsPage({ csrfToken, managedDomains, onManagedDomainsChange 
                     className="w-full rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
                   />
                 </div>
-                {creatingRecordDraft.type === 'MX' ? (
-                  <div>
-                    <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">优先级</label>
-                    <input
-                      type="number"
-                      min={1}
-                      value={creatingRecordDraft.priority ?? 10}
-                      onChange={(event) =>
-                        setCreatingRecordDraft((current) => ({
-                          ...current,
-                          priority: Math.max(1, Number(event.target.value) || 10),
-                        }))
-                      }
-                      className="w-full rounded-2xl border border-slate-200 bg-white/65 px-4 py-3 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
-                    />
-                  </div>
-                ) : null}
               </div>
               <AdminSwitch
                 checked={creatingRecordDraft.proxied}
-                disabled={creatingRecordDraft.type === 'TXT' || creatingRecordDraft.type === 'MX'}
+                disabled={creatingRecordDraft.type === 'TXT'}
                 onCheckedChange={(checked) => setCreatingRecordDraft((current) => ({ ...current, proxied: checked }))}
                 label="通过 Cloudflare 代理"
-                description={creatingRecordDraft.type === 'TXT' || creatingRecordDraft.type === 'MX' ? 'TXT 与 MX 记录不能启用代理。' : '开启后将通过 Cloudflare 代理暴露该记录。'}
+                description={creatingRecordDraft.type === 'TXT' ? 'TXT 记录不能启用代理。' : '开启后将通过 Cloudflare 代理暴露该记录。'}
                 accent="indigo"
               />
               <div>
@@ -588,15 +581,23 @@ export function DomainsPage({ csrfToken, managedDomains, onManagedDomainsChange 
                       <td className="px-5 py-4">
                         <div className="flex justify-end gap-2">
                           <button
-                            onClick={() => setEditingRecord({ ...record })}
-                            className="rounded-xl p-2 text-blue-500 transition hover:bg-blue-100 dark:hover:bg-blue-900/25"
+                            onClick={() => {
+                              if (!isWritableAdminRecordType(record.type)) {
+                                setError('MX 记录由系统邮件中转托管，管理员 DNS 面板不再允许直接修改。');
+                                return;
+                              }
+                              setEditingRecord({ ...record });
+                            }}
+                            disabled={!isWritableAdminRecordType(record.type)}
+                            className="rounded-xl p-2 text-blue-500 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-blue-900/25"
                             aria-label={`编辑 ${record.name}`}
                           >
                             <Edit2 size={16} />
                           </button>
                           <button
                             onClick={() => void removeRecord(record)}
-                            className="rounded-xl p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white"
+                            disabled={!isWritableAdminRecordType(record.type)}
+                            className="rounded-xl p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white"
                             aria-label={`删除 ${record.name}`}
                           >
                             <Trash2 size={16} />
@@ -641,25 +642,13 @@ export function DomainsPage({ csrfToken, managedDomains, onManagedDomainsChange 
                     className="w-full rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
                   />
                 </div>
-                {editingRecord.type === 'MX' ? (
-                  <div>
-                    <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-200">优先级</label>
-                    <input
-                      type="number"
-                      min={1}
-                      value={editingRecord.priority ?? 10}
-                      onChange={(event) => setEditingRecord({ ...editingRecord, priority: Math.max(1, Number(event.target.value) || 10) })}
-                      className="w-full rounded-2xl border border-slate-200 bg-white/70 px-4 py-3 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-400/20 dark:border-slate-700 dark:bg-black/35 dark:text-white"
-                    />
-                  </div>
-                ) : null}
               </div>
               <AdminSwitch
                 checked={editingRecord.proxied}
-                disabled={editingRecord.type === 'TXT' || editingRecord.type === 'MX'}
+                disabled={editingRecord.type === 'TXT' || !isWritableAdminRecordType(editingRecord.type)}
                 onCheckedChange={(checked) => setEditingRecord({ ...editingRecord, proxied: checked })}
                 label="通过 Cloudflare 代理访问"
-                description={editingRecord.type === 'TXT' || editingRecord.type === 'MX' ? 'TXT 与 MX 记录不能启用代理。' : '关闭后将直接暴露源站记录，不再走 Cloudflare 代理。'}
+                description={editingRecord.type === 'TXT' || !isWritableAdminRecordType(editingRecord.type) ? 'TXT 与系统托管的 MX 记录不能启用代理。' : '关闭后将直接暴露源站记录，不再走 Cloudflare 代理。'}
                 accent="blue"
               />
               <div>

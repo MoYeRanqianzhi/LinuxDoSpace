@@ -323,6 +323,8 @@ Lists the current user's DNS records inside the selected allocation namespace, i
 
 ### `POST /v1/my/allocations/{allocationID}/records`
 Creates one DNS record inside the selected allocation namespace.
+Manual DNS writes only accept `A`, `AAAA`, `CNAME`, and `TXT`.
+`MX` is reserved for LinuxDoSpace's own mail-relay bootstrap and will be rejected.
 
 ### `PATCH /v1/my/allocations/{allocationID}/records/{recordID}`
 Updates one DNS record inside the selected allocation namespace.
@@ -540,6 +542,8 @@ Returns the global administrator DNS record list across all allocation namespace
 
 ### `POST /v1/admin/allocations/{allocationID}/records`
 Creates one DNS record inside the selected allocation namespace.
+The admin DNS console follows the same write restriction: manual writes may
+only create `A`, `AAAA`, `CNAME`, and `TXT` records.
 
 ### `PATCH /v1/admin/allocations/{allocationID}/records/{recordID}`
 Updates one DNS record inside the selected allocation namespace.

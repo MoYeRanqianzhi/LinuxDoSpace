@@ -60,6 +60,10 @@ export interface DNSRecord {
   is_placeholder?: boolean;
 }
 
+// ManualDNSRecordType limits the public DNS console to manually editable
+// records only. MX stays reserved for the platform's own mail-relay bootstrap.
+export type ManualDNSRecordType = 'A' | 'AAAA' | 'CNAME' | 'TXT';
+
 // AvailabilityResult 表示某个前缀在指定根域名下的可分配检查结果。
 export interface AvailabilityResult {
   root_domain: string;
@@ -325,7 +329,7 @@ export interface CreateAllocationInput {
 
 // UpsertDNSRecordInput 表示创建或更新 DNS 记录时的请求体。
 export interface UpsertDNSRecordInput {
-  type: string;
+  type: ManualDNSRecordType;
   name: string;
   content: string;
   ttl: number;

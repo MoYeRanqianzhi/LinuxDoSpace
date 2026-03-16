@@ -688,6 +688,9 @@ func (s *DomainService) listNamespaceRecords(ctx context.Context, allocation mod
 // buildCloudflareRecordInput 校验并转换业务记录输入。
 func (s *DomainService) buildCloudflareRecordInput(allocation model.Allocation, input DNSRecordInput) (cloudflare.CreateDNSRecordInput, string, error) {
 	normalizedType := strings.ToUpper(strings.TrimSpace(input.Type))
+	if normalizedType == "MX" {
+		return cloudflare.CreateDNSRecordInput{}, "", ValidationError("MX records are reserved for the system-managed mail relay")
+	}
 	if !isSupportedRecordType(normalizedType) {
 		return cloudflare.CreateDNSRecordInput{}, "", ValidationError("unsupported dns record type")
 	}
@@ -903,10 +906,11 @@ func validateAndNormalizeRecordPayload(recordType string, content string, priori
 	}
 }
 
-// isSupportedRecordType 判断当前 alpha 版本是否支持某个记录类型。
+// isSupportedRecordType 判断当前面板允许手动维护的记录类型。
+// MX 被系统保留给邮件中转入口，不能再由用户或管理员在 DNS 面板中直接写入。
 func isSupportedRecordType(recordType string) bool {
 	switch recordType {
-	case "A", "AAAA", "CNAME", "TXT", "MX":
+	case "A", "AAAA", "CNAME", "TXT":
 		return true
 	default:
 		return false

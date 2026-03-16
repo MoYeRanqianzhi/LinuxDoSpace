@@ -129,6 +129,17 @@ func TestValidateAndNormalizeRecordPayload(t *testing.T) {
 	}
 }
 
+// TestIsSupportedRecordTypeReservesMX verifies that manual DNS management keeps
+// MX reserved for the system-managed mail relay path.
+func TestIsSupportedRecordTypeReservesMX(t *testing.T) {
+	if !isSupportedRecordType("A") {
+		t.Fatalf("expected A records to stay supported")
+	}
+	if isSupportedRecordType("MX") {
+		t.Fatalf("expected MX records to be rejected from manual DNS management")
+	}
+}
+
 // TestEnsureTemporaryUsernameMatch 验证当前临时策略只放行“用户名同名”的子域名前缀。
 func TestEnsureTemporaryUsernameMatch(t *testing.T) {
 	user := model.User{

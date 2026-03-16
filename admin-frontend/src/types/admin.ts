@@ -126,6 +126,14 @@ export interface UpdateAdminAllocationInput {
   status?: AllocationStatus;
 }
 
+// AdminDNSRecordType mirrors every record type the admin read model may return.
+export type AdminDNSRecordType = 'A' | 'AAAA' | 'CNAME' | 'TXT' | 'MX';
+
+// AdminWritableDNSRecordType limits manual write operations to non-MX records.
+// Historical or system-managed MX rows may still appear in the list view, but
+// they are no longer writable from the DNS console.
+export type AdminWritableDNSRecordType = Exclude<AdminDNSRecordType, 'MX'>;
+
 // AdminDomainRecord mirrors one DNS record row visible to administrators.
 export interface AdminDomainRecord {
   allocation_id: number;
@@ -135,7 +143,7 @@ export interface AdminDomainRecord {
   root_domain: string;
   namespace_fqdn: string;
   id: string;
-  type: 'A' | 'AAAA' | 'CNAME' | 'TXT' | 'MX';
+  type: AdminDNSRecordType;
   name: string;
   relative_name: string;
   content: string;
@@ -147,7 +155,7 @@ export interface AdminDomainRecord {
 
 // UpsertAdminDomainRecordInput mirrors the payload accepted by the admin DNS record endpoints.
 export interface UpsertAdminDomainRecordInput {
-  type: AdminDomainRecord['type'];
+  type: AdminWritableDNSRecordType;
   name: string;
   content: string;
   ttl: number;
