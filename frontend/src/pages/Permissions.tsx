@@ -687,6 +687,9 @@ function PaymentExchangeSection({
                   {selectedProductBehavior?.totalSummary ? (
                     <div className="mt-2">{selectedProductBehavior.totalSummary(selectedTotalGrant)}</div>
                   ) : null}
+                  <div className="mt-3 rounded-xl border border-amber-300/35 bg-amber-50/80 px-3 py-3 text-sm leading-7 text-amber-900 dark:border-amber-500/20 dark:bg-amber-950/25 dark:text-amber-100">
+                    声明：用多少买多少，请不要囤货；一经售出，无法退款。
+                  </div>
                 </div>
 
                 <button
