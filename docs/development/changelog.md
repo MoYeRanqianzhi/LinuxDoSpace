@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added per-root-domain sale settings plus public dynamic namespace purchase flow on the domain search page, with fixed length multipliers, hidden random 12+ character purchases, and built-in bootstrap roots for `cifang.love`, `openapi.best`, and `metapi.cc`.
+- Added dedicated dynamic Linux Do Credit domain-order creation plus paid entitlement application so successful checkouts can automatically create new allocation namespaces.
+- Added a reviewed-but-not-auto-applied reserved-prefix audit draft for common single-character, digit, infrastructure, and high-value prefixes.
 - Added database-relay ingress DNS backfill on catch-all save and service
   startup, so previously approved namespace mail domains are repaired
   automatically after operators switch MX targets or migrate servers.

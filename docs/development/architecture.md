@@ -28,12 +28,12 @@
 - `users`：Linux Do 登录用户。
 - `sessions`：服务端会话，绑定 CSRF token，并可选绑定 User-Agent 指纹。
 - `oauth_states`：一次性 OAuth state / PKCE verifier。
-- `managed_domains`：允许平台分发的根域名与 Cloudflare zone 绑定。
+- `managed_domains`：允许平台分发的根域名与 Cloudflare zone 绑定，并保存每个根域名单独的销售开关与基础价格。
 - `user_domain_quotas`：用户在某个根域名上的配额覆盖值。
 - `allocations`：用户获得的命名空间，例如 `alice.linuxdo.space`。
 - `quantity_records`：面向未来收费、兑换码、订阅和手动赠送场景的追加式数量账本。
 - `payment_products`：Linux Do Credit 可购买项目定义，保存启用状态、单价、发放数量和效果类型。
-- `payment_orders`：Linux Do Credit 本地订单表，保存业务单号、网关状态、支付 URL、支付成功时间和权益发放时间。
+- `payment_orders`：Linux Do Credit 本地订单表，保存业务单号、网关状态、支付 URL、支付成功时间、权益发放时间，以及动态域名购买的根域名/模式/最终分配结果。
 - `email_catch_all_access`：邮箱泛解析的可变运行时状态，保存订阅到期时间、剩余次数和用户级日限额覆盖值。
 - `email_catch_all_daily_usage`：邮箱泛解析按 UTC 日期累计的当日用量，用于执行单人单日最高限额。
 - `audit_logs`：关键动作审计日志。

@@ -31,6 +31,10 @@ so operators can verify whether the instance is running in `cloudflare` or
 
 ### `GET /v1/public/domains`
 Returns the enabled managed root-domain list.
+Each row now also includes:
+
+- `sale_enabled`
+- `sale_base_price_cents`
 
 ### `GET /v1/public/supervision`
 Returns privacy-safe ownership rows for the public supervision page.
@@ -174,6 +178,38 @@ Request example:
   "units": 3
 }
 ```
+
+### `POST /v1/my/ldc/domain-orders`
+Creates one dynamic Linux Do Credit checkout order for a paid namespace purchase.
+This endpoint requires `X-CSRF-Token`.
+
+Exact purchase example:
+
+```json
+{
+  "root_domain": "openapi.best",
+  "mode": "exact",
+  "prefix": "hello"
+}
+```
+
+Random purchase example:
+
+```json
+{
+  "root_domain": "openapi.best",
+  "mode": "random",
+  "random_length": 12
+}
+```
+
+Current rules:
+
+- the selected root domain must have `sale_enabled=true`
+- `sale_base_price_cents` must be greater than `0`
+- exact mode rejects 1-character prefixes
+- random mode only accepts `12` to `63` characters
+- exact mode checks both allocation conflicts and live Cloudflare DNS conflicts before creating the local order
 
 ### `GET /v1/my/ldc/orders/{outTradeNo}`
 Returns one specific Linux Do Credit order for the current user.
@@ -376,7 +412,9 @@ Request example:
   "default_quota": 1,
   "auto_provision": true,
   "is_default": true,
-  "enabled": true
+  "enabled": true,
+  "sale_enabled": false,
+  "sale_base_price_cents": 0
 }
 ```
 
