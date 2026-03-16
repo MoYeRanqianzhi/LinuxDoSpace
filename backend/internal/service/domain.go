@@ -18,6 +18,14 @@ import (
 // labelPattern 用于校验普通 DNS label。
 var labelPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 
+// builtInSaleManagedDomains defines the extra managed roots that should exist
+// in every production deployment once Cloudflare can resolve their zone IDs.
+var builtInSaleManagedDomains = []string{
+	"cifang.love",
+	"openapi.best",
+	"metapi.cc",
+}
+
 // DomainService 承接根域名、命名空间分配与 DNS 记录管理业务。
 type DomainService struct {
 	cfg config.Config
@@ -48,12 +56,14 @@ type DNSRecordInput struct {
 
 // UpsertManagedDomainRequest 表示管理员写入根域名配置时需要的输入。
 type UpsertManagedDomainRequest struct {
-	RootDomain       string `json:"root_domain"`
-	CloudflareZoneID string `json:"cloudflare_zone_id"`
-	DefaultQuota     int    `json:"default_quota"`
-	AutoProvision    bool   `json:"auto_provision"`
-	IsDefault        bool   `json:"is_default"`
-	Enabled          bool   `json:"enabled"`
+	RootDomain         string `json:"root_domain"`
+	CloudflareZoneID   string `json:"cloudflare_zone_id"`
+	DefaultQuota       int    `json:"default_quota"`
+	AutoProvision      bool   `json:"auto_provision"`
+	IsDefault          bool   `json:"is_default"`
+	Enabled            bool   `json:"enabled"`
+	SaleEnabled        bool   `json:"sale_enabled"`
+	SaleBasePriceCents int64  `json:"sale_base_price_cents"`
 }
 
 // SetUserQuotaRequest 表示管理员写入用户配额覆盖时需要的输入。
@@ -79,32 +89,35 @@ func (s *DomainService) EnsureDefaultManagedDomain(ctx context.Context) error {
 	if rootDomain == "" || !s.cfg.Cloudflare.AutoBootstrapDomain {
 		return nil
 	}
-
-	zoneID := strings.TrimSpace(s.cfg.Cloudflare.DefaultZoneID)
-	if zoneID == "" {
-		if s.cf == nil || !s.cfg.CloudflareConfigured() {
-			return nil
-		}
-
-		resolved, err := s.cf.ResolveZoneID(ctx, rootDomain)
-		if err != nil {
-			return UnavailableError("failed to resolve cloudflare zone id", err)
-		}
-		zoneID = resolved
-	}
-
-	_, err := s.db.UpsertManagedDomain(ctx, storage.UpsertManagedDomainInput{
-		RootDomain:       rootDomain,
-		CloudflareZoneID: zoneID,
-		DefaultQuota:     s.cfg.Cloudflare.DefaultUserQuota,
-		AutoProvision:    true,
-		IsDefault:        true,
-		Enabled:          true,
+	return s.ensureManagedDomainBootstrap(ctx, rootDomain, storage.UpsertManagedDomainInput{
+		RootDomain:         rootDomain,
+		CloudflareZoneID:   s.cfg.Cloudflare.DefaultZoneID,
+		DefaultQuota:       s.cfg.Cloudflare.DefaultUserQuota,
+		AutoProvision:      true,
+		IsDefault:          true,
+		Enabled:            true,
+		SaleEnabled:        false,
+		SaleBasePriceCents: 0,
 	})
-	if err != nil {
-		return InternalError("failed to bootstrap default managed domain", err)
-	}
+}
 
+// EnsureBuiltInManagedDomains bootstraps the additional paid-sale root domains
+// requested by the project so operators do not need to add them by hand after
+// every fresh deployment.
+func (s *DomainService) EnsureBuiltInManagedDomains(ctx context.Context) error {
+	for _, rootDomain := range builtInSaleManagedDomains {
+		if err := s.ensureManagedDomainBootstrap(ctx, rootDomain, storage.UpsertManagedDomainInput{
+			RootDomain:         rootDomain,
+			DefaultQuota:       1,
+			AutoProvision:      false,
+			IsDefault:          false,
+			Enabled:            true,
+			SaleEnabled:        false,
+			SaleBasePriceCents: 0,
+		}); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -276,7 +289,7 @@ func (s *DomainService) CreateAllocation(ctx context.Context, user model.User, r
 	if err != nil {
 		return model.Allocation{}, err
 	}
-	if err := ensureTemporaryUsernameMatch(user, normalizedPrefix); err != nil {
+	if err := ensureTemporaryFreeRegistrationEligibility(user, managedDomain, normalizedPrefix); err != nil {
 		return model.Allocation{}, err
 	}
 
@@ -509,6 +522,12 @@ func (s *DomainService) UpsertManagedDomain(ctx context.Context, actor model.Use
 	if request.DefaultQuota < 1 {
 		return model.ManagedDomain{}, ValidationError("default_quota must be at least 1")
 	}
+	if request.SaleBasePriceCents < 0 {
+		return model.ManagedDomain{}, ValidationError("sale_base_price_cents must not be negative")
+	}
+	if request.SaleEnabled && request.SaleBasePriceCents <= 0 {
+		return model.ManagedDomain{}, ValidationError("sale_base_price_cents must be greater than 0 when sales are enabled")
+	}
 
 	zoneID := strings.TrimSpace(request.CloudflareZoneID)
 	if zoneID == "" {
@@ -523,12 +542,14 @@ func (s *DomainService) UpsertManagedDomain(ctx context.Context, actor model.Use
 	}
 
 	item, err := s.db.UpsertManagedDomain(ctx, storage.UpsertManagedDomainInput{
-		RootDomain:       rootDomain,
-		CloudflareZoneID: zoneID,
-		DefaultQuota:     request.DefaultQuota,
-		AutoProvision:    request.AutoProvision,
-		IsDefault:        request.IsDefault,
-		Enabled:          request.Enabled,
+		RootDomain:         rootDomain,
+		CloudflareZoneID:   zoneID,
+		DefaultQuota:       request.DefaultQuota,
+		AutoProvision:      request.AutoProvision,
+		IsDefault:          request.IsDefault,
+		Enabled:            request.Enabled,
+		SaleEnabled:        request.SaleEnabled,
+		SaleBasePriceCents: request.SaleBasePriceCents,
 	})
 	if err != nil {
 		return model.ManagedDomain{}, InternalError("failed to upsert managed domain", err)
@@ -550,6 +571,44 @@ func (s *DomainService) UpsertManagedDomain(ctx context.Context, actor model.Use
 	}
 
 	return item, nil
+}
+
+// ensureManagedDomainBootstrap keeps startup seeding logic small and explicit:
+// resolve one root-domain zone ID when missing, then upsert the managed-domain row.
+func (s *DomainService) ensureManagedDomainBootstrap(ctx context.Context, rootDomain string, input storage.UpsertManagedDomainInput) error {
+	normalizedRootDomain := strings.ToLower(strings.TrimSpace(rootDomain))
+	if normalizedRootDomain == "" {
+		return nil
+	}
+
+	zoneID := strings.TrimSpace(input.CloudflareZoneID)
+	if zoneID == "" {
+		if s.cf == nil || !s.cfg.CloudflareConfigured() {
+			return nil
+		}
+
+		resolved, err := s.cf.ResolveZoneID(ctx, normalizedRootDomain)
+		if err != nil {
+			return UnavailableError("failed to resolve cloudflare zone id", err)
+		}
+		zoneID = resolved
+	}
+
+	_, err := s.db.UpsertManagedDomain(ctx, storage.UpsertManagedDomainInput{
+		RootDomain:         normalizedRootDomain,
+		CloudflareZoneID:   zoneID,
+		DefaultQuota:       input.DefaultQuota,
+		AutoProvision:      input.AutoProvision,
+		IsDefault:          input.IsDefault,
+		Enabled:            input.Enabled,
+		SaleEnabled:        input.SaleEnabled,
+		SaleBasePriceCents: input.SaleBasePriceCents,
+	})
+	if err != nil {
+		return InternalError("failed to bootstrap managed domain", err)
+	}
+
+	return nil
 }
 
 // SetUserQuota 允许管理员调整某个用户在某个根域名上的可分配数量。
@@ -777,14 +836,19 @@ func normalizedUserPrefix(username string) (string, error) {
 	return NormalizePrefix(username)
 }
 
-// ensureTemporaryUsernameMatch 确保用户只能申请或查询与自己用户名同名的子域名。
-func ensureTemporaryUsernameMatch(user model.User, normalizedPrefix string) error {
+// ensureTemporaryFreeRegistrationEligibility keeps the temporary self-service
+// registration path narrow: the prefix must match the current username, and the
+// selected root domain must explicitly opt into the free same-name flow.
+func ensureTemporaryFreeRegistrationEligibility(user model.User, managedDomain model.ManagedDomain, normalizedPrefix string) error {
 	allowedPrefix, err := normalizedUserPrefix(user.Username)
 	if err != nil {
 		return ForbiddenError("your linux do username cannot be mapped to a valid dns label")
 	}
 	if normalizedPrefix != allowedPrefix {
 		return ForbiddenError("temporary policy only allows the subdomain that exactly matches your username")
+	}
+	if !managedDomain.AutoProvision {
+		return ForbiddenError("the selected root domain is not open for the temporary free registration flow")
 	}
 	return nil
 }

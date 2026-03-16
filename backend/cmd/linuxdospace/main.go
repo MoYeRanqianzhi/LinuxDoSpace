@@ -74,10 +74,13 @@ func main() {
 		cfg.LinuxDOCredit.ReturnURL,
 		cfg.LinuxDOCredit.Timeout,
 	)
-	paymentService := service.NewPaymentService(cfg, store, creditClient)
+	paymentService := service.NewPaymentService(cfg, store, cloudflareClient, creditClient)
 
 	if err := domainService.EnsureDefaultManagedDomain(ctx); err != nil {
 		log.Fatalf("bootstrap default managed domain: %v", err)
+	}
+	if err := domainService.EnsureBuiltInManagedDomains(ctx); err != nil {
+		log.Fatalf("bootstrap built-in managed domains: %v", err)
 	}
 	if err := service.EnsureDatabaseRelayIngressDNSState(ctx, cfg, store, cloudflareClient); err != nil {
 		log.Fatalf("bootstrap database mail relay ingress dns: %v", err)

@@ -26,7 +26,7 @@ type tableCopyPlan struct {
 var orderedCopyPlan = []tableCopyPlan{
 	{Name: "users", Columns: []string{"id", "linuxdo_user_id", "username", "display_name", "avatar_url", "trust_level", "is_linuxdo_admin", "is_app_admin", "created_at", "updated_at", "last_login_at"}, ResetSequence: true},
 	{Name: "oauth_states", Columns: []string{"id", "code_verifier", "next_path", "expires_at", "created_at"}},
-	{Name: "managed_domains", Columns: []string{"id", "root_domain", "cloudflare_zone_id", "default_quota", "auto_provision", "is_default", "enabled", "created_at", "updated_at"}, ResetSequence: true},
+	{Name: "managed_domains", Columns: []string{"id", "root_domain", "cloudflare_zone_id", "default_quota", "auto_provision", "is_default", "enabled", "sale_enabled", "sale_base_price_cents", "created_at", "updated_at"}, ResetSequence: true},
 	{Name: "sessions", Columns: []string{"id", "user_id", "csrf_token", "user_agent_fingerprint", "expires_at", "created_at", "last_seen_at", "admin_verified_at"}},
 	{Name: "user_controls", Columns: []string{"user_id", "is_banned", "note", "created_at", "updated_at"}},
 	{Name: "user_domain_quotas", Columns: []string{"id", "user_id", "managed_domain_id", "max_allocations", "reason", "created_at", "updated_at"}, ResetSequence: true},
@@ -39,6 +39,8 @@ var orderedCopyPlan = []tableCopyPlan{
 	{Name: "quantity_records", Columns: []string{"id", "user_id", "resource_key", "scope", "delta", "source", "reason", "reference_type", "reference_id", "expires_at", "created_by_user_id", "created_at"}, ResetSequence: true},
 	{Name: "email_catch_all_access", Columns: []string{"user_id", "subscription_expires_at", "remaining_count", "daily_limit_override", "created_at", "updated_at"}},
 	{Name: "email_catch_all_daily_usage", Columns: []string{"user_id", "usage_date", "used_count", "created_at", "updated_at"}},
+	{Name: "payment_products", Columns: []string{"key", "display_name", "description", "enabled", "unit_price_cents", "grant_quantity", "grant_unit", "effect_type", "sort_order", "created_at", "updated_at"}},
+	{Name: "payment_orders", Columns: []string{"id", "user_id", "product_key", "product_name", "title", "gateway_type", "out_trade_no", "provider_trade_no", "status", "units", "grant_quantity", "granted_total", "grant_unit", "unit_price_cents", "total_price_cents", "effect_type", "purchase_root_domain", "purchase_mode", "purchase_prefix", "purchase_normalized_prefix", "purchase_requested_length", "purchase_assigned_prefix", "purchase_assigned_fqdn", "payment_url", "notify_payload_raw", "paid_at", "applied_at", "last_checked_at", "created_at", "updated_at"}, ResetSequence: true},
 	{Name: "audit_logs", Columns: []string{"id", "actor_user_id", "action", "resource_type", "resource_id", "metadata_json", "created_at"}, ResetSequence: true},
 }
 

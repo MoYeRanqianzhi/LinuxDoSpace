@@ -37,6 +37,10 @@ const (
 	// PaymentEffectPaymentTestCounter records one successful payment test so the
 	// integration can be verified without changing production entitlements.
 	PaymentEffectPaymentTestCounter = "payment_test_counter"
+
+	// PaymentEffectDomainAllocationPurchase turns one paid dynamic checkout into
+	// one namespace allocation under a sale-enabled managed root domain.
+	PaymentEffectDomainAllocationPurchase = "domain_allocation_purchase"
 )
 
 // PaymentProduct stores one administrator-configurable purchasable LDC item.
@@ -59,29 +63,36 @@ type PaymentProduct struct {
 // PaymentOrder stores the local source of truth for one Linux Do Credit
 // checkout and its entitlement-application lifecycle.
 type PaymentOrder struct {
-	ID               int64      `json:"id"`
-	UserID           int64      `json:"user_id"`
-	Username         string     `json:"username"`
-	DisplayName      string     `json:"display_name"`
-	ProductKey       string     `json:"product_key"`
-	ProductName      string     `json:"product_name"`
-	Title            string     `json:"title"`
-	GatewayType      string     `json:"gateway_type"`
-	OutTradeNo       string     `json:"out_trade_no"`
-	ProviderTradeNo  string     `json:"provider_trade_no"`
-	Status           string     `json:"status"`
-	Units            int64      `json:"units"`
-	GrantQuantity    int64      `json:"grant_quantity"`
-	GrantedTotal     int64      `json:"granted_total"`
-	GrantUnit        string     `json:"grant_unit"`
-	UnitPriceCents   int64      `json:"unit_price_cents"`
-	TotalPriceCents  int64      `json:"total_price_cents"`
-	EffectType       string     `json:"effect_type"`
-	PaymentURL       string     `json:"payment_url"`
-	NotifyPayloadRaw string     `json:"-"`
-	PaidAt           *time.Time `json:"paid_at,omitempty"`
-	AppliedAt        *time.Time `json:"applied_at,omitempty"`
-	LastCheckedAt    *time.Time `json:"last_checked_at,omitempty"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
+	ID                       int64      `json:"id"`
+	UserID                   int64      `json:"user_id"`
+	Username                 string     `json:"username"`
+	DisplayName              string     `json:"display_name"`
+	ProductKey               string     `json:"product_key"`
+	ProductName              string     `json:"product_name"`
+	Title                    string     `json:"title"`
+	GatewayType              string     `json:"gateway_type"`
+	OutTradeNo               string     `json:"out_trade_no"`
+	ProviderTradeNo          string     `json:"provider_trade_no"`
+	Status                   string     `json:"status"`
+	Units                    int64      `json:"units"`
+	GrantQuantity            int64      `json:"grant_quantity"`
+	GrantedTotal             int64      `json:"granted_total"`
+	GrantUnit                string     `json:"grant_unit"`
+	UnitPriceCents           int64      `json:"unit_price_cents"`
+	TotalPriceCents          int64      `json:"total_price_cents"`
+	EffectType               string     `json:"effect_type"`
+	PurchaseRootDomain       string     `json:"purchase_root_domain,omitempty"`
+	PurchaseMode             string     `json:"purchase_mode,omitempty"`
+	PurchasePrefix           string     `json:"purchase_prefix,omitempty"`
+	PurchaseNormalizedPrefix string     `json:"purchase_normalized_prefix,omitempty"`
+	PurchaseRequestedLength  int        `json:"purchase_requested_length,omitempty"`
+	PurchaseAssignedPrefix   string     `json:"purchase_assigned_prefix,omitempty"`
+	PurchaseAssignedFQDN     string     `json:"purchase_assigned_fqdn,omitempty"`
+	PaymentURL               string     `json:"payment_url"`
+	NotifyPayloadRaw         string     `json:"-"`
+	PaidAt                   *time.Time `json:"paid_at,omitempty"`
+	AppliedAt                *time.Time `json:"applied_at,omitempty"`
+	LastCheckedAt            *time.Time `json:"last_checked_at,omitempty"`
+	CreatedAt                time.Time  `json:"created_at"`
+	UpdatedAt                time.Time  `json:"updated_at"`
 }

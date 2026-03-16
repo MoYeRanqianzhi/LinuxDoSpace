@@ -40,15 +40,17 @@ type OAuthState struct {
 
 // ManagedDomain 表示平台允许分发的一个根域名。
 type ManagedDomain struct {
-	ID               int64     `json:"id"`
-	RootDomain       string    `json:"root_domain"`
-	CloudflareZoneID string    `json:"cloudflare_zone_id"`
-	DefaultQuota     int       `json:"default_quota"`
-	AutoProvision    bool      `json:"auto_provision"`
-	IsDefault        bool      `json:"is_default"`
-	Enabled          bool      `json:"enabled"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID                 int64     `json:"id"`
+	RootDomain         string    `json:"root_domain"`
+	CloudflareZoneID   string    `json:"cloudflare_zone_id"`
+	DefaultQuota       int       `json:"default_quota"`
+	AutoProvision      bool      `json:"auto_provision"`
+	IsDefault          bool      `json:"is_default"`
+	Enabled            bool      `json:"enabled"`
+	SaleEnabled        bool      `json:"sale_enabled"`
+	SaleBasePriceCents int64     `json:"sale_base_price_cents"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 // UserDomainQuota 表示某个用户在某个根域名上的配额覆盖值。

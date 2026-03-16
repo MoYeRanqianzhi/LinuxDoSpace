@@ -58,6 +58,31 @@ func (a *API) handleCreateMyPaymentOrder(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusCreated, item)
 }
 
+// handleCreateMyDomainPurchaseOrder reserves one dynamic paid namespace order
+// and returns the upstream checkout URL.
+func (a *API) handleCreateMyDomainPurchaseOrder(w http.ResponseWriter, r *http.Request) {
+	session, user, ok := a.requireActor(w, r)
+	if !ok {
+		return
+	}
+	if !a.enforceCSRF(w, r, session) {
+		return
+	}
+
+	var request service.CreateDomainPurchaseOrderRequest
+	if err := decodeJSONBody(r, &request); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	item, err := a.paymentService.CreateDomainPurchaseOrder(r.Context(), *user, request)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
+}
+
 // handleMyPaymentOrder returns one specific order without mutating its current
 // gateway state.
 func (a *API) handleMyPaymentOrder(w http.ResponseWriter, r *http.Request) {

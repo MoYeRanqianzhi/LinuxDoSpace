@@ -356,6 +356,8 @@ SELECT
     auto_provision,
     is_default,
     enabled,
+    sale_enabled,
+    sale_base_price_cents,
     created_at,
     updated_at
 FROM managed_domains
@@ -395,6 +397,8 @@ SELECT
     auto_provision,
     is_default,
     enabled,
+    sale_enabled,
+    sale_base_price_cents,
     created_at,
     updated_at
 FROM managed_domains
@@ -415,6 +419,8 @@ SELECT
     auto_provision,
     is_default,
     enabled,
+    sale_enabled,
+    sale_base_price_cents,
     created_at,
     updated_at
 FROM managed_domains
@@ -446,15 +452,19 @@ INSERT INTO managed_domains (
     auto_provision,
     is_default,
     enabled,
+    sale_enabled,
+    sale_base_price_cents,
     created_at,
     updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(root_domain) DO UPDATE SET
     cloudflare_zone_id=excluded.cloudflare_zone_id,
     default_quota=excluded.default_quota,
     auto_provision=excluded.auto_provision,
     is_default=excluded.is_default,
     enabled=excluded.enabled,
+    sale_enabled=excluded.sale_enabled,
+    sale_base_price_cents=excluded.sale_base_price_cents,
     updated_at=excluded.updated_at
 RETURNING
     id,
@@ -464,6 +474,8 @@ RETURNING
     auto_provision,
     is_default,
     enabled,
+    sale_enabled,
+    sale_base_price_cents,
     created_at,
     updated_at
 `,
@@ -473,6 +485,8 @@ RETURNING
 		boolToInt(input.AutoProvision),
 		boolToInt(input.IsDefault),
 		boolToInt(input.Enabled),
+		boolToInt(input.SaleEnabled),
+		input.SaleBasePriceCents,
 		formatTime(time.Now().UTC()),
 		formatTime(time.Now().UTC()),
 	)
@@ -1029,6 +1043,7 @@ func scanManagedDomain(scanner interface{ Scan(dest ...any) error }) (model.Mana
 	var autoProvision int
 	var isDefault int
 	var enabled int
+	var saleEnabled int
 
 	err := scanner.Scan(
 		&item.ID,
@@ -1038,6 +1053,8 @@ func scanManagedDomain(scanner interface{ Scan(dest ...any) error }) (model.Mana
 		&autoProvision,
 		&isDefault,
 		&enabled,
+		&saleEnabled,
+		&item.SaleBasePriceCents,
 		&createdAt,
 		&updatedAt,
 	)
@@ -1048,6 +1065,7 @@ func scanManagedDomain(scanner interface{ Scan(dest ...any) error }) (model.Mana
 	item.AutoProvision = autoProvision == 1
 	item.IsDefault = isDefault == 1
 	item.Enabled = enabled == 1
+	item.SaleEnabled = saleEnabled == 1
 
 	if item.CreatedAt, err = parseTime(createdAt); err != nil {
 		return model.ManagedDomain{}, err

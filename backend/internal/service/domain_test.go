@@ -140,17 +140,28 @@ func TestIsSupportedRecordTypeReservesMX(t *testing.T) {
 	}
 }
 
-// TestEnsureTemporaryUsernameMatch 验证当前临时策略只放行“用户名同名”的子域名前缀。
-func TestEnsureTemporaryUsernameMatch(t *testing.T) {
+// TestEnsureTemporaryFreeRegistrationEligibility verifies that the temporary
+// free self-service flow requires both a username match and a root domain that
+// explicitly enables the free same-name path.
+func TestEnsureTemporaryFreeRegistrationEligibility(t *testing.T) {
 	user := model.User{
 		Username: "Alice",
 	}
+	managedDomain := model.ManagedDomain{
+		RootDomain:    "linuxdo.space",
+		AutoProvision: true,
+	}
 
-	if err := ensureTemporaryUsernameMatch(user, "alice"); err != nil {
+	if err := ensureTemporaryFreeRegistrationEligibility(user, managedDomain, "alice"); err != nil {
 		t.Fatalf("expected alice to be allowed, got %v", err)
 	}
-	if err := ensureTemporaryUsernameMatch(user, "other-name"); err == nil {
+	if err := ensureTemporaryFreeRegistrationEligibility(user, managedDomain, "other-name"); err == nil {
 		t.Fatalf("expected mismatched prefix to be rejected")
+	}
+
+	managedDomain.AutoProvision = false
+	if err := ensureTemporaryFreeRegistrationEligibility(user, managedDomain, "alice"); err == nil {
+		t.Fatalf("expected non-free managed domain to reject temporary self-service")
 	}
 }
 

@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -168,6 +169,13 @@ INSERT INTO payment_orders (
     unit_price_cents,
     total_price_cents,
     effect_type,
+    purchase_root_domain,
+    purchase_mode,
+    purchase_prefix,
+    purchase_normalized_prefix,
+    purchase_requested_length,
+    purchase_assigned_prefix,
+    purchase_assigned_fqdn,
     payment_url,
     notify_payload_raw,
     paid_at,
@@ -175,7 +183,7 @@ INSERT INTO payment_orders (
     last_checked_at,
     created_at,
     updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', NULL, NULL, NULL, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', NULL, NULL, NULL, ?, ?)
 RETURNING id
 `,
 		input.UserID,
@@ -193,6 +201,13 @@ RETURNING id
 		input.UnitPriceCents,
 		input.TotalPriceCents,
 		strings.TrimSpace(input.EffectType),
+		strings.TrimSpace(input.PurchaseRootDomain),
+		strings.TrimSpace(input.PurchaseMode),
+		strings.TrimSpace(input.PurchasePrefix),
+		strings.TrimSpace(input.PurchaseNormalizedPrefix),
+		input.PurchaseRequestedLength,
+		strings.TrimSpace(input.PurchaseAssignedPrefix),
+		strings.TrimSpace(input.PurchaseAssignedFQDN),
 		strings.TrimSpace(input.PaymentURL),
 		formatTime(now),
 		formatTime(now),
@@ -232,6 +247,13 @@ SELECT
     po.unit_price_cents,
     po.total_price_cents,
     po.effect_type,
+    po.purchase_root_domain,
+    po.purchase_mode,
+    po.purchase_prefix,
+    po.purchase_normalized_prefix,
+    po.purchase_requested_length,
+    po.purchase_assigned_prefix,
+    po.purchase_assigned_fqdn,
     po.payment_url,
     po.notify_payload_raw,
     po.paid_at,
@@ -289,6 +311,13 @@ SELECT
     po.unit_price_cents,
     po.total_price_cents,
     po.effect_type,
+    po.purchase_root_domain,
+    po.purchase_mode,
+    po.purchase_prefix,
+    po.purchase_normalized_prefix,
+    po.purchase_requested_length,
+    po.purchase_assigned_prefix,
+    po.purchase_assigned_fqdn,
     po.payment_url,
     po.notify_payload_raw,
     po.paid_at,
@@ -344,6 +373,13 @@ SELECT
     po.unit_price_cents,
     po.total_price_cents,
     po.effect_type,
+    po.purchase_root_domain,
+    po.purchase_mode,
+    po.purchase_prefix,
+    po.purchase_normalized_prefix,
+    po.purchase_requested_length,
+    po.purchase_assigned_prefix,
+    po.purchase_assigned_fqdn,
     po.payment_url,
     po.notify_payload_raw,
     po.paid_at,
@@ -447,6 +483,10 @@ func (s *Store) ApplyPaymentOrderEntitlement(ctx context.Context, input ApplyPay
 		if err := insertPaymentQuantityRecordTx(ctx, tx, order.UserID, paymentQuantityResourceTestCount, paymentQuantityScopeGateway, order.GrantedTotal, order.Title, order.OutTradeNo, appliedAt); err != nil {
 			return model.PaymentOrder{}, false, err
 		}
+	case model.PaymentEffectDomainAllocationPurchase:
+		if err := applyDomainAllocationPurchaseTx(ctx, tx, order, appliedAt); err != nil {
+			return model.PaymentOrder{}, false, err
+		}
 	default:
 		return model.PaymentOrder{}, false, fmt.Errorf("unsupported payment effect type %q", order.EffectType)
 	}
@@ -517,6 +557,13 @@ SELECT
     po.unit_price_cents,
     po.total_price_cents,
     po.effect_type,
+    po.purchase_root_domain,
+    po.purchase_mode,
+    po.purchase_prefix,
+    po.purchase_normalized_prefix,
+    po.purchase_requested_length,
+    po.purchase_assigned_prefix,
+    po.purchase_assigned_fqdn,
     po.payment_url,
     po.notify_payload_raw,
     po.paid_at,
@@ -554,6 +601,13 @@ SELECT
     po.unit_price_cents,
     po.total_price_cents,
     po.effect_type,
+    po.purchase_root_domain,
+    po.purchase_mode,
+    po.purchase_prefix,
+    po.purchase_normalized_prefix,
+    po.purchase_requested_length,
+    po.purchase_assigned_prefix,
+    po.purchase_assigned_fqdn,
     po.payment_url,
     po.notify_payload_raw,
     po.paid_at,
@@ -617,6 +671,74 @@ func applyCatchAllRemainingCountTx(ctx context.Context, tx *sql.Tx, order model.
 	}
 
 	return insertPaymentQuantityRecordTx(ctx, tx, order.UserID, paymentQuantityResourceRemainingCount, paymentQuantityScopeCatchAll, order.GrantedTotal, order.Title, order.OutTradeNo, appliedAt)
+}
+
+// applyDomainAllocationPurchaseTx creates the namespace granted by one paid
+// domain-purchase order inside the same database transaction.
+func applyDomainAllocationPurchaseTx(ctx context.Context, tx *sql.Tx, order model.PaymentOrder, appliedAt time.Time) error {
+	rootDomain := strings.ToLower(strings.TrimSpace(order.PurchaseRootDomain))
+	if rootDomain == "" {
+		return fmt.Errorf("payment order %s is missing purchase_root_domain", order.OutTradeNo)
+	}
+
+	managedDomain, err := getManagedDomainByRootTx(ctx, tx, rootDomain)
+	if err != nil {
+		return err
+	}
+	if !managedDomain.Enabled {
+		return fmt.Errorf("managed domain %s is disabled", managedDomain.RootDomain)
+	}
+
+	normalizedPrefix := strings.ToLower(strings.TrimSpace(order.PurchaseNormalizedPrefix))
+	switch strings.ToLower(strings.TrimSpace(order.PurchaseMode)) {
+	case "exact":
+		if normalizedPrefix == "" {
+			return fmt.Errorf("payment order %s is missing purchase_normalized_prefix", order.OutTradeNo)
+		}
+	case "random":
+		generatedPrefix, generateErr := generateRandomAllocationPrefixTx(ctx, tx, managedDomain.ID, order.PurchaseRequestedLength)
+		if generateErr != nil {
+			return generateErr
+		}
+		normalizedPrefix = generatedPrefix
+	default:
+		return fmt.Errorf("unsupported domain purchase mode %q", order.PurchaseMode)
+	}
+
+	fqdn := normalizedPrefix + "." + managedDomain.RootDomain
+	if _, err := findAllocationByNormalizedPrefixTx(ctx, tx, managedDomain.ID, normalizedPrefix); err == nil {
+		return fmt.Errorf("requested domain %s has already been allocated", fqdn)
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+
+	if _, err := createAllocationTx(ctx, tx, CreateAllocationInput{
+		UserID:           order.UserID,
+		ManagedDomainID:  managedDomain.ID,
+		Prefix:           normalizedPrefix,
+		NormalizedPrefix: normalizedPrefix,
+		FQDN:             fqdn,
+		IsPrimary:        false,
+		Source:           "ldc_purchase",
+		Status:           "active",
+	}); err != nil {
+		return err
+	}
+
+	_, err = tx.ExecContext(ctx, `
+UPDATE payment_orders
+SET
+    purchase_assigned_prefix = ?,
+    purchase_assigned_fqdn = ?,
+    updated_at = ?
+WHERE out_trade_no = ?
+`,
+		normalizedPrefix,
+		fqdn,
+		formatTime(appliedAt),
+		order.OutTradeNo,
+	)
+	return err
 }
 
 // insertPaymentQuantityRecordTx appends one immutable quantity-ledger row that
@@ -698,6 +820,123 @@ func scanPaymentProduct(scanner interface{ Scan(dest ...any) error }) (model.Pay
 	return item, nil
 }
 
+// getManagedDomainByRootTx reloads one managed domain inside the entitlement
+// transaction so the purchase grant stays atomic.
+func getManagedDomainByRootTx(ctx context.Context, tx *sql.Tx, rootDomain string) (model.ManagedDomain, error) {
+	row := tx.QueryRowContext(ctx, `
+SELECT
+    id,
+    root_domain,
+    cloudflare_zone_id,
+    default_quota,
+    auto_provision,
+    is_default,
+    enabled,
+    sale_enabled,
+    sale_base_price_cents,
+    created_at,
+    updated_at
+FROM managed_domains
+WHERE root_domain = ?
+`, strings.ToLower(strings.TrimSpace(rootDomain)))
+	return scanManagedDomain(row)
+}
+
+// findAllocationByNormalizedPrefixTx checks whether one exact namespace is
+// already present before a paid purchase tries to claim it.
+func findAllocationByNormalizedPrefixTx(ctx context.Context, tx *sql.Tx, managedDomainID int64, normalizedPrefix string) (model.Allocation, error) {
+	row := tx.QueryRowContext(ctx, `
+SELECT
+    id,
+    user_id,
+    managed_domain_id,
+    prefix,
+    normalized_prefix,
+    fqdn,
+    is_primary,
+    source,
+    status,
+    created_at,
+    updated_at
+FROM allocations
+WHERE managed_domain_id = ? AND normalized_prefix = ?
+`, managedDomainID, strings.ToLower(strings.TrimSpace(normalizedPrefix)))
+	return scanAllocation(row)
+}
+
+// createAllocationTx inserts one purchased allocation inside the caller-owned
+// transaction so entitlement application can stay all-or-nothing.
+func createAllocationTx(ctx context.Context, tx *sql.Tx, input CreateAllocationInput) (model.Allocation, error) {
+	now := time.Now().UTC()
+	row := tx.QueryRowContext(ctx, `
+INSERT INTO allocations (
+    user_id,
+    managed_domain_id,
+    prefix,
+    normalized_prefix,
+    fqdn,
+    is_primary,
+    source,
+    status,
+    created_at,
+    updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING
+    id,
+    user_id,
+    managed_domain_id,
+    prefix,
+    normalized_prefix,
+    fqdn,
+    is_primary,
+    source,
+    status,
+    created_at,
+    updated_at
+`,
+		input.UserID,
+		input.ManagedDomainID,
+		strings.TrimSpace(input.Prefix),
+		strings.ToLower(strings.TrimSpace(input.NormalizedPrefix)),
+		strings.ToLower(strings.TrimSpace(input.FQDN)),
+		boolToInt(input.IsPrimary),
+		strings.TrimSpace(input.Source),
+		strings.TrimSpace(input.Status),
+		formatTime(now),
+		formatTime(now),
+	)
+	return scanAllocation(row)
+}
+
+// generateRandomAllocationPrefixTx creates a random 12+ character label and
+// retries until the current root domain has no allocation conflict.
+func generateRandomAllocationPrefixTx(ctx context.Context, tx *sql.Tx, managedDomainID int64, length int) (string, error) {
+	if length < 12 || length > 63 {
+		return "", fmt.Errorf("random allocation length must be between 12 and 63")
+	}
+
+	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+	buffer := make([]byte, length)
+	randomBytes := make([]byte, length)
+
+	for attempt := 0; attempt < 32; attempt++ {
+		if _, err := rand.Read(randomBytes); err != nil {
+			return "", err
+		}
+		for index := range buffer {
+			buffer[index] = alphabet[int(randomBytes[index])%len(alphabet)]
+		}
+		candidate := string(buffer)
+		if _, err := findAllocationByNormalizedPrefixTx(ctx, tx, managedDomainID, candidate); errors.Is(err, sql.ErrNoRows) {
+			return candidate, nil
+		} else if err != nil {
+			return "", err
+		}
+	}
+
+	return "", fmt.Errorf("failed to generate a unique random allocation prefix after multiple retries")
+}
+
 // scanPaymentOrder maps one joined payment-order row into the shared model.
 func scanPaymentOrder(scanner interface{ Scan(dest ...any) error }) (model.PaymentOrder, error) {
 	var item model.PaymentOrder
@@ -726,6 +965,13 @@ func scanPaymentOrder(scanner interface{ Scan(dest ...any) error }) (model.Payme
 		&item.UnitPriceCents,
 		&item.TotalPriceCents,
 		&item.EffectType,
+		&item.PurchaseRootDomain,
+		&item.PurchaseMode,
+		&item.PurchasePrefix,
+		&item.PurchaseNormalizedPrefix,
+		&item.PurchaseRequestedLength,
+		&item.PurchaseAssignedPrefix,
+		&item.PurchaseAssignedFQDN,
 		&item.PaymentURL,
 		&item.NotifyPayloadRaw,
 		&paidAt,

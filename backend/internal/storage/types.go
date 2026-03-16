@@ -27,12 +27,14 @@ type CreateSessionInput struct {
 
 // UpsertManagedDomainInput describes one distributable root domain row.
 type UpsertManagedDomainInput struct {
-	RootDomain       string
-	CloudflareZoneID string
-	DefaultQuota     int
-	AutoProvision    bool
-	IsDefault        bool
-	Enabled          bool
+	RootDomain         string
+	CloudflareZoneID   string
+	DefaultQuota       int
+	AutoProvision      bool
+	IsDefault          bool
+	Enabled            bool
+	SaleEnabled        bool
+	SaleBasePriceCents int64
 }
 
 // SetUserQuotaInput describes one user-specific quota override for one root
@@ -294,21 +296,28 @@ type UpsertPaymentProductInput struct {
 // CreatePaymentOrderInput describes one locally persisted LDC order reserved
 // before the backend talks to the upstream payment gateway.
 type CreatePaymentOrderInput struct {
-	UserID          int64
-	ProductKey      string
-	ProductName     string
-	Title           string
-	GatewayType     string
-	OutTradeNo      string
-	Status          string
-	Units           int64
-	GrantQuantity   int64
-	GrantedTotal    int64
-	GrantUnit       string
-	UnitPriceCents  int64
-	TotalPriceCents int64
-	EffectType      string
-	PaymentURL      string
+	UserID                   int64
+	ProductKey               string
+	ProductName              string
+	Title                    string
+	GatewayType              string
+	OutTradeNo               string
+	Status                   string
+	Units                    int64
+	GrantQuantity            int64
+	GrantedTotal             int64
+	GrantUnit                string
+	UnitPriceCents           int64
+	TotalPriceCents          int64
+	EffectType               string
+	PurchaseRootDomain       string
+	PurchaseMode             string
+	PurchasePrefix           string
+	PurchaseNormalizedPrefix string
+	PurchaseRequestedLength  int
+	PurchaseAssignedPrefix   string
+	PurchaseAssignedFQDN     string
+	PaymentURL               string
 }
 
 // UpdatePaymentOrderGatewayStateInput describes the mutable gateway-facing

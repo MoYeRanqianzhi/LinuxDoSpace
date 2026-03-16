@@ -66,6 +66,7 @@ func NewRouter(deps RouterDependencies) http.Handler {
 	mux.HandleFunc("POST /v1/my/pow/challenges/claim", api.handleClaimMyPOWChallenge)
 	mux.HandleFunc("GET /v1/my/ldc/orders", api.handleMyPaymentOrders)
 	mux.HandleFunc("POST /v1/my/ldc/orders", api.handleCreateMyPaymentOrder)
+	mux.HandleFunc("POST /v1/my/ldc/domain-orders", api.handleCreateMyDomainPurchaseOrder)
 	mux.HandleFunc("GET /v1/my/ldc/orders/{outTradeNo}", api.handleMyPaymentOrder)
 	mux.HandleFunc("POST /v1/my/ldc/orders/{outTradeNo}/refresh", api.handleRefreshMyPaymentOrder)
 	mux.HandleFunc("POST /v1/my/permissions/applications", api.handleSubmitPermissionApplication)

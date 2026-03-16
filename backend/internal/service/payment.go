@@ -47,6 +47,7 @@ const (
 type PaymentService struct {
 	cfg    config.Config
 	db     Store
+	cf     CloudflareClient
 	credit LinuxDOCreditClient
 }
 
@@ -66,10 +67,11 @@ type UpdatePaymentProductRequest struct {
 }
 
 // NewPaymentService constructs the LDC purchase service.
-func NewPaymentService(cfg config.Config, db Store, credit LinuxDOCreditClient) *PaymentService {
+func NewPaymentService(cfg config.Config, db Store, cf CloudflareClient, credit LinuxDOCreditClient) *PaymentService {
 	return &PaymentService{
 		cfg:    cfg,
 		db:     db,
+		cf:     cf,
 		credit: credit,
 	}
 }
