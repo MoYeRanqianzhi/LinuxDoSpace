@@ -62,9 +62,15 @@ export interface DNSRecord {
   is_placeholder?: boolean;
 }
 
-// ManualDNSRecordType limits the public DNS console to manually editable
-// records only. MX stays reserved for the platform's own mail-relay bootstrap.
-export type ManualDNSRecordType = 'A' | 'AAAA' | 'CNAME' | 'TXT';
+// SpecialDNSRecordType is the synthetic record family exposed by the DNS panel
+// for platform-managed capabilities that do not map 1:1 to one raw Cloudflare
+// record row.
+export type SpecialDNSRecordType = 'EMAIL_CATCH_ALL';
+
+// ManualDNSRecordType limits the public DNS console to user-creatable record
+// families. MX stays reserved for the platform's own mail-relay bootstrap,
+// while EMAIL_CATCH_ALL is a synthetic toggle that hides the real relay MX/TXT.
+export type ManualDNSRecordType = 'A' | 'AAAA' | 'CNAME' | 'TXT' | SpecialDNSRecordType;
 
 // AvailabilityResult 表示某个前缀在指定根域名下的可分配检查结果。
 export interface AvailabilityResult {

@@ -167,3 +167,44 @@ func ensureDatabaseRelayIngressDNSForRootDomain(ctx context.Context, cfg config.
 
 	return newEmailRoutingProvisioner(cfg, cf).ensureDatabaseRelayIngressDNS(ctx, normalizedRoot)
 }
+
+// deleteDatabaseRelayIngressDNSForRootDomain removes LinuxDoSpace-managed relay
+// MX/TXT records for one namespace root immediately. This is used when a user
+// switches the namespace away from mailbox catch-all mode and needs the root
+// freed right away, without waiting for the next startup reconciliation pass.
+func deleteDatabaseRelayIngressDNSForRootDomain(ctx context.Context, cfg config.Config, cf CloudflareClient, rootDomain string) error {
+	if !cfg.UsesDatabaseMailRelay() || !cfg.Mail.EnsureDNS {
+		return nil
+	}
+	if cf == nil || !cfg.CloudflareConfigured() {
+		return UnavailableError("database mail relay dns automation is not configured", nil)
+	}
+
+	normalizedRoot := normalizeDNSName(rootDomain)
+	if !usesDatabaseRelayNamespaceRoot(cfg, normalizedRoot) {
+		return nil
+	}
+
+	provisioner := newEmailRoutingProvisioner(cfg, cf)
+	zoneID, err := provisioner.resolveZoneID(ctx, normalizedRoot)
+	if err != nil {
+		return err
+	}
+	records, err := cf.ListAllDNSRecords(ctx, zoneID)
+	if err != nil {
+		return wrapEmailRoutingUnavailable("failed to list cloudflare dns records while deleting database mail relay ingress", err)
+	}
+
+	for _, item := range records {
+		if !isDatabaseRelayManagedDNSRecord(cfg, item) {
+			continue
+		}
+		if normalizeDNSName(item.Name) != normalizedRoot {
+			continue
+		}
+		if err := cf.DeleteDNSRecord(ctx, zoneID, strings.TrimSpace(item.ID)); err != nil {
+			return wrapEmailRoutingUnavailable("failed to delete cloudflare dns record required for database mail relay cleanup", err)
+		}
+	}
+	return nil
+}

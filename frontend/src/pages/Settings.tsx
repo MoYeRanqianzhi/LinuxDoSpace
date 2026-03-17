@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GlassCard } from '../components/GlassCard';
 import { GlassSelect, type GlassSelectOption } from '../components/GlassSelect';
+import { ToggleSwitch } from '../components/ToggleSwitch';
 import {
   Plus,
   Trash2,
@@ -63,7 +64,14 @@ const dnsTypeOptions: GlassSelectOption[] = [
   { value: 'AAAA', label: 'AAAA' },
   { value: 'CNAME', label: 'CNAME' },
   { value: 'TXT', label: 'TXT' },
+  { value: 'EMAIL_CATCH_ALL', label: '邮箱泛解析' },
 ];
+
+// dnsTypeOptionsWithoutSpecial 用于编辑既有真实 DNS 记录时的下拉选项。
+// 合成的“邮箱泛解析”记录不是传统 DNS 行，所以不允许从普通编辑流程切换进去。
+const dnsTypeOptionsWithoutSpecial: GlassSelectOption[] = dnsTypeOptions.filter(
+  (option) => !isSpecialDNSRecordType(option.value),
+);
 
 // Settings 负责接入用户自己的 allocation 和 DNS 记录管理能力。
 export function Settings({
@@ -228,7 +236,7 @@ export function Settings({
       return;
     }
 
-    if (!formData.name.trim() || !formData.content.trim()) {
+    if (!isSpecialDNSRecordType(formData.type) && (!formData.name.trim() || !formData.content.trim())) {
       setNotice('记录名称和内容不能为空。');
       return;
     }
@@ -500,13 +508,13 @@ export function Settings({
                   >
                     <td className="p-4">
                       <span className="px-2 py-1 rounded-md bg-teal-100 dark:bg-teal-900/50 text-teal-700 dark:text-teal-300 text-sm font-bold">
-                        {record.type}
+                        {formatRecordTypeLabel(record.type)}
                       </span>
                     </td>
                     <td className="p-4 font-medium text-gray-800 dark:text-gray-200">{record.relative_name}</td>
                     <td className="p-4 text-gray-600 dark:text-gray-400 font-mono text-sm">
-                      <div>{record.content || (record.is_placeholder ? '尚未填写解析值' : '-')}</div>
-                      {(record.comment || record.ttl || record.priority != null) && (
+                      <div>{describeRecordContent(record)}</div>
+                      {!isSpecialDNSRecordType(record.type) && (record.comment || record.ttl || record.priority != null) && (
                         <div className="mt-1 text-xs text-gray-500 dark:text-gray-500">
                           TTL: {record.ttl === 1 ? 'Auto' : record.ttl}s
                           {record.priority != null ? ` · Priority: ${record.priority}` : ''}
@@ -518,11 +526,19 @@ export function Settings({
                       <div className="flex items-center gap-2">
                         <div
                           className={`w-3 h-3 rounded-full ${
-                            record.proxied ? 'bg-orange-500 shadow-[0_0_8px_#f97316]' : 'bg-gray-400'
+                            isSpecialDNSRecordType(record.type)
+                              ? 'bg-teal-500 shadow-[0_0_8px_#14b8a6]'
+                              : record.proxied
+                                ? 'bg-orange-500 shadow-[0_0_8px_#f97316]'
+                                : 'bg-gray-400'
                           }`}
                         />
                         <span className="text-sm text-gray-700 dark:text-gray-300">
-                          {record.proxied ? '已代理' : '仅 DNS'}
+                          {isSpecialDNSRecordType(record.type)
+                            ? '系统托管'
+                            : record.proxied
+                              ? '已代理'
+                              : '仅 DNS'}
                         </span>
                       </div>
                     </td>
@@ -530,14 +546,24 @@ export function Settings({
                       <div className="flex items-center justify-end gap-2">
                         <button
                           onClick={() => {
-                            if (!supportsManualRecordType(record.type)) {
-                              setNotice('MX 记录由系统托管，当前不能在解析面板中手动编辑。');
+                            if (!supportsEditableDNSRecordType(record.type)) {
+                              setNotice(
+                                isSpecialDNSRecordType(record.type)
+                                  ? '邮箱泛解析是特殊记录。需要删除后重新创建，不能像普通 DNS 一样直接编辑。'
+                                  : 'MX 记录由系统托管，当前不能在解析面板中手动编辑。',
+                              );
                               return;
                             }
                             openModal(record);
                           }}
-                          disabled={!supportsManualRecordType(record.type)}
-                          title={supportsManualRecordType(record.type) ? '编辑记录' : 'MX 记录由系统托管'}
+                          disabled={!supportsEditableDNSRecordType(record.type)}
+                          title={
+                            supportsEditableDNSRecordType(record.type)
+                              ? '编辑记录'
+                              : isSpecialDNSRecordType(record.type)
+                                ? '邮箱泛解析特殊记录不支持直接编辑'
+                                : 'MX 记录由系统托管'
+                          }
                           className="p-2 rounded-lg hover:bg-white/50 dark:hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40 text-blue-600 dark:text-blue-400 transition-colors"
                         >
                           <Edit2 size={16} />
@@ -602,97 +628,99 @@ export function Settings({
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">记录类型</label>
                   <GlassSelect
                     value={formData.type}
-                    options={dnsTypeOptions}
+                    options={editingRecord ? dnsTypeOptionsWithoutSpecial : dnsTypeOptions}
                     onChange={(value) =>
                       setFormData({
                         ...formData,
                         type: value as ManualDNSRecordType,
+                        name: isSpecialDNSRecordType(value) ? '@' : formData.name,
+                        content: isSpecialDNSRecordType(value) ? '' : formData.content,
+                        ttl: isSpecialDNSRecordType(value) ? 1 : formData.ttl,
+                        comment: isSpecialDNSRecordType(value) ? '' : formData.comment,
+                        priority: isSpecialDNSRecordType(value) ? '' : formData.priority,
                         proxied: supportsProxy(value) ? formData.proxied : false,
                       })
                     }
                   />
                 </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">名称</label>
-                  <input
-                    type="text"
-                    value={formData.name}
-                    onChange={(event) => setFormData({ ...formData, name: event.target.value })}
-                    placeholder="@ 或 www"
-                    className="w-full px-4 py-2 rounded-xl bg-white/50 dark:bg-black/50 border border-gray-200 dark:border-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 text-gray-900 dark:text-white"
-                  />
-                </div>
+                {isSpecialDNSRecordType(formData.type) ? (
+                  <div className="rounded-2xl border border-teal-300/35 bg-teal-50/80 p-4 text-sm leading-7 text-teal-900 dark:border-teal-500/20 dark:bg-teal-950/25 dark:text-teal-100">
+                    该特殊记录会把当前命名空间根 `@` 切换为邮箱泛解析模式。启用后，系统会在后台自动维护所需的邮件入口记录，但不会在此面板显示任何服务器地址或内部细节。如果当前 `@` 已经在使用 A、AAAA 或 CNAME，请先删除这些网站根记录。
+                  </div>
+                ) : (
+                  <>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">名称</label>
+                      <input
+                        type="text"
+                        value={formData.name}
+                        onChange={(event) => setFormData({ ...formData, name: event.target.value })}
+                        placeholder="@ 或 www"
+                        className="w-full px-4 py-2 rounded-xl bg-white/50 dark:bg-black/50 border border-gray-200 dark:border-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 text-gray-900 dark:text-white"
+                      />
+                    </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">内容</label>
-                  <input
-                    type="text"
-                    value={formData.content}
-                    onChange={(event) => setFormData({ ...formData, content: event.target.value })}
-                    placeholder="IPv4 / IPv6 / 域名 / 文本"
-                    className="w-full px-4 py-2 rounded-xl bg-white/50 dark:bg-black/50 border border-gray-200 dark:border-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 text-gray-900 dark:text-white"
-                  />
-                </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">内容</label>
+                      <input
+                        type="text"
+                        value={formData.content}
+                        onChange={(event) => setFormData({ ...formData, content: event.target.value })}
+                        placeholder="IPv4 / IPv6 / 域名 / 文本"
+                        className="w-full px-4 py-2 rounded-xl bg-white/50 dark:bg-black/50 border border-gray-200 dark:border-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 text-gray-900 dark:text-white"
+                      />
+                    </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">TTL</label>
-                    <input
-                      type="number"
-                      min={1}
-                      value={formData.ttl}
-                      onChange={(event) =>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">TTL</label>
+                        <input
+                          type="number"
+                          min={1}
+                          value={formData.ttl}
+                          onChange={(event) =>
+                            setFormData({
+                              ...formData,
+                              ttl: Number(event.target.value || 1),
+                            })
+                          }
+                          placeholder="1 = Auto"
+                          className="w-full px-4 py-2 rounded-xl bg-white/50 dark:bg-black/50 border border-gray-200 dark:border-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 text-gray-900 dark:text-white"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">备注</label>
+                      <input
+                        type="text"
+                        value={formData.comment}
+                        onChange={(event) => setFormData({ ...formData, comment: event.target.value })}
+                        placeholder="可选，用于标记用途"
+                        className="w-full px-4 py-2 rounded-xl bg-white/50 dark:bg-black/50 border border-gray-200 dark:border-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 text-gray-900 dark:text-white"
+                      />
+                    </div>
+
+                    <ToggleSwitch
+                      checked={supportsProxy(formData.type) ? formData.proxied : false}
+                      onCheckedChange={(nextValue) =>
+                        supportsProxy(formData.type) &&
                         setFormData({
                           ...formData,
-                          ttl: Number(event.target.value || 1),
+                          proxied: nextValue,
                         })
                       }
-                      placeholder="1 = Auto"
-                      className="w-full px-4 py-2 rounded-xl bg-white/50 dark:bg-black/50 border border-gray-200 dark:border-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 text-gray-900 dark:text-white"
+                      disabled={!supportsProxy(formData.type)}
+                      title="代理状态 (Cloudflare)"
+                      description={
+                        supportsProxy(formData.type)
+                          ? 'A、AAAA、CNAME 记录可以选择是否走 Cloudflare 代理。'
+                          : '当前记录类型不支持代理。'
+                      }
                     />
-                  </div>
-
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">备注</label>
-                  <input
-                    type="text"
-                    value={formData.comment}
-                    onChange={(event) => setFormData({ ...formData, comment: event.target.value })}
-                    placeholder="可选，用于标记用途"
-                    className="w-full px-4 py-2 rounded-xl bg-white/50 dark:bg-black/50 border border-gray-200 dark:border-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500 text-gray-900 dark:text-white"
-                  />
-                </div>
-
-                <div className="flex items-center gap-3 pt-2">
-                  <button
-                    onClick={() =>
-                      supportsProxy(formData.type) &&
-                      setFormData({
-                        ...formData,
-                        proxied: !formData.proxied,
-                      })
-                    }
-                    className={`relative w-12 h-6 rounded-full transition-colors ${
-                      supportsProxy(formData.type)
-                        ? formData.proxied
-                          ? 'bg-orange-500'
-                          : 'bg-gray-300 dark:bg-gray-600'
-                        : 'bg-gray-200 dark:bg-gray-700 cursor-not-allowed opacity-60'
-                    }`}
-                  >
-                    <div
-                      className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${
-                        formData.proxied ? 'translate-x-6' : 'translate-x-0'
-                      }`}
-                    />
-                  </button>
-                  <span className="text-sm text-gray-700 dark:text-gray-300">
-                    {supportsProxy(formData.type) ? '代理状态 (Cloudflare)' : '当前记录类型不支持代理'}
-                  </span>
-                </div>
+                  </>
+                )}
               </div>
 
               <div className="mt-8 flex gap-3">
@@ -721,6 +749,17 @@ export function Settings({
 
 // buildRecordPayload 把表单状态转换为后端要求的请求结构。
 function buildRecordPayload(formData: RecordFormState): UpsertDNSRecordInput {
+  if (isSpecialDNSRecordType(formData.type)) {
+    return {
+      type: formData.type,
+      name: '@',
+      content: '',
+      ttl: 1,
+      proxied: false,
+      comment: '',
+    };
+  }
+
   return {
     type: formData.type,
     name: formData.name,
@@ -731,9 +770,38 @@ function buildRecordPayload(formData: RecordFormState): UpsertDNSRecordInput {
   };
 }
 
+// isSpecialDNSRecordType 判断当前记录类型是否属于平台公开给用户的“合成记录”。
+// 这类记录并不直接映射到单条 Cloudflare 原始记录，因此要单独走 UI 和 payload 逻辑。
+function isSpecialDNSRecordType(recordType: string): recordType is 'EMAIL_CATCH_ALL' {
+  return recordType.trim().toUpperCase() === 'EMAIL_CATCH_ALL';
+}
+
+// formatRecordTypeLabel 把后端返回的记录类型转换为更适合用户阅读的标签。
+function formatRecordTypeLabel(recordType: string): string {
+  if (isSpecialDNSRecordType(recordType)) {
+    return '邮箱泛解析';
+  }
+  return recordType;
+}
+
+// describeRecordContent 统一生成列表页“内容”列的展示文案。
+// 对于特殊记录，只展示功能语义，避免泄漏实际邮件中转或服务器信息。
+function describeRecordContent(record: DNSRecord): string {
+  if (isSpecialDNSRecordType(record.type)) {
+    return '当前命名空间根 @ 已切换为邮箱泛解析模式';
+  }
+  return record.content || (record.is_placeholder ? '尚未填写解析值' : '-');
+}
+
 // supportsManualRecordType 判断某条记录是否仍允许通过用户 DNS 面板继续手动维护。
 // 旧的 MX 记录即使暂时还能看到，也必须交给系统邮件中转逻辑托管。
 function supportsManualRecordType(recordType: string): recordType is ManualDNSRecordType {
+  return ['A', 'AAAA', 'CNAME', 'TXT', 'EMAIL_CATCH_ALL'].includes(recordType.toUpperCase());
+}
+
+// supportsEditableDNSRecordType 判断某条记录是否允许直接进入编辑弹窗。
+// “邮箱泛解析”是创建/删除型特殊记录，所以故意不支持像普通 DNS 一样编辑。
+function supportsEditableDNSRecordType(recordType: string): recordType is Exclude<ManualDNSRecordType, 'EMAIL_CATCH_ALL'> {
   return ['A', 'AAAA', 'CNAME', 'TXT'].includes(recordType.toUpperCase());
 }
 

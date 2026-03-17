@@ -8,6 +8,7 @@ import (
 	"linuxdospace/backend/internal/cloudflare"
 	"linuxdospace/backend/internal/config"
 	"linuxdospace/backend/internal/model"
+	"linuxdospace/backend/internal/storage"
 	"linuxdospace/backend/internal/storage/sqlite"
 )
 
@@ -315,6 +316,418 @@ func TestListRecordsForAllocationReturnsNestedNamespaceRecords(t *testing.T) {
 	if records[2].RelativeName != "www" {
 		t.Fatalf("expected direct child record to be included, got %q", records[2].RelativeName)
 	}
+}
+
+// TestListRecordsForAllocationIncludesSyntheticCatchAllRecord verifies that the
+// DNS panel exposes one privacy-safe synthetic row once the namespace-wide
+// catch-all route is already enabled in the email subsystem.
+func TestListRecordsForAllocationIncludesSyntheticCatchAllRecord(t *testing.T) {
+	ctx := context.Background()
+	store := newDomainTestStore(t)
+
+	managedDomain, err := store.UpsertManagedDomain(ctx, sqlite.UpsertManagedDomainInput{
+		RootDomain:       "linuxdo.space",
+		CloudflareZoneID: "zone-test",
+		DefaultQuota:     5,
+		AutoProvision:    true,
+		IsDefault:        true,
+		Enabled:          true,
+	})
+	if err != nil {
+		t.Fatalf("upsert managed domain: %v", err)
+	}
+
+	user, err := store.UpsertUser(ctx, sqlite.UpsertUserInput{
+		LinuxDOUserID: 103,
+		Username:      "alice",
+		DisplayName:   "Alice",
+		AvatarURL:     "https://example.com/avatar.png",
+		TrustLevel:    3,
+	})
+	if err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+
+	allocation, err := store.CreateAllocation(ctx, sqlite.CreateAllocationInput{
+		UserID:           user.ID,
+		ManagedDomainID:  managedDomain.ID,
+		Prefix:           "alice",
+		NormalizedPrefix: "alice",
+		FQDN:             "alice.linuxdo.space",
+		IsPrimary:        true,
+		Source:           "auto_provision",
+		Status:           "active",
+	})
+	if err != nil {
+		t.Fatalf("create allocation: %v", err)
+	}
+
+	if _, err := store.CreateEmailRoute(ctx, storage.CreateEmailRouteInput{
+		OwnerUserID: user.ID,
+		RootDomain:  allocation.FQDN,
+		Prefix:      emailCatchAllPrefix,
+		TargetEmail: "owner@example.com",
+		Enabled:     true,
+	}); err != nil {
+		t.Fatalf("create catch-all email route: %v", err)
+	}
+
+	cloudflareClient := &fakeEmailRoutingCloudflare{
+		dnsRecordsByZone: map[string][]cloudflare.DNSRecord{
+			"zone-test": {
+				{ID: "www", Type: "CNAME", Name: "www.alice.linuxdo.space", Content: "alice.linuxdo.space", TTL: 1},
+			},
+		},
+	}
+
+	domainService := NewDomainService(config.Config{
+		Cloudflare: config.CloudflareConfig{
+			APIToken:          "test-token",
+			DefaultRootDomain: "linuxdo.space",
+		},
+	}, store, cloudflareClient)
+
+	records, err := domainService.ListRecordsForAllocation(ctx, user, allocation.ID)
+	if err != nil {
+		t.Fatalf("list records for allocation: %v", err)
+	}
+
+	if len(records) != 2 {
+		t.Fatalf("expected namespace record plus synthetic catch-all record, got %d", len(records))
+	}
+	if records[0].Type != specialDNSRecordTypeEmailCatchAll {
+		t.Fatalf("expected synthetic catch-all record first, got %+v", records[0])
+	}
+	if records[0].RelativeName != "@" {
+		t.Fatalf("expected synthetic catch-all record at root, got %q", records[0].RelativeName)
+	}
+	if records[0].Content != "邮箱泛解析" {
+		t.Fatalf("expected privacy-safe catch-all marker, got %q", records[0].Content)
+	}
+}
+
+// TestCreateRecordEmailCatchAllRequiresApprovedPermissionAndSavedRoute verifies
+// that the synthetic DNS toggle cannot be enabled before the user has both the
+// approved permission and a saved forwarding target in the mail settings page.
+func TestCreateRecordEmailCatchAllRequiresApprovedPermissionAndSavedRoute(t *testing.T) {
+	ctx := context.Background()
+	store := newDomainTestStore(t)
+
+	managedDomain, err := store.UpsertManagedDomain(ctx, sqlite.UpsertManagedDomainInput{
+		RootDomain:       "linuxdo.space",
+		CloudflareZoneID: "zone-test",
+		DefaultQuota:     5,
+		AutoProvision:    true,
+		IsDefault:        true,
+		Enabled:          true,
+	})
+	if err != nil {
+		t.Fatalf("upsert managed domain: %v", err)
+	}
+
+	user, err := store.UpsertUser(ctx, sqlite.UpsertUserInput{
+		LinuxDOUserID: 104,
+		Username:      "alice",
+		DisplayName:   "Alice",
+		AvatarURL:     "https://example.com/avatar.png",
+		TrustLevel:    3,
+	})
+	if err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+
+	allocation, err := store.CreateAllocation(ctx, sqlite.CreateAllocationInput{
+		UserID:           user.ID,
+		ManagedDomainID:  managedDomain.ID,
+		Prefix:           "alice",
+		NormalizedPrefix: "alice",
+		FQDN:             "alice.linuxdo.space",
+		IsPrimary:        true,
+		Source:           "auto_provision",
+		Status:           "active",
+	})
+	if err != nil {
+		t.Fatalf("create allocation: %v", err)
+	}
+
+	domainService := NewDomainService(config.Config{
+		Cloudflare: config.CloudflareConfig{
+			APIToken:          "test-token",
+			DefaultRootDomain: "linuxdo.space",
+			DefaultZoneID:     "zone-test",
+		},
+		Mail: config.MailConfig{
+			ForwardingBackend: config.EmailForwardingBackendDatabaseRelay,
+			EnsureDNS:         true,
+			MXTarget:          "mail.linuxdo.space",
+			MXPriority:        10,
+			SPFValue:          "v=spf1 -all",
+		},
+	}, store, newFakeEmailRoutingCloudflare())
+
+	_, err = domainService.CreateRecord(ctx, user, allocation.ID, DNSRecordInput{
+		Type:    specialDNSRecordTypeEmailCatchAll,
+		Name:    "@",
+		Content: "",
+		TTL:     1,
+	})
+	if err == nil {
+		t.Fatalf("expected permission gate to block catch-all toggle")
+	}
+
+	serviceErr := NormalizeError(err)
+	if serviceErr.StatusCode != 403 {
+		t.Fatalf("expected forbidden error, got %+v", serviceErr)
+	}
+}
+
+// TestCreateRecordEmailCatchAllRejectsRootWebsiteConflict verifies that the
+// namespace root cannot simultaneously host one website-style record and the
+// synthetic mailbox catch-all toggle.
+func TestCreateRecordEmailCatchAllRejectsRootWebsiteConflict(t *testing.T) {
+	ctx := context.Background()
+	store := newDomainTestStore(t)
+
+	managedDomain, err := store.UpsertManagedDomain(ctx, sqlite.UpsertManagedDomainInput{
+		RootDomain:       "linuxdo.space",
+		CloudflareZoneID: "zone-test",
+		DefaultQuota:     5,
+		AutoProvision:    true,
+		IsDefault:        true,
+		Enabled:          true,
+	})
+	if err != nil {
+		t.Fatalf("upsert managed domain: %v", err)
+	}
+
+	user, err := store.UpsertUser(ctx, sqlite.UpsertUserInput{
+		LinuxDOUserID: 105,
+		Username:      "alice",
+		DisplayName:   "Alice",
+		AvatarURL:     "https://example.com/avatar.png",
+		TrustLevel:    3,
+	})
+	if err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+
+	allocation, err := store.CreateAllocation(ctx, sqlite.CreateAllocationInput{
+		UserID:           user.ID,
+		ManagedDomainID:  managedDomain.ID,
+		Prefix:           "alice",
+		NormalizedPrefix: "alice",
+		FQDN:             "alice.linuxdo.space",
+		IsPrimary:        true,
+		Source:           "auto_provision",
+		Status:           "active",
+	})
+	if err != nil {
+		t.Fatalf("create allocation: %v", err)
+	}
+
+	if _, err := store.UpsertAdminApplication(ctx, storage.UpsertAdminApplicationInput{
+		ApplicantUserID: user.ID,
+		Type:            PermissionKeyEmailCatchAll,
+		Target:          buildCatchAllEmailRouteAddress(allocation.FQDN),
+		Reason:          "approved",
+		Status:          "approved",
+	}); err != nil {
+		t.Fatalf("seed approved catch-all application: %v", err)
+	}
+
+	if _, err := store.CreateEmailRoute(ctx, storage.CreateEmailRouteInput{
+		OwnerUserID: user.ID,
+		RootDomain:  allocation.FQDN,
+		Prefix:      emailCatchAllPrefix,
+		TargetEmail: "owner@example.com",
+		Enabled:     false,
+	}); err != nil {
+		t.Fatalf("create catch-all email route: %v", err)
+	}
+
+	cf := newFakeEmailRoutingCloudflare()
+	cf.zoneIDsByRoot["alice.linuxdo.space"] = "zone-test"
+	cf.zones["zone-test"] = cloudflare.Zone{
+		ID:   "zone-test",
+		Name: "linuxdo.space",
+		Account: struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}{
+			ID:   "account-default",
+			Name: "Test Account",
+		},
+	}
+	cf.dnsRecordsByZone["zone-test"] = []cloudflare.DNSRecord{
+		{ID: "root", Type: "A", Name: "alice.linuxdo.space", Content: "1.1.1.1", TTL: 1},
+	}
+
+	domainService := NewDomainService(config.Config{
+		Cloudflare: config.CloudflareConfig{
+			APIToken:          "test-token",
+			DefaultRootDomain: "linuxdo.space",
+			DefaultZoneID:     "zone-test",
+		},
+		Mail: config.MailConfig{
+			ForwardingBackend: config.EmailForwardingBackendDatabaseRelay,
+			EnsureDNS:         true,
+			MXTarget:          "mail.linuxdo.space",
+			MXPriority:        10,
+			SPFValue:          "v=spf1 -all",
+		},
+	}, store, cf)
+
+	_, err = domainService.CreateRecord(ctx, user, allocation.ID, DNSRecordInput{
+		Type:    specialDNSRecordTypeEmailCatchAll,
+		Name:    "@",
+		Content: "",
+		TTL:     1,
+	})
+	if err == nil {
+		t.Fatalf("expected website root conflict to block catch-all enable")
+	}
+
+	serviceErr := NormalizeError(err)
+	if serviceErr.StatusCode != 409 {
+		t.Fatalf("expected conflict error, got %+v", serviceErr)
+	}
+}
+
+// TestDeleteRecordSyntheticCatchAllDisablesRouteAndRemovesHiddenRelayDNS verifies
+// that deleting the public synthetic row immediately frees the hidden relay
+// MX/TXT records so the namespace root can later be reused for website records.
+func TestDeleteRecordSyntheticCatchAllDisablesRouteAndRemovesHiddenRelayDNS(t *testing.T) {
+	ctx := context.Background()
+	store := newDomainTestStore(t)
+
+	managedDomain, err := store.UpsertManagedDomain(ctx, sqlite.UpsertManagedDomainInput{
+		RootDomain:       "linuxdo.space",
+		CloudflareZoneID: "zone-test",
+		DefaultQuota:     5,
+		AutoProvision:    true,
+		IsDefault:        true,
+		Enabled:          true,
+	})
+	if err != nil {
+		t.Fatalf("upsert managed domain: %v", err)
+	}
+
+	user, err := store.UpsertUser(ctx, sqlite.UpsertUserInput{
+		LinuxDOUserID: 106,
+		Username:      "alice",
+		DisplayName:   "Alice",
+		AvatarURL:     "https://example.com/avatar.png",
+		TrustLevel:    3,
+	})
+	if err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+
+	allocation, err := store.CreateAllocation(ctx, sqlite.CreateAllocationInput{
+		UserID:           user.ID,
+		ManagedDomainID:  managedDomain.ID,
+		Prefix:           "alice",
+		NormalizedPrefix: "alice",
+		FQDN:             "alice.linuxdo.space",
+		IsPrimary:        true,
+		Source:           "auto_provision",
+		Status:           "active",
+	})
+	if err != nil {
+		t.Fatalf("create allocation: %v", err)
+	}
+
+	if _, err := store.CreateEmailRoute(ctx, storage.CreateEmailRouteInput{
+		OwnerUserID: user.ID,
+		RootDomain:  allocation.FQDN,
+		Prefix:      emailCatchAllPrefix,
+		TargetEmail: "owner@example.com",
+		Enabled:     true,
+	}); err != nil {
+		t.Fatalf("create enabled catch-all email route: %v", err)
+	}
+
+	cf := newFakeEmailRoutingCloudflare()
+	cf.zoneIDsByRoot["alice.linuxdo.space"] = "zone-test"
+	cf.zones["zone-test"] = cloudflare.Zone{
+		ID:   "zone-test",
+		Name: "linuxdo.space",
+		Account: struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}{
+			ID:   "account-default",
+			Name: "Test Account",
+		},
+	}
+	cf.dnsRecordsByZone["zone-test"] = []cloudflare.DNSRecord{
+		{
+			ID:       "mx",
+			Type:     "MX",
+			Name:     "alice.linuxdo.space",
+			Content:  "mail.linuxdo.space",
+			TTL:      1,
+			Comment:  databaseRelayManagedDNSComment,
+			Priority: intPointer(10),
+		},
+		{
+			ID:      "spf",
+			Type:    "TXT",
+			Name:    "alice.linuxdo.space",
+			Content: "v=spf1 -all",
+			TTL:     1,
+			Comment: databaseRelayManagedDNSComment,
+		},
+		{
+			ID:      "user-txt",
+			Type:    "TXT",
+			Name:    "www.alice.linuxdo.space",
+			Content: "hello",
+			TTL:     120,
+		},
+	}
+
+	domainService := NewDomainService(config.Config{
+		Cloudflare: config.CloudflareConfig{
+			APIToken:          "test-token",
+			DefaultRootDomain: "linuxdo.space",
+			DefaultZoneID:     "zone-test",
+		},
+		Mail: config.MailConfig{
+			ForwardingBackend: config.EmailForwardingBackendDatabaseRelay,
+			EnsureDNS:         true,
+			MXTarget:          "mail.linuxdo.space",
+			MXPriority:        10,
+			SPFValue:          "v=spf1 -all",
+		},
+	}, store, cf)
+
+	if err := domainService.DeleteRecord(ctx, user, allocation.ID, syntheticCatchAllDNSRecordIDPrefix+"123"); err != nil {
+		t.Fatalf("delete synthetic catch-all dns record: %v", err)
+	}
+
+	storedRoute, err := store.GetEmailRouteByAddress(ctx, allocation.FQDN, emailCatchAllPrefix)
+	if err != nil {
+		t.Fatalf("load catch-all email route after delete: %v", err)
+	}
+	if storedRoute.Enabled {
+		t.Fatalf("expected catch-all route to be disabled after synthetic record deletion")
+	}
+
+	remainingRecords := cf.dnsRecordsByZone["zone-test"]
+	if hasDNSRecord(remainingRecords, "MX", "alice.linuxdo.space", "mail.linuxdo.space") {
+		t.Fatalf("expected hidden relay MX record to be removed, got %+v", remainingRecords)
+	}
+	if hasDNSRecord(remainingRecords, "TXT", "alice.linuxdo.space", "v=spf1 -all") {
+		t.Fatalf("expected hidden relay TXT record to be removed, got %+v", remainingRecords)
+	}
+	if !hasDNSRecord(remainingRecords, "TXT", "www.alice.linuxdo.space", "hello") {
+		t.Fatalf("expected unrelated user dns records to be preserved, got %+v", remainingRecords)
+	}
+}
+
+func intPointer(value int) *int {
+	return &value
 }
 
 // newDomainTestStore creates one migrated temporary SQLite database for domain tests.

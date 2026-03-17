@@ -26,6 +26,18 @@ var builtInSaleManagedDomains = []string{
 	"metapi.cc",
 }
 
+const (
+	// specialDNSRecordTypeEmailCatchAll is the synthetic record type exposed to
+	// the public DNS panel. The frontend renders this as the human-facing
+	// “邮箱泛解析” option instead of exposing the relay's real MX/TXT details.
+	specialDNSRecordTypeEmailCatchAll = "EMAIL_CATCH_ALL"
+
+	// syntheticCatchAllDNSRecordIDPrefix marks one DNS row as a panel-only
+	// representation of the catch-all mailbox toggle rather than a literal
+	// Cloudflare DNS record id.
+	syntheticCatchAllDNSRecordIDPrefix = "synthetic:email-catch-all:"
+)
+
 // DomainService 承接根域名、命名空间分配与 DNS 记录管理业务。
 type DomainService struct {
 	cfg config.Config
@@ -386,6 +398,24 @@ func (s *DomainService) ListRecordsForAllocation(ctx context.Context, user model
 	if err != nil {
 		return nil, err
 	}
+	if catchAllRecord, catchAllErr := s.buildCatchAllSyntheticDNSRecord(ctx, user, allocation); catchAllErr != nil {
+		return nil, catchAllErr
+	} else if catchAllRecord != nil {
+		records = append(records, *catchAllRecord)
+	}
+
+	sort.Slice(records, func(i int, j int) bool {
+		if records[i].RelativeName == "@" && records[j].RelativeName != "@" {
+			return true
+		}
+		if records[i].RelativeName != "@" && records[j].RelativeName == "@" {
+			return false
+		}
+		if records[i].Name == records[j].Name {
+			return records[i].Type < records[j].Type
+		}
+		return records[i].Name < records[j].Name
+	})
 
 	return records, nil
 }
@@ -398,6 +428,12 @@ func (s *DomainService) CreateRecord(ctx context.Context, user model.User, alloc
 			return model.DNSRecord{}, NotFoundError("allocation not found")
 		}
 		return model.DNSRecord{}, InternalError("failed to load allocation", err)
+	}
+	if isSpecialCatchAllDNSRecordType(input.Type) {
+		return s.enableCatchAllSyntheticDNSRecord(ctx, user, allocation, input)
+	}
+	if err := s.ensureWebsiteRootRecordDoesNotConflictWithCatchAll(ctx, user, allocation, input.Name, input.Type); err != nil {
+		return model.DNSRecord{}, err
 	}
 
 	createInput, relativeName, err := s.buildCloudflareRecordInput(allocation, input)
@@ -442,6 +478,9 @@ func (s *DomainService) UpdateRecord(ctx context.Context, user model.User, alloc
 		}
 		return model.DNSRecord{}, InternalError("failed to load allocation", err)
 	}
+	if isSyntheticCatchAllDNSRecordID(recordID) || isSpecialCatchAllDNSRecordType(input.Type) {
+		return s.enableCatchAllSyntheticDNSRecord(ctx, user, allocation, input)
+	}
 	if s.cf == nil || !s.cfg.CloudflareConfigured() {
 		return model.DNSRecord{}, UnavailableError("cloudflare integration is not configured", nil)
 	}
@@ -452,6 +491,9 @@ func (s *DomainService) UpdateRecord(ctx context.Context, user model.User, alloc
 	}
 	if !BelongsToNamespace(existing.Name, allocation.FQDN) {
 		return model.DNSRecord{}, ForbiddenError("the selected dns record does not belong to your namespace")
+	}
+	if err := s.ensureWebsiteRootRecordDoesNotConflictWithCatchAll(ctx, user, allocation, input.Name, input.Type); err != nil {
+		return model.DNSRecord{}, err
 	}
 
 	updateInput, relativeName, err := s.buildCloudflareRecordInput(allocation, input)
@@ -493,6 +535,9 @@ func (s *DomainService) DeleteRecord(ctx context.Context, user model.User, alloc
 		}
 		return InternalError("failed to load allocation", err)
 	}
+	if isSyntheticCatchAllDNSRecordID(recordID) {
+		return s.disableCatchAllSyntheticDNSRecord(ctx, user, allocation)
+	}
 	if s.cf == nil || !s.cfg.CloudflareConfigured() {
 		return UnavailableError("cloudflare integration is not configured", nil)
 	}
@@ -526,6 +571,298 @@ func (s *DomainService) DeleteRecord(ctx context.Context, user model.User, alloc
 	}
 
 	return nil
+}
+
+// buildCatchAllSyntheticDNSRecord returns the privacy-safe synthetic DNS row
+// that represents one enabled namespace-wide mailbox catch-all inside the DNS
+// console, without leaking the real relay MX/TXT values or forwarding target.
+func (s *DomainService) buildCatchAllSyntheticDNSRecord(ctx context.Context, user model.User, allocation model.Allocation) (*model.DNSRecord, error) {
+	if !s.allocationCanToggleCatchAll(user, allocation) {
+		return nil, nil
+	}
+
+	route, err := s.db.GetEmailRouteByAddress(ctx, allocation.FQDN, emailCatchAllPrefix)
+	if err != nil {
+		if storage.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, InternalError("failed to load catch-all email route for dns panel", err)
+	}
+	if route.OwnerUserID != user.ID {
+		return nil, UnavailableError("catch-all mailbox is assigned to another user", nil)
+	}
+	if !route.Enabled || strings.TrimSpace(route.TargetEmail) == "" {
+		return nil, nil
+	}
+
+	return &model.DNSRecord{
+		ID:           syntheticCatchAllDNSRecordIDPrefix + strconv.FormatInt(allocation.ID, 10),
+		Type:         specialDNSRecordTypeEmailCatchAll,
+		Name:         allocation.FQDN,
+		RelativeName: "@",
+		Content:      "邮箱泛解析",
+		TTL:          0,
+		Proxied:      false,
+		Comment:      "",
+	}, nil
+}
+
+// enableCatchAllSyntheticDNSRecord turns on the namespace-wide catch-all route
+// behind the synthetic DNS panel record. The real relay MX/TXT remains hidden
+// from the user-facing panel.
+func (s *DomainService) enableCatchAllSyntheticDNSRecord(ctx context.Context, user model.User, allocation model.Allocation, input DNSRecordInput) (model.DNSRecord, error) {
+	relativeName, err := NormalizeRelativeRecordName(input.Name)
+	if err != nil {
+		return model.DNSRecord{}, ValidationError(err.Error())
+	}
+	if relativeName != "@" {
+		return model.DNSRecord{}, ValidationError("邮箱泛解析记录只能创建在命名空间根 @ 上")
+	}
+	if !s.allocationCanToggleCatchAll(user, allocation) {
+		return model.DNSRecord{}, ForbiddenError("当前命名空间不支持通过 DNS 面板启用邮箱泛解析")
+	}
+
+	approved, err := s.isCatchAllPermissionApprovedForAllocation(ctx, user, allocation)
+	if err != nil {
+		return model.DNSRecord{}, err
+	}
+	if !approved {
+		return model.DNSRecord{}, ForbiddenError("请先通过邮箱泛解析权限审核，再在这里启用该特殊记录")
+	}
+	if err := s.ensureCatchAllRootHasNoWebsiteRecord(ctx, allocation, ""); err != nil {
+		return model.DNSRecord{}, err
+	}
+
+	route, err := s.db.GetEmailRouteByAddress(ctx, allocation.FQDN, emailCatchAllPrefix)
+	if err != nil {
+		if storage.IsNotFound(err) {
+			return model.DNSRecord{}, ConflictError("请先在邮箱分发页面配置并保存邮箱泛解析的目标邮箱，然后再回来启用该特殊记录")
+		}
+		return model.DNSRecord{}, InternalError("failed to load catch-all email route for dns panel enable", err)
+	}
+	if route.OwnerUserID != user.ID {
+		return model.DNSRecord{}, UnavailableError("catch-all mailbox is assigned to another user", nil)
+	}
+	if strings.TrimSpace(route.TargetEmail) == "" {
+		return model.DNSRecord{}, ConflictError("请先在邮箱分发页面配置并保存邮箱泛解析的目标邮箱，然后再回来启用该特殊记录")
+	}
+
+	if err := ensureDatabaseRelayIngressDNSForRootDomain(ctx, s.cfg, s.cf, allocation.FQDN); err != nil {
+		return model.DNSRecord{}, err
+	}
+
+	beforeState := newCatchAllEmailRouteSyncState(route.RootDomain, route.TargetEmail, route.Enabled)
+	afterState := newCatchAllEmailRouteSyncState(route.RootDomain, route.TargetEmail, true)
+	updated := route
+	if !route.Enabled {
+		if err := newEmailRoutingProvisioner(s.cfg, s.cf).SyncForwardingState(ctx, beforeState, afterState, func() error {
+			var persistErr error
+			updated, persistErr = s.db.UpdateEmailRoute(ctx, storage.UpdateEmailRouteInput{
+				ID:          route.ID,
+				TargetEmail: route.TargetEmail,
+				Enabled:     true,
+			})
+			if persistErr != nil {
+				return InternalError("failed to enable catch-all email route from dns panel", persistErr)
+			}
+			return nil
+		}); err != nil {
+			return model.DNSRecord{}, err
+		}
+	}
+
+	record, recordErr := s.buildCatchAllSyntheticDNSRecord(ctx, user, allocation)
+	if recordErr != nil {
+		return model.DNSRecord{}, recordErr
+	}
+	if record == nil {
+		return model.DNSRecord{}, InternalError("failed to build synthetic catch-all dns record", nil)
+	}
+
+	metadata, _ := json.Marshal(map[string]any{
+		"allocation_id":  allocation.ID,
+		"root_domain":    allocation.FQDN,
+		"email_route_id": updated.ID,
+	})
+	if err := s.db.WriteAuditLog(ctx, storage.AuditLogInput{
+		ActorUserID:  &user.ID,
+		Action:       "dns_record.catch_all.enable",
+		ResourceType: "email_route",
+		ResourceID:   strconv.FormatInt(updated.ID, 10),
+		MetadataJSON: string(metadata),
+	}); err != nil {
+		return model.DNSRecord{}, InternalError("failed to write synthetic catch-all dns enable audit log", err)
+	}
+
+	return *record, nil
+}
+
+// disableCatchAllSyntheticDNSRecord turns off the namespace-wide catch-all
+// route represented by the synthetic DNS panel record and frees the hidden
+// relay MX/TXT immediately so the namespace can switch back to other uses.
+func (s *DomainService) disableCatchAllSyntheticDNSRecord(ctx context.Context, user model.User, allocation model.Allocation) error {
+	if !s.allocationCanToggleCatchAll(user, allocation) {
+		return ForbiddenError("当前命名空间不支持通过 DNS 面板管理邮箱泛解析")
+	}
+
+	route, err := s.db.GetEmailRouteByAddress(ctx, allocation.FQDN, emailCatchAllPrefix)
+	if err != nil {
+		if storage.IsNotFound(err) {
+			return NotFoundError("邮箱泛解析记录不存在")
+		}
+		return InternalError("failed to load catch-all email route for dns panel disable", err)
+	}
+	if route.OwnerUserID != user.ID {
+		return UnavailableError("catch-all mailbox is assigned to another user", nil)
+	}
+	if !route.Enabled {
+		return NotFoundError("邮箱泛解析记录不存在")
+	}
+
+	beforeState := newCatchAllEmailRouteSyncState(route.RootDomain, route.TargetEmail, route.Enabled)
+	afterState := newCatchAllEmailRouteSyncState(route.RootDomain, route.TargetEmail, false)
+	updated := route
+	if err := newEmailRoutingProvisioner(s.cfg, s.cf).SyncForwardingState(ctx, beforeState, afterState, func() error {
+		var persistErr error
+		updated, persistErr = s.db.UpdateEmailRoute(ctx, storage.UpdateEmailRouteInput{
+			ID:          route.ID,
+			TargetEmail: route.TargetEmail,
+			Enabled:     false,
+		})
+		if persistErr != nil {
+			return InternalError("failed to disable catch-all email route from dns panel", persistErr)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if err := deleteDatabaseRelayIngressDNSForRootDomain(ctx, s.cfg, s.cf, allocation.FQDN); err != nil {
+		return err
+	}
+
+	metadata, _ := json.Marshal(map[string]any{
+		"allocation_id":  allocation.ID,
+		"root_domain":    allocation.FQDN,
+		"email_route_id": updated.ID,
+	})
+	if err := s.db.WriteAuditLog(ctx, storage.AuditLogInput{
+		ActorUserID:  &user.ID,
+		Action:       "dns_record.catch_all.disable",
+		ResourceType: "email_route",
+		ResourceID:   strconv.FormatInt(updated.ID, 10),
+		MetadataJSON: string(metadata),
+	}); err != nil {
+		return InternalError("failed to write synthetic catch-all dns disable audit log", err)
+	}
+
+	return nil
+}
+
+// allocationCanToggleCatchAll keeps the DNS-panel shortcut narrow: it only
+// applies to the user's default same-name namespace where the current public
+// catch-all permission model already exists.
+func (s *DomainService) allocationCanToggleCatchAll(user model.User, allocation model.Allocation) bool {
+	defaultRoot := normalizeDNSName(s.cfg.Cloudflare.DefaultRootDomain)
+	if defaultRoot == "" || normalizeDNSName(allocation.RootDomain) != defaultRoot {
+		return false
+	}
+	allowedPrefix, err := normalizedUserPrefix(user.Username)
+	if err != nil {
+		return false
+	}
+	return normalizeDNSName(allocation.FQDN) == normalizeDNSName(allowedPrefix+"."+defaultRoot)
+}
+
+// isCatchAllPermissionApprovedForAllocation resolves whether the current user
+// already holds the approved catch-all permission for the selected namespace.
+func (s *DomainService) isCatchAllPermissionApprovedForAllocation(ctx context.Context, user model.User, allocation model.Allocation) (bool, error) {
+	applications, err := s.db.ListAdminApplicationsByApplicant(ctx, user.ID)
+	if err != nil {
+		return false, InternalError("failed to load catch-all permission applications for dns panel", err)
+	}
+
+	application := findPermissionApplication(
+		applications,
+		PermissionKeyEmailCatchAll,
+		buildCatchAllEmailRouteAddress(allocation.FQDN),
+		buildLegacyCatchAllApplicationTarget(allocation.FQDN),
+	)
+	return application != nil && strings.EqualFold(strings.TrimSpace(application.Status), "approved"), nil
+}
+
+// ensureWebsiteRootRecordDoesNotConflictWithCatchAll forbids new root A/AAAA/CNAME
+// records while the special catch-all record is active for the namespace.
+func (s *DomainService) ensureWebsiteRootRecordDoesNotConflictWithCatchAll(ctx context.Context, user model.User, allocation model.Allocation, rawName string, recordType string) error {
+	if !isWebsiteRootRecordType(recordType) {
+		return nil
+	}
+	relativeName, err := NormalizeRelativeRecordName(rawName)
+	if err != nil {
+		return ValidationError(err.Error())
+	}
+	if relativeName != "@" {
+		return nil
+	}
+
+	record, catchAllErr := s.buildCatchAllSyntheticDNSRecord(ctx, user, allocation)
+	if catchAllErr != nil {
+		return catchAllErr
+	}
+	if record != nil {
+		return ConflictError("当前命名空间已启用邮箱泛解析，请先删除“邮箱泛解析”特殊记录后再设置根网站解析")
+	}
+	return nil
+}
+
+// ensureCatchAllRootHasNoWebsiteRecord checks whether the namespace root is
+// currently occupied by one website-style root record. Users must clear those
+// records before turning the namespace into a mailbox catch-all.
+func (s *DomainService) ensureCatchAllRootHasNoWebsiteRecord(ctx context.Context, allocation model.Allocation, excludedRecordID string) error {
+	if s.cf == nil || !s.cfg.CloudflareConfigured() {
+		return UnavailableError("cloudflare integration is not configured", nil)
+	}
+
+	records, err := s.cf.ListAllDNSRecords(ctx, allocation.CloudflareZoneID)
+	if err != nil {
+		return UnavailableError("failed to list cloudflare dns records", err)
+	}
+	for _, item := range records {
+		if strings.TrimSpace(excludedRecordID) != "" && strings.TrimSpace(item.ID) == strings.TrimSpace(excludedRecordID) {
+			continue
+		}
+		if normalizeDNSName(item.Name) != normalizeDNSName(allocation.FQDN) {
+			continue
+		}
+		if !isWebsiteRootRecordType(item.Type) {
+			continue
+		}
+		return ConflictError("当前命名空间根记录已用于网站或其他根解析，请先删除 @ 的 A/AAAA/CNAME 记录后再启用邮箱泛解析")
+	}
+	return nil
+}
+
+// isWebsiteRootRecordType enumerates the record families that would occupy the
+// namespace root for website-style usage and therefore conflict with the
+// mailbox-catch-all shortcut exposed in the DNS panel.
+func isWebsiteRootRecordType(recordType string) bool {
+	switch strings.ToUpper(strings.TrimSpace(recordType)) {
+	case "A", "AAAA", "CNAME":
+		return true
+	default:
+		return false
+	}
+}
+
+// isSpecialCatchAllDNSRecordType checks whether the requested type is the
+// synthetic DNS-panel-only catch-all switch.
+func isSpecialCatchAllDNSRecordType(recordType string) bool {
+	return strings.EqualFold(strings.TrimSpace(recordType), specialDNSRecordTypeEmailCatchAll)
+}
+
+// isSyntheticCatchAllDNSRecordID checks whether one row id belongs to the
+// synthetic DNS-panel representation rather than a real Cloudflare record id.
+func isSyntheticCatchAllDNSRecordID(recordID string) bool {
+	return strings.HasPrefix(strings.TrimSpace(recordID), syntheticCatchAllDNSRecordIDPrefix)
 }
 
 // UpsertManagedDomain 允许管理员创建或更新一个可分发根域名。
