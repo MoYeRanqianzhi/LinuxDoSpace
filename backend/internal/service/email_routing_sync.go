@@ -677,6 +677,9 @@ func wrapEmailRoutingUnavailable(message string, err error) error {
 	if strings.Contains(normalized, "record quota exceeded") {
 		return UnavailableError(message+"; Cloudflare reports that this zone has reached its DNS record quota, so unused records must be removed or the zone plan must be upgraded before new relay DNS can be allocated", err)
 	}
+	if strings.Contains(normalized, "limit exceeded") {
+		return UnavailableError(message+"; Cloudflare reports that the account-level Email Routing destination-address limit has been reached, so stale target mailboxes must be cleaned up before new verification targets can be created", err)
+	}
 	return UnavailableError(message, err)
 }
 

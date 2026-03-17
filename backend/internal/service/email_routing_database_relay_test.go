@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,6 +34,26 @@ func TestSyncForwardingStateDatabaseRelaySkipsCloudflareForSubdomainExactRoute(t
 	}
 	if persistCalls != 1 {
 		t.Fatalf("expected persist callback to run exactly once, got %d", persistCalls)
+	}
+}
+
+// TestWrapEmailRoutingUnavailableExplainsDestinationAddressLimit verifies that
+// Cloudflare's generic "Limit Exceeded" response becomes an operator-actionable
+// message instead of the earlier opaque destination-address creation failure.
+func TestWrapEmailRoutingUnavailableExplainsDestinationAddressLimit(t *testing.T) {
+	err := wrapEmailRoutingUnavailable(
+		"failed to create cloudflare email routing destination address",
+		errors.New("cloudflare api error: Limit Exceeded"),
+	)
+	normalized := NormalizeError(err)
+	if normalized.StatusCode != 503 {
+		t.Fatalf("expected service_unavailable error, got %+v", normalized)
+	}
+	if normalized.Code != "service_unavailable" {
+		t.Fatalf("expected service_unavailable code, got %q", normalized.Code)
+	}
+	if !strings.Contains(normalized.Message, "destination-address limit") {
+		t.Fatalf("expected limit guidance in message, got %q", normalized.Message)
 	}
 }
 
