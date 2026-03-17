@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"log"
 	"net/http"
 
 	"linuxdospace/backend/internal/service"
@@ -94,6 +95,10 @@ func (a *API) handleCreateMyEmailTarget(w http.ResponseWriter, r *http.Request) 
 
 	item, err := a.permissionService.CreateMyEmailTarget(r.Context(), *user, request)
 	if err != nil {
+		// Operator-facing logs keep recent target-binding failures visible in
+		// container logs so production incidents can be debugged without first
+		// correlating browser reports back to database state.
+		log.Printf("create my email target failed for user %d email %q: %v", user.ID, request.Email, err)
 		writeError(w, err)
 		return
 	}
@@ -119,6 +124,10 @@ func (a *API) handleResendMyEmailTargetVerification(w http.ResponseWriter, r *ht
 
 	item, err := a.permissionService.ResendMyEmailTargetVerification(r.Context(), *user, targetID)
 	if err != nil {
+		// Resend failures need the same visibility because they are usually
+		// caused by Cloudflare-side constraints that do not otherwise surface in
+		// the application's structured audit table.
+		log.Printf("resend my email target verification failed for user %d target %d: %v", user.ID, targetID, err)
 		writeError(w, err)
 		return
 	}
