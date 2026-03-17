@@ -48,6 +48,44 @@ func TestCreateMyEmailTargetCreatesOwnedPendingBinding(t *testing.T) {
 	}
 }
 
+// TestCreateMyEmailTargetRepairsCloudflareCreateResponseLoss verifies that the
+// service can recover when Cloudflare creates the destination address but the
+// immediate API response fails before the backend receives the new id.
+func TestCreateMyEmailTargetRepairsCloudflareCreateResponseLoss(t *testing.T) {
+	ctx := context.Background()
+	store := newAuthTestStore(t)
+	user := seedPermissionEmailTestUserWithLinuxDOID(t, ctx, store, 102, "alice")
+	seedPermissionEmailManagedDomain(t, ctx, store)
+
+	cf := &fakeEmailRoutingCloudflare{
+		addressesByAccount:    make(map[string][]cloudflare.EmailRoutingDestinationAddress),
+		createAddressThenFail: errors.New("simulated response loss"),
+	}
+	service := NewPermissionService(newPermissionEmailTestConfig(), store, cf)
+
+	item, err := service.CreateMyEmailTarget(ctx, user, CreateMyEmailTargetRequest{Email: "recover@example.com"})
+	if err != nil {
+		t.Fatalf("create email target with repairable cloudflare failure: %v", err)
+	}
+	if item.Email != "recover@example.com" {
+		t.Fatalf("expected normalized target email, got %q", item.Email)
+	}
+	if item.CloudflareAddressID == "" {
+		t.Fatalf("expected repaired target to keep the cloudflare destination id")
+	}
+	if len(cf.createdAddresses) != 1 || cf.createdAddresses[0] != "recover@example.com" {
+		t.Fatalf("expected exactly one remote destination create, got %v", cf.createdAddresses)
+	}
+
+	stored, err := store.GetEmailTargetByEmail(ctx, "recover@example.com")
+	if err != nil {
+		t.Fatalf("load repaired email target: %v", err)
+	}
+	if stored.CloudflareAddressID == "" {
+		t.Fatalf("expected repaired local row to persist the cloudflare destination id")
+	}
+}
+
 // TestCreateMyEmailTargetRejectsOtherUsersTarget verifies that the same target
 // email cannot be rebound by a second user.
 func TestCreateMyEmailTargetRejectsOtherUsersTarget(t *testing.T) {
@@ -72,6 +110,45 @@ func TestCreateMyEmailTargetRejectsOtherUsersTarget(t *testing.T) {
 	normalized := NormalizeError(err)
 	if normalized.Code != "forbidden" {
 		t.Fatalf("expected forbidden error, got %s: %v", normalized.Code, err)
+	}
+}
+
+// TestCreateMyEmailTargetKeepsRecentPendingBindingDuringPropagationWindow
+// verifies that a repeated add attempt during Cloudflare propagation returns
+// the existing pending row instead of creating another destination address.
+func TestCreateMyEmailTargetKeepsRecentPendingBindingDuringPropagationWindow(t *testing.T) {
+	ctx := context.Background()
+	store := newAuthTestStore(t)
+	user := seedPermissionEmailTestUserWithLinuxDOID(t, ctx, store, 203, "alice")
+	seedPermissionEmailManagedDomain(t, ctx, store)
+
+	sentAt := time.Now().UTC()
+	existing, err := store.CreateEmailTarget(ctx, storage.CreateEmailTargetInput{
+		OwnerUserID:            user.ID,
+		Email:                  "pending@example.com",
+		CloudflareAddressID:    "addr-pending",
+		VerifiedAt:             nil,
+		LastVerificationSentAt: &sentAt,
+	})
+	if err != nil {
+		t.Fatalf("seed recent pending email target: %v", err)
+	}
+
+	cf := &fakeEmailRoutingCloudflare{addressesByAccount: make(map[string][]cloudflare.EmailRoutingDestinationAddress)}
+	service := NewPermissionService(newPermissionEmailTestConfig(), store, cf)
+
+	item, err := service.CreateMyEmailTarget(ctx, user, CreateMyEmailTargetRequest{Email: "pending@example.com"})
+	if err != nil {
+		t.Fatalf("repeat create for recent pending target: %v", err)
+	}
+	if item.ID != existing.ID {
+		t.Fatalf("expected existing local target id %d, got %d", existing.ID, item.ID)
+	}
+	if item.CloudflareAddressID != "addr-pending" {
+		t.Fatalf("expected existing cloudflare id to stay stable, got %q", item.CloudflareAddressID)
+	}
+	if len(cf.createdAddresses) != 0 {
+		t.Fatalf("expected no additional remote destination create during propagation window, got %v", cf.createdAddresses)
 	}
 }
 
@@ -149,6 +226,52 @@ func TestUpsertMyDefaultEmailRouteAcceptsVerifiedOwnedTarget(t *testing.T) {
 	}
 	if storedTarget.VerifiedAt == nil {
 		t.Fatalf("expected verified timestamp to be synchronized into the backing store")
+	}
+}
+
+// TestListMyEmailTargetsKeepsRecentPendingBindingWithoutCloudflareSnapshot
+// verifies that a just-created pending target does not get its local binding
+// cleared merely because Cloudflare's list endpoint has not caught up yet.
+func TestListMyEmailTargetsKeepsRecentPendingBindingWithoutCloudflareSnapshot(t *testing.T) {
+	ctx := context.Background()
+	store := newAuthTestStore(t)
+	user := seedPermissionEmailTestUserWithLinuxDOID(t, ctx, store, 402, "alice")
+	seedPermissionEmailManagedDomain(t, ctx, store)
+
+	sentAt := time.Now().UTC()
+	if _, err := store.CreateEmailTarget(ctx, storage.CreateEmailTargetInput{
+		OwnerUserID:            user.ID,
+		Email:                  "lagging@example.com",
+		CloudflareAddressID:    "addr-lagging",
+		VerifiedAt:             nil,
+		LastVerificationSentAt: &sentAt,
+	}); err != nil {
+		t.Fatalf("seed lagging pending email target: %v", err)
+	}
+
+	cf := &fakeEmailRoutingCloudflare{addressesByAccount: make(map[string][]cloudflare.EmailRoutingDestinationAddress)}
+	service := NewPermissionService(newPermissionEmailTestConfig(), store, cf)
+
+	items, err := service.ListMyEmailTargets(ctx, user)
+	if err != nil {
+		t.Fatalf("list my email targets during propagation window: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected one visible email target, got %d", len(items))
+	}
+	if items[0].CloudflareAddressID != "addr-lagging" {
+		t.Fatalf("expected local cloudflare id to survive propagation lag, got %q", items[0].CloudflareAddressID)
+	}
+	if items[0].VerificationStatus != EmailTargetVerificationPending {
+		t.Fatalf("expected target to remain pending, got %q", items[0].VerificationStatus)
+	}
+
+	stored, err := store.GetEmailTargetByEmail(ctx, "lagging@example.com")
+	if err != nil {
+		t.Fatalf("reload lagging email target: %v", err)
+	}
+	if stored.CloudflareAddressID != "addr-lagging" {
+		t.Fatalf("expected backing store to preserve cloudflare id during propagation lag, got %q", stored.CloudflareAddressID)
 	}
 }
 

@@ -25,6 +25,13 @@ const (
 	// emailTargetVerificationResendCooldown prevents users from hammering the
 	// resend endpoint and repeatedly burning Cloudflare destination-address quota.
 	emailTargetVerificationResendCooldown = time.Minute
+
+	// emailTargetCloudflarePropagationGrace keeps a newly created pending target
+	// stable for a short window even when Cloudflare's list endpoint has not yet
+	// reflected the just-created destination address. Without this grace period,
+	// an immediate page refresh could clear the local binding and trigger a
+	// second create attempt against the same mailbox.
+	emailTargetCloudflarePropagationGrace = 10 * time.Minute
 )
 
 // UserEmailTargetView describes one user-owned forwarding destination email
@@ -88,6 +95,9 @@ func (s *PermissionService) CreateMyEmailTarget(ctx context.Context, user model.
 	if err != nil {
 		return UserEmailTargetView{}, err
 	}
+
+	unlock := s.lockEmailTargetCreate(targetEmail)
+	defer unlock()
 
 	item, err := s.ensureOwnedEmailTarget(ctx, user, targetEmail, true)
 	if err != nil {
@@ -282,7 +292,7 @@ func (s *PermissionService) deleteCloudflareEmailTargetBeforeResend(ctx context.
 // succeeded but the response failed, the follow-up snapshot repair turns the
 // operation into a successful resend. Otherwise the stale local id is cleared.
 func (s *PermissionService) repairEmailTargetAfterFailedResendCreate(ctx context.Context, item model.EmailTarget, resendSentAt time.Time) (model.EmailTarget, bool, error) {
-	repaired, err := s.syncSingleEmailTargetWithCloudflare(ctx, item, false)
+	repaired, err := s.forceSyncEmailTargetWithCloudflare(ctx, item)
 	if err != nil {
 		return model.EmailTarget{}, false, err
 	}
@@ -321,7 +331,7 @@ func (s *PermissionService) rollbackEmailTargetAfterFailedResendUpdate(ctx conte
 		}
 	}
 
-	if _, repairErr := s.syncSingleEmailTargetWithCloudflare(ctx, previous, false); repairErr != nil {
+	if _, repairErr := s.forceSyncEmailTargetWithCloudflare(ctx, previous); repairErr != nil {
 		rollbackErrs = append(rollbackErrs, repairErr)
 	}
 
@@ -459,6 +469,13 @@ func (s *PermissionService) createOwnedEmailTarget(ctx context.Context, user mod
 
 		created, createErr := s.cf.CreateEmailRoutingDestinationAddress(ctx, accountID, targetEmail)
 		if createErr != nil {
+			repaired, repairedOK, repairErr := s.repairCreatedEmailTargetAfterFailedCreate(ctx, user, targetEmail)
+			if repairErr != nil {
+				return model.EmailTarget{}, repairErr
+			}
+			if repairedOK {
+				return repaired, nil
+			}
 			return model.EmailTarget{}, wrapEmailRoutingUnavailable("failed to create cloudflare email routing destination address", createErr)
 		}
 		snapshot = cloudflareEmailTargetSnapshot{
@@ -546,6 +563,9 @@ func (s *PermissionService) syncSingleEmailTargetWithCloudflare(ctx context.Cont
 func (s *PermissionService) syncEmailTargetAgainstSnapshots(ctx context.Context, item model.EmailTarget, snapshots map[string]cloudflareEmailTargetSnapshot, allowCreate bool) (model.EmailTarget, error) {
 	snapshot, found := snapshots[strings.ToLower(strings.TrimSpace(item.Email))]
 	if !found {
+		if shouldKeepPendingEmailTargetWithoutSnapshot(item, time.Now().UTC()) {
+			return item, nil
+		}
 		if !allowCreate {
 			if strings.TrimSpace(item.CloudflareAddressID) == "" && item.VerifiedAt == nil {
 				return item, nil
@@ -563,14 +583,21 @@ func (s *PermissionService) syncEmailTargetAgainstSnapshots(ctx context.Context,
 			return model.EmailTarget{}, err
 		}
 
+		now := time.Now().UTC()
 		created, err := s.cf.CreateEmailRoutingDestinationAddress(ctx, accountID, item.Email)
 		if err != nil {
+			repaired, repairedOK, repairErr := s.repairEmailTargetAfterFailedCreate(ctx, item, now)
+			if repairErr != nil {
+				return model.EmailTarget{}, repairErr
+			}
+			if repairedOK {
+				return repaired, nil
+			}
 			return model.EmailTarget{}, wrapEmailRoutingUnavailable("failed to create cloudflare email routing destination address", err)
 		}
 
 		var sentAt *time.Time
 		if created.Verified == nil {
-			now := time.Now().UTC()
 			sentAt = &now
 		}
 		return s.db.UpdateEmailTarget(ctx, storage.UpdateEmailTargetInput{
@@ -585,6 +612,149 @@ func (s *PermissionService) syncEmailTargetAgainstSnapshots(ctx context.Context,
 		return item, nil
 	}
 
+	return s.db.UpdateEmailTarget(ctx, storage.UpdateEmailTargetInput{
+		ID:                     item.ID,
+		CloudflareAddressID:    snapshot.AddressID,
+		VerifiedAt:             snapshot.VerifiedAt,
+		LastVerificationSentAt: item.LastVerificationSentAt,
+	})
+}
+
+// shouldKeepPendingEmailTargetWithoutSnapshot preserves a fresh pending target
+// when Cloudflare's destination-address list still lags behind the create or
+// resend request. The local row is intentionally left untouched during this
+// grace window so repeated page loads stay idempotent instead of recreating the
+// same target mailbox over and over.
+func shouldKeepPendingEmailTargetWithoutSnapshot(item model.EmailTarget, now time.Time) bool {
+	if item.VerifiedAt != nil {
+		return false
+	}
+	if strings.TrimSpace(item.CloudflareAddressID) == "" {
+		return false
+	}
+	if item.LastVerificationSentAt == nil {
+		return false
+	}
+	return item.LastVerificationSentAt.UTC().Add(emailTargetCloudflarePropagationGrace).After(now.UTC())
+}
+
+// repairCreatedEmailTargetAfterFailedCreate checks whether the remote create
+// actually succeeded despite returning an error and, if so, materializes the
+// corresponding local ownership row instead of surfacing a false failure.
+func (s *PermissionService) repairCreatedEmailTargetAfterFailedCreate(ctx context.Context, user model.User, targetEmail string) (model.EmailTarget, bool, error) {
+	snapshot, found, err := s.lookupCloudflareEmailTargetSnapshot(ctx, targetEmail)
+	if err != nil {
+		return model.EmailTarget{}, false, err
+	}
+	if !found || strings.TrimSpace(snapshot.AddressID) == "" {
+		return model.EmailTarget{}, false, nil
+	}
+
+	var sentAt *time.Time
+	if snapshot.VerifiedAt == nil {
+		now := time.Now().UTC()
+		sentAt = &now
+	}
+
+	item, err := s.db.CreateEmailTarget(ctx, storage.CreateEmailTargetInput{
+		OwnerUserID:            user.ID,
+		Email:                  targetEmail,
+		CloudflareAddressID:    snapshot.AddressID,
+		VerifiedAt:             snapshot.VerifiedAt,
+		LastVerificationSentAt: sentAt,
+	})
+	if err != nil {
+		if isEmailTargetUniqueConflict(err) {
+			existing, existingErr := s.db.GetEmailTargetByEmail(ctx, targetEmail)
+			switch {
+			case existingErr == nil:
+				if existing.OwnerUserID != user.ID {
+					return model.EmailTarget{}, false, ForbiddenError("该转发目标邮箱已经绑定到其他账号，不能重复使用")
+				}
+				repaired, repairErr := s.syncSingleEmailTargetWithCloudflare(ctx, existing, false)
+				if repairErr != nil {
+					return model.EmailTarget{}, false, repairErr
+				}
+				return repaired, true, nil
+			case storage.IsNotFound(existingErr):
+				return model.EmailTarget{}, false, ConflictError("该转发目标邮箱已被其他请求占用，请刷新后重试")
+			default:
+				return model.EmailTarget{}, false, InternalError("failed to recover repaired email target binding after unique conflict", existingErr)
+			}
+		}
+		return model.EmailTarget{}, false, InternalError("failed to save repaired email target binding", err)
+	}
+	return item, true, nil
+}
+
+// repairEmailTargetAfterFailedCreate reconciles an existing local target row
+// after Cloudflare create returned an error. This covers both response-loss
+// scenarios and duplicate-create races where the remote destination now exists
+// even though the immediate API call failed.
+func (s *PermissionService) repairEmailTargetAfterFailedCreate(ctx context.Context, item model.EmailTarget, sentAt time.Time) (model.EmailTarget, bool, error) {
+	repaired, err := s.forceSyncEmailTargetWithCloudflare(ctx, item)
+	if err != nil {
+		return model.EmailTarget{}, false, err
+	}
+	if strings.TrimSpace(repaired.CloudflareAddressID) == "" {
+		return repaired, false, nil
+	}
+	if repaired.VerifiedAt != nil {
+		return repaired, true, nil
+	}
+	if equalOptionalTimes(repaired.LastVerificationSentAt, &sentAt) {
+		return repaired, true, nil
+	}
+
+	repaired, err = s.db.UpdateEmailTarget(ctx, storage.UpdateEmailTargetInput{
+		ID:                     repaired.ID,
+		CloudflareAddressID:    repaired.CloudflareAddressID,
+		VerifiedAt:             repaired.VerifiedAt,
+		LastVerificationSentAt: &sentAt,
+	})
+	if err != nil {
+		return model.EmailTarget{}, false, InternalError("failed to repair email target after create response loss", err)
+	}
+	return repaired, true, nil
+}
+
+// lookupCloudflareEmailTargetSnapshot returns the latest destination-address
+// snapshot for one normalized email address.
+func (s *PermissionService) lookupCloudflareEmailTargetSnapshot(ctx context.Context, targetEmail string) (cloudflareEmailTargetSnapshot, bool, error) {
+	snapshots, err := s.listCloudflareEmailTargetSnapshots(ctx)
+	if err != nil {
+		return cloudflareEmailTargetSnapshot{}, false, err
+	}
+	snapshot, found := snapshots[strings.ToLower(strings.TrimSpace(targetEmail))]
+	if !found {
+		return cloudflareEmailTargetSnapshot{}, false, nil
+	}
+	return snapshot, true, nil
+}
+
+// forceSyncEmailTargetWithCloudflare reconciles one local row against the
+// current Cloudflare destination-address snapshot without applying the normal
+// propagation grace window. Repair and rollback paths use this stricter helper
+// because they must clear stale ids immediately after an explicit failure.
+func (s *PermissionService) forceSyncEmailTargetWithCloudflare(ctx context.Context, item model.EmailTarget) (model.EmailTarget, error) {
+	snapshot, found, err := s.lookupCloudflareEmailTargetSnapshot(ctx, item.Email)
+	if err != nil {
+		return model.EmailTarget{}, err
+	}
+	if !found {
+		if strings.TrimSpace(item.CloudflareAddressID) == "" && item.VerifiedAt == nil {
+			return item, nil
+		}
+		return s.db.UpdateEmailTarget(ctx, storage.UpdateEmailTargetInput{
+			ID:                     item.ID,
+			CloudflareAddressID:    "",
+			VerifiedAt:             nil,
+			LastVerificationSentAt: item.LastVerificationSentAt,
+		})
+	}
+	if strings.TrimSpace(item.CloudflareAddressID) == snapshot.AddressID && equalOptionalTimes(item.VerifiedAt, snapshot.VerifiedAt) {
+		return item, nil
+	}
 	return s.db.UpdateEmailTarget(ctx, storage.UpdateEmailTargetInput{
 		ID:                     item.ID,
 		CloudflareAddressID:    snapshot.AddressID,
@@ -689,5 +859,6 @@ func isEmailTargetUniqueConflict(err error) bool {
 		return false
 	}
 	normalized := strings.ToLower(strings.TrimSpace(err.Error()))
-	return strings.Contains(normalized, "unique constraint failed: email_targets.email")
+	return strings.Contains(normalized, "unique constraint failed: email_targets.email") ||
+		(strings.Contains(normalized, "duplicate key") && strings.Contains(normalized, "email_targets"))
 }

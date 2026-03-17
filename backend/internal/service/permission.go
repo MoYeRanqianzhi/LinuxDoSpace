@@ -58,6 +58,11 @@ type PermissionService struct {
 	db  Store
 	cf  CloudflareClient
 
+	// emailTargetCreateLocks serializes create-or-bind operations per concrete
+	// target email so one process does not race Cloudflare destination creation
+	// for the same mailbox across rapid retries, duplicate clicks, or two tabs.
+	emailTargetCreateLocks sync.Map
+
 	// emailTargetResendLocks serializes resend-verification operations per local
 	// target row so one process cannot concurrently delete and recreate the same
 	// Cloudflare destination address multiple times.
@@ -225,6 +230,16 @@ func NewPermissionService(cfg config.Config, db Store, cf CloudflareClient) *Per
 // email-target resend flow and returns the matching unlock function.
 func (s *PermissionService) lockEmailTargetResend(targetID int64) func() {
 	lockValue, _ := s.emailTargetResendLocks.LoadOrStore(targetID, &sync.Mutex{})
+	locker := lockValue.(*sync.Mutex)
+	locker.Lock()
+	return locker.Unlock
+}
+
+// lockEmailTargetCreate acquires the in-process mutex protecting one concrete
+// target-email bind/create flow and returns the matching unlock function.
+func (s *PermissionService) lockEmailTargetCreate(targetEmail string) func() {
+	lockKey := strings.ToLower(strings.TrimSpace(targetEmail))
+	lockValue, _ := s.emailTargetCreateLocks.LoadOrStore(lockKey, &sync.Mutex{})
 	locker := lockValue.(*sync.Mutex)
 	locker.Lock()
 	return locker.Unlock

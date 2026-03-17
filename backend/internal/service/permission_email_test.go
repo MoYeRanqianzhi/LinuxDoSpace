@@ -30,6 +30,7 @@ type fakeEmailRoutingCloudflare struct {
 	enabledDNSZones            []string
 	updatedCatchAllSubdomains  []string
 	failNextCreateAddress      error
+	createAddressThenFail      error
 	deleteAddressErrors        map[string]error
 }
 
@@ -180,6 +181,11 @@ func (f *fakeEmailRoutingCloudflare) CreateEmailRoutingDestinationAddress(ctx co
 	}
 	f.addressesByAccount[accountID] = append(f.addressesByAccount[accountID], created)
 	f.createdAddresses = append(f.createdAddresses, normalizedEmail)
+	if f.createAddressThenFail != nil {
+		err := f.createAddressThenFail
+		f.createAddressThenFail = nil
+		return cloudflare.EmailRoutingDestinationAddress{}, err
+	}
 	return created, nil
 }
 
