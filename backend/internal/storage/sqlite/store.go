@@ -45,7 +45,19 @@ func NewStore(path string) (*Store, error) {
 		return nil, fmt.Errorf("close sqlite database file after create: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	// SQLite 只用于本地开发、测试和回滚兜底路径，但这里仍然需要把并发写的
+	// 行为收紧到“默认就安全”的状态。modernc.org/sqlite 支持通过 `_txlock`
+	// 驱动参数把事务开始模式切到 `immediate`，从而避免多个连接都先拿到
+	// 延迟事务快照、随后在升级成写事务时互相打出 `SQLITE_BUSY`。
+	//
+	// 同时把 `busy_timeout` 与 `journal_mode=WAL` 固化到连接串里：
+	//   1. `busy_timeout` 让 SQLite 在短时写锁竞争下先等待，而不是立刻失败；
+	//   2. `WAL` 让读写并发行为更接近我们在测试里验证的场景。
+	//
+	// 这里使用驱动级默认值而不是在每个 repository 方法内手写
+	// `BEGIN IMMEDIATE`，因为后者非常容易漏掉未来新增的写事务入口。
+	dsn := path + "?_txlock=immediate&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite database: %w", err)
 	}
