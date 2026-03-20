@@ -95,6 +95,7 @@ export type PermissionStatus = 'not_requested' | 'pending' | 'approved' | 'rejec
 
 // EmailRouteKind mirrors the different mailbox rows shown on the public email page.
 export type EmailRouteKind = 'default' | 'custom' | 'catch_all';
+export type EmailRouteTargetType = 'email' | 'api_token';
 
 // PaymentOrderStatus mirrors the lifecycle of one Linux Do Credit checkout.
 export type PaymentOrderStatus = 'created' | 'pending' | 'paid' | 'failed' | 'refunded';
@@ -302,13 +303,36 @@ export interface UserEmailRoute {
   address: string;
   prefix: string;
   root_domain: string;
+  target_type: EmailRouteTargetType;
   target_email: string;
+  target_token_public_id?: string;
+  target_token_name?: string;
+  target_display: string;
   enabled: boolean;
   configured: boolean;
   permission_status?: PermissionStatus;
   can_manage: boolean;
   can_delete: boolean;
   updated_at?: string;
+}
+
+// UserAPIToken mirrors one user-managed bearer token that can receive live email events.
+export interface UserAPIToken {
+  id: number;
+  name: string;
+  public_id: string;
+  scopes: string[];
+  email_enabled: boolean;
+  last_used_at?: string;
+  created_at: string;
+  updated_at: string;
+  revoked_at?: string;
+}
+
+// CreateMyAPITokenResult mirrors the create-token response where the raw secret is returned once.
+export interface CreateMyAPITokenResult {
+  token: UserAPIToken;
+  raw_token: string;
 }
 
 // MeResponse 表示 `/v1/me` 返回的数据结构。
@@ -361,13 +385,17 @@ export interface SubmitPermissionApplicationInput {
 
 // UpsertMyDefaultEmailRouteInput mirrors the default mailbox save payload.
 export interface UpsertMyDefaultEmailRouteInput {
+  target_type?: EmailRouteTargetType;
   target_email: string;
+  target_token_public_id?: string;
   enabled: boolean;
 }
 
 // UpsertMyCatchAllEmailRouteInput mirrors the email-forwarding form payload.
 export interface UpsertMyCatchAllEmailRouteInput {
+  target_type?: EmailRouteTargetType;
   target_email: string;
+  target_token_public_id?: string;
   enabled: boolean;
 }
 
@@ -375,6 +403,12 @@ export interface UpsertMyCatchAllEmailRouteInput {
 // forwarding destination email to the current account.
 export interface CreateMyEmailTargetInput {
   email: string;
+}
+
+// CreateMyAPITokenInput mirrors the user-authored request to issue one new API token.
+export interface CreateMyAPITokenInput {
+  name: string;
+  email_enabled: boolean;
 }
 
 // CreatePaymentOrderInput mirrors one authenticated checkout request.

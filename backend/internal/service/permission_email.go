@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/mail"
 	"strconv"
 	"strings"
 
@@ -118,16 +117,16 @@ func (s *PermissionService) UpsertMyDefaultEmailRoute(ctx context.Context, user 
 		return UserEmailRouteView{}, err
 	}
 
-	targetEmail, err := normalizeTargetEmail(request.TargetEmail, true)
+	target, err := s.resolveOwnedRouteTarget(
+		ctx,
+		user,
+		request.TargetType,
+		request.TargetEmail,
+		request.TargetTokenPublicID,
+		true,
+	)
 	if err != nil {
 		return UserEmailRouteView{}, err
-	}
-	if targetEmail != "" {
-		target, targetErr := s.requireVerifiedOwnedEmailTarget(ctx, user, targetEmail)
-		if targetErr != nil {
-			return UserEmailRouteView{}, targetErr
-		}
-		targetEmail = target.Email
 	}
 
 	beforeState, existingRoute, err := s.resolveDefaultEmailRouteBeforeState(ctx, user, spec)
@@ -135,8 +134,8 @@ func (s *PermissionService) UpsertMyDefaultEmailRoute(ctx context.Context, user 
 		return UserEmailRouteView{}, err
 	}
 
-	if targetEmail == "" {
-		if beforeState.Exists {
+	if !target.Configured {
+		if existingRoute != nil || beforeState.Exists {
 			if err := routing.SyncForwardingState(ctx, beforeState, newDeletedEmailRouteSyncState(spec.RootDomain, spec.Prefix), func() error {
 				if existingRoute == nil {
 					return nil
@@ -167,16 +166,18 @@ func (s *PermissionService) UpsertMyDefaultEmailRoute(ctx context.Context, user 
 		return s.buildDefaultEmailRouteView(ctx, user)
 	}
 
-	desiredState := newForwardingEmailRouteSyncState(spec.RootDomain, spec.Prefix, targetEmail, request.Enabled)
+	desiredState := newForwardingEmailRouteSyncState(spec.RootDomain, spec.Prefix, target.TargetEmail, request.Enabled)
 	var item model.EmailRoute
 	if err := routing.SyncForwardingState(ctx, beforeState, desiredState, func() error {
 		var persistErr error
 		item, persistErr = s.db.UpsertEmailRouteByAddress(ctx, storage.UpsertEmailRouteByAddressInput{
-			OwnerUserID: user.ID,
-			RootDomain:  spec.RootDomain,
-			Prefix:      spec.Prefix,
-			TargetEmail: targetEmail,
-			Enabled:     request.Enabled,
+			OwnerUserID:         user.ID,
+			RootDomain:          spec.RootDomain,
+			Prefix:              spec.Prefix,
+			TargetEmail:         target.TargetEmail,
+			TargetKind:          target.TargetType,
+			TargetTokenPublicID: target.TargetTokenPublicID,
+			Enabled:             request.Enabled,
 		})
 		if persistErr != nil {
 			return InternalError("failed to save default email route", persistErr)
@@ -199,6 +200,8 @@ func (s *PermissionService) UpsertMyDefaultEmailRoute(ctx context.Context, user 
 	}))
 
 	return userEmailRouteFromModel(
+		ctx,
+		s.db,
 		item,
 		UserEmailRouteKindDefault,
 		defaultEmailRouteDisplayName,
@@ -317,24 +320,28 @@ func (s *PermissionService) buildDefaultEmailRouteView(ctx context.Context, user
 
 	snapshot, snapshotErr := s.lookupCloudflareForwardingSnapshot(ctx, spec.RootDomain, spec.Prefix)
 	placeholder := UserEmailRouteView{
-		Kind:        UserEmailRouteKindDefault,
-		DisplayName: defaultEmailRouteDisplayName,
-		Description: defaultEmailRouteDescription,
-		Address:     spec.Address,
-		Prefix:      spec.Prefix,
-		RootDomain:  spec.RootDomain,
-		TargetEmail: "",
-		Enabled:     false,
-		Configured:  false,
-		CanManage:   true,
-		CanDelete:   false,
+		Kind:          UserEmailRouteKindDefault,
+		DisplayName:   defaultEmailRouteDisplayName,
+		Description:   defaultEmailRouteDescription,
+		Address:       spec.Address,
+		Prefix:        spec.Prefix,
+		RootDomain:    spec.RootDomain,
+		TargetType:    model.EmailRouteTargetKindEmail,
+		TargetEmail:   "",
+		TargetDisplay: "",
+		Enabled:       false,
+		Configured:    false,
+		CanManage:     true,
+		CanDelete:     false,
 	}
 
 	route, err := s.db.GetEmailRouteByAddress(ctx, spec.RootDomain, spec.Prefix)
 	if err != nil {
 		if storage.IsNotFound(err) {
 			if snapshotErr == nil && snapshot.Found {
+				placeholder.TargetType = model.EmailRouteTargetKindEmail
 				placeholder.TargetEmail = snapshot.TargetEmail
+				placeholder.TargetDisplay = snapshot.TargetEmail
 				placeholder.Enabled = snapshot.Enabled
 				placeholder.Configured = strings.TrimSpace(snapshot.TargetEmail) != ""
 			}
@@ -347,6 +354,8 @@ func (s *PermissionService) buildDefaultEmailRouteView(ctx context.Context, user
 	}
 
 	view := userEmailRouteFromModel(
+		ctx,
+		s.db,
 		route,
 		UserEmailRouteKindDefault,
 		defaultEmailRouteDisplayName,
@@ -356,7 +365,11 @@ func (s *PermissionService) buildDefaultEmailRouteView(ctx context.Context, user
 		"",
 	)
 	if snapshotErr == nil && snapshot.Found {
+		view.TargetType = model.EmailRouteTargetKindEmail
 		view.TargetEmail = snapshot.TargetEmail
+		view.TargetTokenPublicID = ""
+		view.TargetTokenName = ""
+		view.TargetDisplay = snapshot.TargetEmail
 		view.Enabled = snapshot.Enabled
 		view.Configured = strings.TrimSpace(snapshot.TargetEmail) != ""
 	}
@@ -366,8 +379,10 @@ func (s *PermissionService) buildDefaultEmailRouteView(ctx context.Context, user
 // buildCustomEmailRouteView converts one persisted extra mailbox alias into the
 // user-facing view model. These rows stay read-only for now because the current
 // public recovery work focuses on the default mailbox and catch-all flows.
-func buildCustomEmailRouteView(route model.EmailRoute) UserEmailRouteView {
+func buildCustomEmailRouteView(ctx context.Context, db Store, route model.EmailRoute) UserEmailRouteView {
 	return userEmailRouteFromModel(
+		ctx,
+		db,
 		route,
 		UserEmailRouteKindCustom,
 		customEmailRouteDisplayName,
@@ -470,23 +485,38 @@ func extractForwardTargetEmail(rule cloudflare.EmailRoutingRule) string {
 
 // userEmailRouteFromModel centralizes the translation from one stored email
 // route row into the public user-facing API model.
-func userEmailRouteFromModel(route model.EmailRoute, kind string, displayName string, description string, canManage bool, canDelete bool, permissionStatus string) UserEmailRouteView {
+func userEmailRouteFromModel(ctx context.Context, db Store, route model.EmailRoute, kind string, displayName string, description string, canManage bool, canDelete bool, permissionStatus string) UserEmailRouteView {
 	updatedAt := route.UpdatedAt
+	targetType := normalizeRouteTargetType(route.TargetKind, route.TargetTokenPublicID)
+	var targetTokenName string
+	var token *model.APIToken
+	if targetType == model.EmailRouteTargetKindAPIToken && db != nil && strings.TrimSpace(route.TargetTokenPublicID) != "" {
+		loadedToken, err := db.GetAPITokenByPublicID(ctx, route.TargetTokenPublicID)
+		if err == nil {
+			token = &loadedToken
+			targetTokenName = loadedToken.Name
+		}
+	}
+	configured := strings.TrimSpace(route.TargetEmail) != "" || strings.TrimSpace(route.TargetTokenPublicID) != ""
 	return normalizeUserEmailRouteCopy(UserEmailRouteView{
-		ID:               route.ID,
-		Kind:             kind,
-		DisplayName:      displayName,
-		Description:      description,
-		Address:          route.Prefix + "@" + route.RootDomain,
-		Prefix:           route.Prefix,
-		RootDomain:       route.RootDomain,
-		TargetEmail:      route.TargetEmail,
-		Enabled:          route.Enabled,
-		Configured:       strings.TrimSpace(route.TargetEmail) != "",
-		PermissionStatus: permissionStatus,
-		CanManage:        canManage,
-		CanDelete:        canDelete,
-		UpdatedAt:        &updatedAt,
+		ID:                  route.ID,
+		Kind:                kind,
+		DisplayName:         displayName,
+		Description:         description,
+		Address:             route.Prefix + "@" + route.RootDomain,
+		Prefix:              route.Prefix,
+		RootDomain:          route.RootDomain,
+		TargetType:          targetType,
+		TargetEmail:         route.TargetEmail,
+		TargetTokenPublicID: route.TargetTokenPublicID,
+		TargetTokenName:     targetTokenName,
+		TargetDisplay:       routeTargetDisplayFromModel(route, token),
+		Enabled:             route.Enabled,
+		Configured:          configured,
+		PermissionStatus:    permissionStatus,
+		CanManage:           canManage,
+		CanDelete:           canDelete,
+		UpdatedAt:           &updatedAt,
 	})
 }
 
@@ -501,10 +531,24 @@ func normalizeTargetEmail(raw string, allowEmpty bool) (string, error) {
 		}
 		return "", ValidationError("target_email must not be empty")
 	}
-	if _, err := mail.ParseAddress(targetEmail); err != nil {
+	if !looksLikeEmailAddress(targetEmail) {
 		return "", ValidationError("target_email must be a valid email address")
 	}
 	return targetEmail, nil
+}
+
+func looksLikeEmailAddress(value string) bool {
+	localPart, domain, ok := strings.Cut(strings.ToLower(strings.TrimSpace(value)), "@")
+	if !ok || strings.TrimSpace(localPart) == "" || strings.TrimSpace(domain) == "" {
+		return false
+	}
+	if strings.ContainsAny(localPart, " \r\n\t") || strings.ContainsAny(domain, " \r\n\t") {
+		return false
+	}
+	if !strings.Contains(domain, ".") {
+		return false
+	}
+	return true
 }
 
 // isSystemReservedEmailPrefix checks whether one local-part belongs to the

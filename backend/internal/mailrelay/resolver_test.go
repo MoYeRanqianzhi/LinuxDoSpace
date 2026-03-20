@@ -16,6 +16,7 @@ import (
 type fakeResolverStore struct {
 	routes  map[string]model.EmailRoute
 	targets map[string]model.EmailTarget
+	tokens  map[string]model.APIToken
 }
 
 // GetEmailRouteByAddress returns one in-memory route keyed by domain + prefix.
@@ -34,6 +35,16 @@ func (f *fakeResolverStore) GetEmailTargetByEmail(ctx context.Context, email str
 	item, ok := f.targets[key]
 	if !ok {
 		return model.EmailTarget{}, sql.ErrNoRows
+	}
+	return item, nil
+}
+
+// GetAPITokenByPublicID returns one in-memory API token keyed by public id.
+func (f *fakeResolverStore) GetAPITokenByPublicID(ctx context.Context, publicID string) (model.APIToken, error) {
+	key := strings.TrimSpace(publicID)
+	item, ok := f.tokens[key]
+	if !ok {
+		return model.APIToken{}, sql.ErrNoRows
 	}
 	return item, nil
 }

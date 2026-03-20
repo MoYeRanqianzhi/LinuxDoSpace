@@ -18,6 +18,7 @@ import type {
   PaymentProduct,
   POWChallenge,
   POWStatus,
+  UserAPIToken,
   SubmitPOWChallengeInput,
   SubmitPOWChallengeResult,
   UpsertMyCatchAllEmailRouteInput,
@@ -26,6 +27,8 @@ import type {
   UserEmailTarget,
   UserEmailRoute,
   UserPermission,
+  CreateMyAPITokenInput,
+  CreateMyAPITokenResult,
 } from '../types/api';
 
 // resolveAPIBaseURL keeps local development simple while still protecting the
@@ -317,10 +320,26 @@ export function listMyEmailTargets(): Promise<UserEmailTarget[]> {
   return request<UserEmailTarget[]>('/v1/my/email-targets');
 }
 
+// listMyAPITokens returns every user-managed bearer token currently visible in the email UI.
+export function listMyAPITokens(): Promise<UserAPIToken[]> {
+  return request<UserAPIToken[]>('/v1/my/api-tokens');
+}
+
 // createMyEmailTarget binds one external inbox to the authenticated user and
 // triggers Cloudflare's verification email when needed.
 export function createMyEmailTarget(input: CreateMyEmailTargetInput, csrfToken: string): Promise<UserEmailTarget> {
   return request<UserEmailTarget>('/v1/my/email-targets', {
+    method: 'POST',
+    headers: {
+      'X-CSRF-Token': csrfToken,
+    },
+    body: JSON.stringify(input),
+  });
+}
+
+// createMyAPIToken issues one new API token and returns the one-time raw secret.
+export function createMyAPIToken(input: CreateMyAPITokenInput, csrfToken: string): Promise<CreateMyAPITokenResult> {
+  return request<CreateMyAPITokenResult>('/v1/my/api-tokens', {
     method: 'POST',
     headers: {
       'X-CSRF-Token': csrfToken,
@@ -346,6 +365,16 @@ export function createMyDomainPurchaseOrder(input: CreateDomainPurchaseOrderInpu
 export function resendMyEmailTargetVerification(targetID: number, csrfToken: string): Promise<UserEmailTarget> {
   return request<UserEmailTarget>(`/v1/my/email-targets/${targetID}/resend-verification`, {
     method: 'POST',
+    headers: {
+      'X-CSRF-Token': csrfToken,
+    },
+  });
+}
+
+// revokeMyAPIToken revokes one existing token so future bearer-stream connections stop working.
+export function revokeMyAPIToken(publicID: string, csrfToken: string): Promise<UserAPIToken> {
+  return request<UserAPIToken>(`/v1/my/api-tokens/${encodeURIComponent(publicID)}`, {
+    method: 'DELETE',
     headers: {
       'X-CSRF-Token': csrfToken,
     },

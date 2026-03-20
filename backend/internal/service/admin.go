@@ -620,11 +620,13 @@ func (s *AdminService) CreateEmailRoute(ctx context.Context, actor model.User, r
 	if err := routing.SyncForwardingState(ctx, newDeletedEmailRouteSyncState(request.RootDomain, normalizedPrefix), desiredState, func() error {
 		var persistErr error
 		item, persistErr = s.db.CreateEmailRoute(ctx, storage.CreateEmailRouteInput{
-			OwnerUserID: request.OwnerUserID,
-			RootDomain:  request.RootDomain,
-			Prefix:      normalizedPrefix,
-			TargetEmail: request.TargetEmail,
-			Enabled:     request.Enabled,
+			OwnerUserID:         request.OwnerUserID,
+			RootDomain:          request.RootDomain,
+			Prefix:              normalizedPrefix,
+			TargetEmail:         request.TargetEmail,
+			TargetKind:          model.EmailRouteTargetKindEmail,
+			TargetTokenPublicID: "",
+			Enabled:             request.Enabled,
 		})
 		if persistErr != nil {
 			if strings.Contains(strings.ToLower(persistErr.Error()), "unique") {
@@ -677,7 +679,13 @@ func (s *AdminService) UpdateEmailRoute(ctx context.Context, actor model.User, r
 	var item model.EmailRoute
 	if err := routing.SyncForwardingState(ctx, beforeState, desiredState, func() error {
 		var persistErr error
-		item, persistErr = s.db.UpdateEmailRoute(ctx, storage.UpdateEmailRouteInput{ID: routeID, TargetEmail: request.TargetEmail, Enabled: request.Enabled})
+		item, persistErr = s.db.UpdateEmailRoute(ctx, storage.UpdateEmailRouteInput{
+			ID:                  routeID,
+			TargetEmail:         request.TargetEmail,
+			TargetKind:          model.EmailRouteTargetKindEmail,
+			TargetTokenPublicID: "",
+			Enabled:             request.Enabled,
+		})
 		if persistErr != nil {
 			if storage.IsNotFound(persistErr) {
 				return NotFoundError("email route not found")

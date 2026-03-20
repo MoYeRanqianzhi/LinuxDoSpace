@@ -146,7 +146,7 @@ func collectRequiredDatabaseRelayNamespaceRoots(ctx context.Context, cfg config.
 		return nil, fmt.Errorf("list email routes for database mail relay dns bootstrap: %w", err)
 	}
 	for _, item := range emailRoutes {
-		if !item.Enabled || strings.TrimSpace(item.TargetEmail) == "" {
+		if !item.Enabled || !routeHasConfiguredTarget(item) {
 			continue
 		}
 		addNamespaceRoot(item.RootDomain)

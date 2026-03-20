@@ -137,22 +137,26 @@ type EmailCatchAllAccessView struct {
 // UserEmailRouteView describes one user-visible email forwarding row shown on
 // the public email page.
 type UserEmailRouteView struct {
-	ID               int64                    `json:"id,omitempty"`
-	Kind             string                   `json:"kind"`
-	PermissionKey    string                   `json:"permission_key,omitempty"`
-	DisplayName      string                   `json:"display_name"`
-	Description      string                   `json:"description"`
-	Address          string                   `json:"address"`
-	Prefix           string                   `json:"prefix"`
-	RootDomain       string                   `json:"root_domain"`
-	TargetEmail      string                   `json:"target_email"`
-	Enabled          bool                     `json:"enabled"`
-	Configured       bool                     `json:"configured"`
-	PermissionStatus string                   `json:"permission_status,omitempty"`
-	CatchAllAccess   *EmailCatchAllAccessView `json:"catch_all_access,omitempty"`
-	CanManage        bool                     `json:"can_manage"`
-	CanDelete        bool                     `json:"can_delete"`
-	UpdatedAt        *time.Time               `json:"updated_at,omitempty"`
+	ID                  int64                    `json:"id,omitempty"`
+	Kind                string                   `json:"kind"`
+	PermissionKey       string                   `json:"permission_key,omitempty"`
+	DisplayName         string                   `json:"display_name"`
+	Description         string                   `json:"description"`
+	Address             string                   `json:"address"`
+	Prefix              string                   `json:"prefix"`
+	RootDomain          string                   `json:"root_domain"`
+	TargetType          string                   `json:"target_type"`
+	TargetEmail         string                   `json:"target_email"`
+	TargetTokenPublicID string                   `json:"target_token_public_id,omitempty"`
+	TargetTokenName     string                   `json:"target_token_name,omitempty"`
+	TargetDisplay       string                   `json:"target_display"`
+	Enabled             bool                     `json:"enabled"`
+	Configured          bool                     `json:"configured"`
+	PermissionStatus    string                   `json:"permission_status,omitempty"`
+	CatchAllAccess      *EmailCatchAllAccessView `json:"catch_all_access,omitempty"`
+	CanManage           bool                     `json:"can_manage"`
+	CanDelete           bool                     `json:"can_delete"`
+	UpdatedAt           *time.Time               `json:"updated_at,omitempty"`
 }
 
 // EmailRouteAvailabilityResult mirrors the public email-prefix search result
@@ -175,15 +179,19 @@ type SubmitPermissionApplicationRequest struct {
 // UpsertMyDefaultEmailRouteRequest describes the forwarding target saved for
 // the always-owned default mailbox <username>@linuxdo.space.
 type UpsertMyDefaultEmailRouteRequest struct {
-	TargetEmail string `json:"target_email"`
-	Enabled     bool   `json:"enabled"`
+	TargetType          string `json:"target_type"`
+	TargetEmail         string `json:"target_email"`
+	TargetTokenPublicID string `json:"target_token_public_id"`
+	Enabled             bool   `json:"enabled"`
 }
 
 // UpsertMyCatchAllEmailRouteRequest describes the forwarding target configured
 // by the user after the catch-all mailbox permission has been approved.
 type UpsertMyCatchAllEmailRouteRequest struct {
-	TargetEmail string `json:"target_email"`
-	Enabled     bool   `json:"enabled"`
+	TargetType          string `json:"target_type"`
+	TargetEmail         string `json:"target_email"`
+	TargetTokenPublicID string `json:"target_token_public_id"`
+	Enabled             bool   `json:"enabled"`
 }
 
 // UpdatePermissionPolicyRequest describes the administrator-editable subset of
@@ -359,7 +367,7 @@ func (s *PermissionService) ListMyEmailRoutes(ctx context.Context, user model.Us
 		if route.Prefix == emailCatchAllPrefix && strings.EqualFold(route.RootDomain, namespace.RootDomain) {
 			continue
 		}
-		items = append(items, buildCustomEmailRouteView(route))
+		items = append(items, buildCustomEmailRouteView(ctx, s.db, route))
 	}
 	items = append(items, catchAllRoute)
 	return items, nil
@@ -378,23 +386,23 @@ func (s *PermissionService) UpsertMyCatchAllEmailRoute(ctx context.Context, user
 		return UserEmailRouteView{}, ForbiddenError("the catch-all email permission has not been approved")
 	}
 
-	targetEmail, err := normalizeTargetEmail(request.TargetEmail, true)
+	target, err := s.resolveOwnedRouteTarget(
+		ctx,
+		user,
+		request.TargetType,
+		request.TargetEmail,
+		request.TargetTokenPublicID,
+		true,
+	)
 	if err != nil {
 		return UserEmailRouteView{}, err
-	}
-	if targetEmail != "" {
-		target, targetErr := s.requireVerifiedOwnedEmailTarget(ctx, user, targetEmail)
-		if targetErr != nil {
-			return UserEmailRouteView{}, targetErr
-		}
-		targetEmail = target.Email
 	}
 
 	namespace, err := s.resolveCatchAllNamespace(ctx, user)
 	if err != nil {
 		return UserEmailRouteView{}, err
 	}
-	if targetEmail != "" {
+	if target.Configured {
 		if err := ensureDatabaseRelayIngressDNSForRootDomain(ctx, s.cfg, s.cf, namespace.RootDomain); err != nil {
 			return UserEmailRouteView{}, err
 		}
@@ -422,8 +430,8 @@ func (s *PermissionService) UpsertMyCatchAllEmailRoute(ctx context.Context, user
 		return UserEmailRouteView{}, InternalError("failed to load catch-all email route before update", routeErr)
 	}
 
-	if targetEmail == "" {
-		if beforeState.Exists {
+	if !target.Configured {
+		if existingRoute != nil || beforeState.Exists {
 			if err := routing.SyncForwardingState(ctx, beforeState, newDeletedCatchAllEmailRouteSyncState(namespace.RootDomain), func() error {
 				if existingRoute == nil {
 					return nil
@@ -455,16 +463,18 @@ func (s *PermissionService) UpsertMyCatchAllEmailRoute(ctx context.Context, user
 		return s.buildCatchAllEmailRouteView(ctx, user, permission, namespace)
 	}
 
-	desiredState := newCatchAllEmailRouteSyncState(namespace.RootDomain, targetEmail, request.Enabled)
+	desiredState := newCatchAllEmailRouteSyncState(namespace.RootDomain, target.TargetEmail, request.Enabled)
 	var item model.EmailRoute
 	if err := routing.SyncForwardingState(ctx, beforeState, desiredState, func() error {
 		var persistErr error
 		item, persistErr = s.db.UpsertEmailRouteByAddress(ctx, storage.UpsertEmailRouteByAddressInput{
-			OwnerUserID: user.ID,
-			RootDomain:  namespace.RootDomain,
-			Prefix:      emailCatchAllPrefix,
-			TargetEmail: targetEmail,
-			Enabled:     request.Enabled,
+			OwnerUserID:         user.ID,
+			RootDomain:          namespace.RootDomain,
+			Prefix:              emailCatchAllPrefix,
+			TargetEmail:         target.TargetEmail,
+			TargetKind:          target.TargetType,
+			TargetTokenPublicID: target.TargetTokenPublicID,
+			Enabled:             request.Enabled,
 		})
 		if persistErr != nil {
 			return InternalError("failed to save catch-all email route", persistErr)
@@ -489,22 +499,26 @@ func (s *PermissionService) UpsertMyCatchAllEmailRoute(ctx context.Context, user
 
 	updatedAt := item.UpdatedAt
 	return normalizeUserEmailRouteCopy(UserEmailRouteView{
-		ID:               item.ID,
-		Kind:             UserEmailRouteKindCatchAll,
-		PermissionKey:    PermissionKeyEmailCatchAll,
-		DisplayName:      catchAllEmailRouteDisplayName,
-		Description:      catchAllEmailRouteDescription,
-		Address:          namespace.Address,
-		Prefix:           "*",
-		RootDomain:       namespace.RootDomain,
-		TargetEmail:      item.TargetEmail,
-		Enabled:          item.Enabled,
-		Configured:       strings.TrimSpace(item.TargetEmail) != "",
-		PermissionStatus: permission.Status,
-		CatchAllAccess:   permission.CatchAllAccess,
-		CanManage:        true,
-		CanDelete:        false,
-		UpdatedAt:        &updatedAt,
+		ID:                  item.ID,
+		Kind:                UserEmailRouteKindCatchAll,
+		PermissionKey:       PermissionKeyEmailCatchAll,
+		DisplayName:         catchAllEmailRouteDisplayName,
+		Description:         catchAllEmailRouteDescription,
+		Address:             namespace.Address,
+		Prefix:              "*",
+		RootDomain:          namespace.RootDomain,
+		TargetType:          normalizeRouteTargetType(item.TargetKind, item.TargetTokenPublicID),
+		TargetEmail:         item.TargetEmail,
+		TargetTokenPublicID: item.TargetTokenPublicID,
+		TargetTokenName:     target.TargetTokenName,
+		TargetDisplay:       target.TargetDisplay,
+		Enabled:             item.Enabled,
+		Configured:          target.Configured,
+		PermissionStatus:    permission.Status,
+		CatchAllAccess:      permission.CatchAllAccess,
+		CanManage:           true,
+		CanDelete:           false,
+		UpdatedAt:           &updatedAt,
 	}), nil
 }
 
@@ -747,7 +761,9 @@ func (s *PermissionService) buildCatchAllEmailRouteView(ctx context.Context, use
 		Address:          namespace.Address,
 		Prefix:           "*",
 		RootDomain:       namespace.RootDomain,
+		TargetType:       model.EmailRouteTargetKindEmail,
 		TargetEmail:      "",
+		TargetDisplay:    "",
 		Enabled:          false,
 		Configured:       false,
 		PermissionStatus: permission.Status,
@@ -774,13 +790,30 @@ func (s *PermissionService) buildCatchAllEmailRouteView(ctx context.Context, use
 
 	updatedAt := route.UpdatedAt
 	item.ID = route.ID
+	item.TargetType = normalizeRouteTargetType(route.TargetKind, route.TargetTokenPublicID)
 	item.TargetEmail = route.TargetEmail
+	item.TargetTokenPublicID = route.TargetTokenPublicID
 	item.Enabled = route.Enabled
-	item.Configured = strings.TrimSpace(route.TargetEmail) != ""
+	item.Configured = strings.TrimSpace(route.TargetEmail) != "" || strings.TrimSpace(route.TargetTokenPublicID) != ""
 	item.UpdatedAt = &updatedAt
 	item.CatchAllAccess = permission.CatchAllAccess
+	if item.TargetType == model.EmailRouteTargetKindAPIToken && strings.TrimSpace(route.TargetTokenPublicID) != "" {
+		token, tokenErr := s.db.GetAPITokenByPublicID(ctx, route.TargetTokenPublicID)
+		if tokenErr == nil {
+			item.TargetTokenName = token.Name
+			item.TargetDisplay = routeTargetDisplayFromModel(route, &token)
+		} else {
+			item.TargetDisplay = routeTargetDisplayFromModel(route, nil)
+		}
+	} else {
+		item.TargetDisplay = strings.TrimSpace(route.TargetEmail)
+	}
 	if snapshotErr == nil && snapshot.Found {
 		item.TargetEmail = snapshot.TargetEmail
+		item.TargetType = model.EmailRouteTargetKindEmail
+		item.TargetTokenPublicID = ""
+		item.TargetTokenName = ""
+		item.TargetDisplay = snapshot.TargetEmail
 		item.Enabled = snapshot.Enabled
 		item.Configured = strings.TrimSpace(snapshot.TargetEmail) != ""
 	}
@@ -968,9 +1001,11 @@ func (s *PermissionService) disableCatchAllEmailRouteForApplication(ctx context.
 	if err := newEmailRoutingProvisioner(s.cfg, s.cf).SyncForwardingState(ctx, beforeState, afterState, func() error {
 		var persistErr error
 		updated, persistErr = s.db.UpdateEmailRoute(ctx, storage.UpdateEmailRouteInput{
-			ID:          route.ID,
-			TargetEmail: route.TargetEmail,
-			Enabled:     false,
+			ID:                  route.ID,
+			TargetEmail:         route.TargetEmail,
+			TargetKind:          route.TargetKind,
+			TargetTokenPublicID: route.TargetTokenPublicID,
+			Enabled:             false,
 		})
 		if persistErr != nil {
 			return InternalError("failed to disable catch-all email route", persistErr)

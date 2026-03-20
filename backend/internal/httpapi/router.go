@@ -18,6 +18,7 @@ type RouterDependencies struct {
 	DomainService     *service.DomainService
 	AdminService      *service.AdminService
 	PermissionService *service.PermissionService
+	TokenService      *service.TokenService
 	QuantityService   *service.QuantityService
 	PaymentService    *service.PaymentService
 	POWService        *service.POWService
@@ -33,6 +34,7 @@ func NewRouter(deps RouterDependencies) http.Handler {
 		domainService:        deps.DomainService,
 		adminService:         deps.AdminService,
 		permissionService:    deps.PermissionService,
+		tokenService:         deps.TokenService,
 		quantityService:      deps.QuantityService,
 		paymentService:       deps.PaymentService,
 		powService:           deps.POWService,
@@ -51,6 +53,7 @@ func NewRouter(deps RouterDependencies) http.Handler {
 	mux.HandleFunc("GET /v1/public/allocations/check", api.handleAllocationAvailability)
 	mux.HandleFunc("GET /v1/public/email-routes/check", api.handlePublicEmailRouteAvailability)
 	mux.HandleFunc("GET /v1/public/email-targets/verify", api.handleVerifyEmailTarget)
+	mux.HandleFunc("GET /v1/token/email/stream", api.handleTokenEmailStream)
 	mux.HandleFunc("GET /v1/public/ldc/products", api.handlePublicPaymentProducts)
 	mux.HandleFunc("GET /v1/auth/login", api.handleAuthLogin)
 	mux.HandleFunc("GET /v1/admin/auth/login", api.handleAdminAuthLogin)
@@ -76,6 +79,9 @@ func NewRouter(deps RouterDependencies) http.Handler {
 	mux.HandleFunc("GET /v1/my/email-targets", api.handleMyEmailTargets)
 	mux.HandleFunc("POST /v1/my/email-targets", api.handleCreateMyEmailTarget)
 	mux.HandleFunc("POST /v1/my/email-targets/{targetID}/resend-verification", api.handleResendMyEmailTargetVerification)
+	mux.HandleFunc("GET /v1/my/api-tokens", api.handleMyAPITokens)
+	mux.HandleFunc("POST /v1/my/api-tokens", api.handleCreateMyAPIToken)
+	mux.HandleFunc("DELETE /v1/my/api-tokens/{publicID}", api.handleRevokeMyAPIToken)
 	mux.HandleFunc("GET /v1/my/email-routes", api.handleMyEmailRoutes)
 	mux.HandleFunc("PUT /v1/my/email-routes/default", api.handleUpsertDefaultEmailRoute)
 	mux.HandleFunc("PUT /v1/my/email-routes/catch-all", api.handleUpsertCatchAllEmailRoute)

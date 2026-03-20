@@ -65,6 +65,8 @@ func main() {
 	domainService := service.NewDomainService(cfg, store, cloudflareClient)
 	adminService := service.NewAdminService(cfg, store, cloudflareClient)
 	permissionService := service.NewPermissionService(cfg, store, cloudflareClient)
+	tokenHub := mailrelay.NewTokenStreamHub()
+	tokenService := service.NewTokenService(store, tokenHub)
 	quantityService := service.NewQuantityService(store)
 	powService := service.NewPOWService(cfg, store)
 	creditClient := linuxdocredit.NewClient(
@@ -103,6 +105,7 @@ func main() {
 		DomainService:     domainService,
 		AdminService:      adminService,
 		PermissionService: permissionService,
+		TokenService:      tokenService,
 		QuantityService:   quantityService,
 		PaymentService:    paymentService,
 		POWService:        powService,
@@ -139,6 +142,7 @@ func main() {
 			cfg.Mail,
 			mailrelay.NewDBResolver(store),
 			store,
+			tokenHub,
 			log.Default(),
 		)
 		go dispatcher.Run(ctx)

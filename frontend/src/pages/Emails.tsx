@@ -4,6 +4,8 @@ import {
   AlertCircle,
   ArrowRight,
   CheckCircle2,
+  Copy,
+  KeyRound,
   LoaderCircle,
   Mail,
   Plus,
@@ -20,19 +22,24 @@ import { ToggleSwitch } from '../components/ToggleSwitch';
 import {
   APIError,
   checkPublicEmailRouteAvailability,
-    createMyEmailTarget,
-    listMyEmailRoutes,
-    listMyEmailTargets,
-    listMyPermissions,
-    resendMyEmailTargetVerification,
-    submitPermissionApplication,
+  createMyAPIToken,
+  createMyEmailTarget,
+  listMyEmailRoutes,
+  listMyAPITokens,
+  listMyEmailTargets,
+  listMyPermissions,
+  revokeMyAPIToken,
+  resendMyEmailTargetVerification,
+  submitPermissionApplication,
   upsertCatchAllEmailRoute,
   upsertDefaultEmailRoute,
 } from '../lib/api';
 import type {
   EmailRouteAvailabilityResult,
+  EmailRouteTargetType,
   ManagedDomain,
   PermissionStatus,
+  UserAPIToken,
   User,
   UserEmailRoute,
   UserEmailTarget,
@@ -70,10 +77,12 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
   const [permission, setPermission] = useState<UserPermission | null>(null);
   const [routes, setRoutes] = useState<UserEmailRoute[]>([]);
   const [emailTargets, setEmailTargets] = useState<UserEmailTarget[]>([]);
+  const [apiTokens, setApiTokens] = useState<UserAPIToken[]>([]);
   const [loading, setLoading] = useState(false);
   const [permissionError, setPermissionError] = useState('');
   const [routeError, setRouteError] = useState('');
   const [targetError, setTargetError] = useState('');
+  const [tokenError, setTokenError] = useState('');
 
   const [searchPrefix, setSearchPrefix] = useState('');
   const [searchStatus, setSearchStatus] = useState<SearchStatus>('idle');
@@ -95,6 +104,11 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
   const [resendingTargetIDs, setResendingTargetIDs] = useState<Record<number, boolean>>({});
   const [targetNotice, setTargetNotice] = useState<SectionNotice | null>(null);
   const [targetRowNotices, setTargetRowNotices] = useState<Record<number, SectionNotice>>({});
+  const [tokenNotice, setTokenNotice] = useState<SectionNotice | null>(null);
+  const [newTokenName, setNewTokenName] = useState('');
+  const [creatingToken, setCreatingToken] = useState(false);
+  const [createdTokenSecret, setCreatedTokenSecret] = useState('');
+  const [revokingTokenPublicIDs, setRevokingTokenPublicIDs] = useState<Record<string, boolean>>({});
 
   const [applyingPermission, setApplyingPermission] = useState(false);
   const [pledgeModalOpen, setPledgeModalOpen] = useState(false);
@@ -125,13 +139,23 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
     () => emailTargets.filter((item) => item.verified),
     [emailTargets],
   );
+  const activeAPITokens = useMemo(
+    () => apiTokens.filter((item) => item.email_enabled && !item.revoked_at),
+    [apiTokens],
+  );
   const selectableTargetOptions = useMemo<GlassSelectOption[]>(() => {
-    const options = verifiedTargets.map((item) => ({
-      value: item.email,
-      label: item.email,
-    }));
+    const options = [
+      ...verifiedTargets.map((item) => ({
+        value: buildEmailTargetOptionValue(item.email),
+        label: item.email,
+      })),
+      ...activeAPITokens.map((item) => ({
+        value: buildAPITokenTargetOptionValue(item.public_id),
+        label: `TOKEN · ${item.name} (${item.public_id})`,
+      })),
+    ];
     return [{ value: '', label: '不转发 / 清空目标' }, ...options];
-  }, [verifiedTargets]);
+  }, [activeAPITokens, verifiedTargets]);
 
   const defaultAddress = defaultRoute?.address ?? (normalizedUsername ? `${normalizedUsername}@${configuredRootDomain}` : '');
   const catchAllAddress = useMemo(() => {
@@ -142,13 +166,14 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
   const searchRootDomain = defaultRoute?.root_domain ?? searchResult?.root_domain ?? configuredRootDomain;
   const pledgeText = permission?.pledge_text?.trim() ?? '';
   const pendingTargetCount = emailTargets.length - verifiedTargets.length;
+  const tokenTargetCount = activeAPITokens.length;
   const defaultTargetNeedsVerification = useMemo(
-    () => routeTargetNeedsVerification(defaultRoute?.target_email, verifiedTargets),
-    [defaultRoute?.target_email, verifiedTargets],
+    () => routeTargetNeedsVerification(defaultRoute, verifiedTargets),
+    [defaultRoute, verifiedTargets],
   );
   const catchAllTargetNeedsVerification = useMemo(
-    () => routeTargetNeedsVerification(catchAllRoute?.target_email, verifiedTargets),
-    [catchAllRoute?.target_email, verifiedTargets],
+    () => routeTargetNeedsVerification(catchAllRoute, verifiedTargets),
+    [catchAllRoute, verifiedTargets],
   );
 
   useEffect(() => {
@@ -158,10 +183,12 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
       setPermission(null);
       setRoutes([]);
       setEmailTargets([]);
+      setApiTokens([]);
       setLoading(false);
       setPermissionError('');
       setRouteError('');
       setTargetError('');
+      setTokenError('');
       setDefaultTarget('');
       setDefaultEnabled(false);
       setCatchAllTarget('');
@@ -171,6 +198,10 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
       setCatchAllNotice(null);
       setTargetNotice(null);
       setTargetRowNotices({});
+      setTokenNotice(null);
+      setNewTokenName('');
+      setCreatedTokenSecret('');
+      setRevokingTokenPublicIDs({});
       setResendingTargetIDs({});
       resendingTargetIDsRef.current.clear();
       setPledgeModalOpen(false);
@@ -181,14 +212,14 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
   }, [authenticated, user?.id]);
 
   useEffect(() => {
-    setDefaultTarget(defaultRoute?.target_email ?? '');
+    setDefaultTarget(defaultRoute ? routeTargetSelectionValue(defaultRoute) : '');
     setDefaultEnabled(defaultRoute?.enabled ?? false);
-  }, [defaultRoute?.address, defaultRoute?.target_email, defaultRoute?.enabled]);
+  }, [defaultRoute]);
 
   useEffect(() => {
-    setCatchAllTarget(catchAllRoute?.target_email ?? '');
+    setCatchAllTarget(catchAllRoute ? routeTargetSelectionValue(catchAllRoute) : '');
     setCatchAllEnabled(catchAllRoute?.enabled ?? false);
-  }, [catchAllRoute?.address, catchAllRoute?.target_email, catchAllRoute?.enabled]);
+  }, [catchAllRoute]);
 
   async function loadAuthenticatedData(): Promise<void> {
     const requestToken = ++loadRequestTokenRef.current;
@@ -197,10 +228,11 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
     setRouteError('');
     setTargetError('');
 
-    const [permissionResult, routeResult, targetResult] = await Promise.allSettled([
+    const [permissionResult, routeResult, targetResult, tokenResult] = await Promise.allSettled([
       listMyPermissions(),
       listMyEmailRoutes(),
       listMyEmailTargets(),
+      listMyAPITokens(),
     ]);
     if (requestToken !== loadRequestTokenRef.current) {
       return;
@@ -239,6 +271,20 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
       } else {
         setEmailTargets([]);
         setTargetError(readableErrorMessage(targetResult.reason, '无法加载我的转发目标列表。'));
+      }
+    }
+
+    if (tokenResult.status === 'fulfilled') {
+      setApiTokens(tokenResult.value);
+      setTokenError('');
+    } else {
+      const maybeTokenError = tokenResult.reason;
+      if (maybeTokenError instanceof APIError && maybeTokenError.code === 'not_found') {
+        setApiTokens([]);
+        setTokenError('');
+      } else {
+        setApiTokens([]);
+        setTokenError(readableErrorMessage(tokenResult.reason, '无法加载我的 API TOKEN 列表。'));
       }
     }
 
@@ -321,6 +367,71 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
     });
   }
 
+  async function handleCreateToken(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (!csrfToken) {
+      setTokenNotice({ tone: 'error', message: '当前会话缺少 CSRF Token，请重新登录后再试。' });
+      return;
+    }
+
+    const tokenName = newTokenName.trim();
+    if (!tokenName) {
+      setTokenNotice({ tone: 'error', message: '请输入 TOKEN 名称。' });
+      return;
+    }
+
+    try {
+      setCreatingToken(true);
+      setTokenNotice(null);
+      const result = await createMyAPIToken({ name: tokenName, email_enabled: true }, csrfToken);
+      setApiTokens((currentItems) => upsertAPIToken(currentItems, result.token));
+      setCreatedTokenSecret(result.raw_token);
+      setNewTokenName('');
+      setTokenNotice({
+        tone: 'success',
+        message: `TOKEN ${result.token.name} 已创建。请立即复制保存原始密钥，离开当前提示后将无法再次查看。`,
+      });
+    } catch (error) {
+      setTokenNotice({ tone: 'error', message: readableErrorMessage(error, '创建 API TOKEN 失败。') });
+    } finally {
+      setCreatingToken(false);
+    }
+  }
+
+  async function handleRevokeToken(publicID: string): Promise<void> {
+    if (!csrfToken) {
+      setTokenNotice({ tone: 'error', message: '当前会话缺少 CSRF Token，请重新登录后再试。' });
+      return;
+    }
+
+    try {
+      setRevokingTokenPublicIDs((current) => ({ ...current, [publicID]: true }));
+      const item = await revokeMyAPIToken(publicID, csrfToken);
+      setApiTokens((currentItems) => upsertAPIToken(currentItems, item));
+      setTokenNotice({ tone: 'info', message: `TOKEN ${item.name} 已撤销，新的实时连接将不再被接受。` });
+    } catch (error) {
+      setTokenNotice({ tone: 'error', message: readableErrorMessage(error, '撤销 API TOKEN 失败。') });
+    } finally {
+      setRevokingTokenPublicIDs((current) => {
+        const next = { ...current };
+        delete next[publicID];
+        return next;
+      });
+    }
+  }
+
+  async function handleCopyCreatedToken(): Promise<void> {
+    if (!createdTokenSecret) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(createdTokenSecret);
+      setTokenNotice({ tone: 'success', message: 'TOKEN 已复制到剪贴板。' });
+    } catch {
+      setTokenNotice({ tone: 'info', message: '浏览器未允许自动复制，请手动复制下方原始 TOKEN。' });
+    }
+  }
+
   async function handleResendTargetVerification(targetID: number): Promise<void> {
     if (!csrfToken) {
       setTargetRowNotices((current) => ({
@@ -369,13 +480,17 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
       return;
     }
 
-    const nextTarget = normalizeEmail(defaultTarget);
-    if (defaultEnabled && !nextTarget) {
-      setDefaultNotice({ tone: 'error', message: '启用默认邮箱转发前，请先选择一个已验证的目标邮箱。' });
+    const nextTarget = parseRouteTargetSelection(defaultTarget);
+    if (defaultEnabled && !nextTarget.configured) {
+      setDefaultNotice({ tone: 'error', message: '启用默认邮箱转发前，请先选择一个已验证的目标邮箱或可用 TOKEN。' });
       return;
     }
-    if (nextTarget && !isVerifiedTargetOwned(nextTarget, verifiedTargets)) {
+    if (nextTarget.targetType === 'email' && nextTarget.targetEmail && !isVerifiedTargetOwned(nextTarget.targetEmail, verifiedTargets)) {
       setDefaultNotice({ tone: 'error', message: '当前只能选择已经绑定到你账号且已完成平台验证的目标邮箱。' });
+      return;
+    }
+    if (nextTarget.targetType === 'api_token' && nextTarget.targetTokenPublicID && !isActiveEmailTokenOwned(nextTarget.targetTokenPublicID, activeAPITokens)) {
+      setDefaultNotice({ tone: 'error', message: '当前只能选择属于你本人、未撤销且支持 EMAIL 的 TOKEN。' });
       return;
     }
 
@@ -383,7 +498,12 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
       setSavingDefault(true);
       setDefaultNotice(null);
       const savedRoute = await upsertDefaultEmailRoute(
-        { target_email: nextTarget, enabled: nextTarget !== '' ? defaultEnabled : false },
+        {
+          target_type: nextTarget.targetType,
+          target_email: nextTarget.targetEmail,
+          target_token_public_id: nextTarget.targetTokenPublicID,
+          enabled: nextTarget.configured ? defaultEnabled : false,
+        },
         csrfToken,
       );
       setRoutes((currentRoutes) => upsertRoute(currentRoutes, savedRoute));
@@ -431,13 +551,17 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
       return;
     }
 
-    const nextTarget = normalizeEmail(catchAllTarget);
-    if (catchAllEnabled && !nextTarget) {
-      setCatchAllNotice({ tone: 'error', message: '启用邮箱泛解析转发前，请先选择一个已验证的目标邮箱。' });
+    const nextTarget = parseRouteTargetSelection(catchAllTarget);
+    if (catchAllEnabled && !nextTarget.configured) {
+      setCatchAllNotice({ tone: 'error', message: '启用邮箱泛解析转发前，请先选择一个已验证的目标邮箱或可用 TOKEN。' });
       return;
     }
-    if (nextTarget && !isVerifiedTargetOwned(nextTarget, verifiedTargets)) {
+    if (nextTarget.targetType === 'email' && nextTarget.targetEmail && !isVerifiedTargetOwned(nextTarget.targetEmail, verifiedTargets)) {
       setCatchAllNotice({ tone: 'error', message: '当前只能选择已经绑定到你账号且已完成平台验证的目标邮箱。' });
+      return;
+    }
+    if (nextTarget.targetType === 'api_token' && nextTarget.targetTokenPublicID && !isActiveEmailTokenOwned(nextTarget.targetTokenPublicID, activeAPITokens)) {
+      setCatchAllNotice({ tone: 'error', message: '当前只能选择属于你本人、未撤销且支持 EMAIL 的 TOKEN。' });
       return;
     }
 
@@ -445,7 +569,12 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
       setSavingCatchAll(true);
       setCatchAllNotice(null);
       const savedRoute = await upsertCatchAllEmailRoute(
-        { target_email: nextTarget, enabled: nextTarget !== '' ? catchAllEnabled : false },
+        {
+          target_type: nextTarget.targetType,
+          target_email: nextTarget.targetEmail,
+          target_token_public_id: nextTarget.targetTokenPublicID,
+          enabled: nextTarget.configured ? catchAllEnabled : false,
+        },
         csrfToken,
       );
       setRoutes((currentRoutes) => upsertRoute(currentRoutes, savedRoute));
@@ -470,7 +599,7 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
           </div>
           <h1 className="mt-5 text-4xl font-extrabold text-gray-900 dark:text-white md:text-5xl">搜索、保留并管理你的 LinuxDoSpace 邮箱</h1>
           <p className="mx-auto mt-4 max-w-4xl text-lg leading-relaxed text-gray-700 dark:text-gray-200">
-            搜索功能对所有访客开放。登录后，你可以先绑定自己的转发目标邮箱，再管理默认邮箱
+            搜索功能对所有访客开放。登录后，你可以先绑定自己的转发目标邮箱或创建 TOKEN，再管理默认邮箱
             <span className="font-semibold text-gray-900 dark:text-white"> {defaultAddress || '<用户名>@linuxdo.space'}</span>
             ，并在获得权限后配置
             <span className="font-semibold text-gray-900 dark:text-white"> {catchAllAddress}</span>。
@@ -530,12 +659,13 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
               <div className="rounded-2xl bg-emerald-500/15 p-3 text-emerald-700 dark:text-emerald-300"><ShieldCheck size={20} /></div>
               <div>
                 <h2 className="text-xl font-bold text-gray-900 dark:text-white">使用说明</h2>
-                <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">邮箱能力分成公开搜索、目标邮箱绑定、默认邮箱和权限邮箱四部分。</p>
+                  <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">邮箱能力分成公开搜索、目标邮箱绑定、TOKEN 转发、默认邮箱和权限邮箱五部分。</p>
               </div>
             </div>
 
             <InfoBlock title="默认邮箱" description={normalizedUsername ? `每位用户默认保留 ${normalizedUsername}@${configuredRootDomain}，但必须先绑定自己的目标邮箱后才能转发。` : '每位用户都会默认保留一个与用户名同名的邮箱地址。'} />
             <InfoBlock title="我的转发目标" description="先在“我的转发目标”里绑定目标邮箱。新增后平台会向该邮箱发送确认邮件，验证完成后该目标才会出现在下拉选择器里。" />
+            <InfoBlock title="TOKEN 转发" description="你可以创建支持 EMAIL 的 API TOKEN，把它作为实时收件目标。TOKEN 在线时会实时收到邮件事件；若没有连接，邮件会直接丢弃而不会堆积在服务器里。" />
             <InfoBlock title="我的邮箱列表" description="这里会展示当前账号已经存在或默认保留的邮箱行，包括默认邮箱、已存在的自定义邮箱以及已配置的邮箱泛解析。" />
             <InfoBlock title="邮箱泛解析权限" description="邮箱泛解析不是默认开放功能。只有满足权限条件的用户才可以申请，并在通过后配置转发目标。" />
           </GlassCard>
@@ -553,7 +683,7 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
               <p className="mt-2 text-sm leading-7 text-gray-700 dark:text-gray-200">
                 {sessionLoading
                   ? '你现在仍可使用上方搜索功能。待登录状态加载完成后，再进入目标邮箱绑定、默认邮箱和邮箱泛解析配置。'
-                  : '搜索功能无需登录，但目标邮箱绑定、默认邮箱配置、我的邮箱列表和邮箱泛解析权限申请都需要使用 Linux Do 账号登录。'}
+                  : '搜索功能无需登录，但目标邮箱绑定、TOKEN 管理、默认邮箱配置、我的邮箱列表和邮箱泛解析权限申请都需要使用 Linux Do 账号登录。'}
               </p>
             </div>
           </div>
@@ -607,7 +737,12 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
                             <div className="mt-1 text-sm text-gray-500 dark:text-gray-400">{route.description}</div>
                           </td>
                           <td className="px-5 py-4 align-top text-sm text-gray-700 dark:text-gray-200">{describeRouteKind(route.kind)}</td>
-                          <td className="px-5 py-4 align-top text-sm text-gray-700 dark:text-gray-200">{route.target_email || '尚未设置转发目标'}</td>
+                          <td className="px-5 py-4 align-top text-sm text-gray-700 dark:text-gray-200">
+                            {route.target_display || '尚未设置转发目标'}
+                            {route.target_type === 'api_token' ? (
+                              <div className="mt-1 text-xs text-violet-600 dark:text-violet-300">实时 TOKEN 目标</div>
+                            ) : null}
+                          </td>
                           <td className="px-5 py-4 align-top"><StatusChip {...status} /></td>
                           <td className="px-5 py-4 align-top text-sm text-gray-600 dark:text-gray-300">{formatDate(route.updated_at)}</td>
                         </tr>
@@ -742,6 +877,131 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
             )}
           </GlassCard>
 
+          <GlassCard className="space-y-5">
+            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+              <div className="flex items-center gap-3">
+                <div className="rounded-2xl bg-violet-500/15 p-3 text-violet-700 dark:text-violet-300"><KeyRound size={20} /></div>
+                <div>
+                  <h2 className="text-xl font-bold text-gray-900 dark:text-white">我的 API TOKEN</h2>
+                  <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">创建后可被选为实时收件目标，供 SDK 或自建客户端通过 HTTPS 实时流接收邮件事件。</p>
+                </div>
+              </div>
+            </div>
+
+            {tokenError ? <InlineNotice tone="error" message={`TOKEN 列表加载失败：${tokenError}`} /> : null}
+            {tokenNotice ? <InlineNotice tone={tokenNotice.tone} message={tokenNotice.message} /> : null}
+
+            {createdTokenSecret ? (
+              <div className="rounded-3xl border border-violet-300/35 bg-violet-50/80 p-5 dark:border-violet-700/35 dark:bg-violet-950/20">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <div className="text-sm font-semibold text-violet-900 dark:text-violet-100">新 TOKEN 原始密钥</div>
+                    <div className="mt-2 text-sm leading-7 text-violet-900/80 dark:text-violet-100/90">
+                      这串原始 TOKEN 只会展示这一次。请立即复制保存，之后页面只会保留公开 ID 和名称，不会再次返回原始密钥。
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleCopyCreatedToken()}
+                    className="inline-flex items-center gap-2 rounded-2xl bg-violet-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-violet-700"
+                  >
+                    <Copy size={16} />
+                    复制 TOKEN
+                  </button>
+                </div>
+                <div className="mt-4 rounded-2xl border border-violet-200/70 bg-white/75 px-4 py-3 font-mono text-sm break-all text-violet-900 dark:border-violet-700/35 dark:bg-black/25 dark:text-violet-100">
+                  {createdTokenSecret}
+                </div>
+              </div>
+            ) : null}
+
+            <div className="grid gap-3 md:grid-cols-3">
+              <InfoStat title="可用 TOKEN" value={`${tokenTargetCount} 个`} />
+              <InfoStat title="全部 TOKEN" value={`${apiTokens.length} 个`} />
+              <InfoStat title="能力" value="EMAIL 实时流" />
+            </div>
+
+            <div className="rounded-2xl border border-white/15 bg-white/35 p-4 text-sm leading-7 text-gray-700 dark:border-white/10 dark:bg-black/20 dark:text-gray-200">
+              TOKEN 被设置为邮箱目标后，只有在客户端保持连接时才会收到实时邮件事件；如果没有连接，服务器会直接丢弃该目标邮件，不会为了 TOKEN 目标额外堆积队列。
+            </div>
+
+            <form className="space-y-4" onSubmit={(event) => void handleCreateToken(event)}>
+              <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
+                <div className="flex min-w-0 items-center rounded-2xl border border-white/20 bg-white/55 px-4 py-3 shadow-inner dark:border-white/10 dark:bg-black/35">
+                  <input
+                    type="text"
+                    value={newTokenName}
+                    onChange={(event) => setNewTokenName(event.target.value)}
+                    placeholder="例如 Python SDK / 邮件机器人 / 自建客户端"
+                    className="min-w-0 flex-1 bg-transparent text-base text-gray-900 outline-none placeholder:text-gray-400 dark:text-white dark:placeholder:text-gray-500"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={creatingToken}
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-500 to-fuchsia-600 px-5 py-3 font-semibold text-white shadow-lg transition hover:from-violet-600 hover:to-fuchsia-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {creatingToken ? <LoaderCircle className="animate-spin" size={18} /> : <Plus size={18} />}
+                  创建 TOKEN
+                </button>
+              </div>
+            </form>
+
+            {apiTokens.length === 0 ? (
+              <div className="rounded-3xl border border-dashed border-white/20 bg-white/25 p-6 text-sm leading-7 text-gray-700 dark:border-white/10 dark:bg-black/15 dark:text-gray-200">
+                你当前还没有创建任何 API TOKEN。创建后，它们会出现在默认邮箱和邮箱泛解析的目标下拉框里，可直接作为实时收件目标使用。
+              </div>
+            ) : (
+              <div className="overflow-x-auto rounded-3xl border border-white/15 bg-white/35 dark:border-white/10 dark:bg-black/20">
+                <table className="w-full min-w-[820px] border-collapse text-left">
+                  <thead>
+                    <tr className="border-b border-white/15 text-sm text-gray-600 dark:border-white/10 dark:text-gray-300">
+                      <th className="px-5 py-4 font-semibold">名称</th>
+                      <th className="px-5 py-4 font-semibold">公开 ID</th>
+                      <th className="px-5 py-4 font-semibold">能力</th>
+                      <th className="px-5 py-4 font-semibold">最近使用</th>
+                      <th className="px-5 py-4 font-semibold">状态</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {apiTokens.map((item) => {
+                      const isRevoked = Boolean(item.revoked_at);
+                      return (
+                        <tr key={item.public_id} className="border-b border-white/10 last:border-b-0 hover:bg-white/30 dark:border-white/5 dark:hover:bg-white/5">
+                          <td className="px-5 py-4 align-top">
+                            <div className="font-semibold text-gray-900 dark:text-white">{item.name}</div>
+                            <div className="mt-1 text-sm text-gray-500 dark:text-gray-400">创建于 {formatDate(item.created_at)}</div>
+                          </td>
+                          <td className="px-5 py-4 align-top text-sm font-mono text-gray-700 dark:text-gray-200">{item.public_id}</td>
+                          <td className="px-5 py-4 align-top text-sm text-gray-700 dark:text-gray-200">{item.email_enabled ? 'EMAIL 实时流' : '未启用'}</td>
+                          <td className="px-5 py-4 align-top text-sm text-gray-700 dark:text-gray-200">{item.last_used_at ? formatDate(item.last_used_at) : '尚未使用'}</td>
+                          <td className="px-5 py-4 align-top">
+                            <div className="flex flex-col items-start gap-3">
+                              <StatusChip {...(isRevoked
+                                ? { label: '已撤销', className: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300' }
+                                : { label: '可用', className: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-300' })} />
+                              {!isRevoked ? (
+                                <button
+                                  type="button"
+                                  onClick={() => void handleRevokeToken(item.public_id)}
+                                  disabled={Boolean(revokingTokenPublicIDs[item.public_id])}
+                                  className="inline-flex items-center gap-2 rounded-xl border border-red-200 bg-white/70 px-3 py-2 text-xs font-semibold text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-red-800/35 dark:bg-black/20 dark:text-red-300 dark:hover:bg-red-950/20"
+                                >
+                                  {revokingTokenPublicIDs[item.public_id] ? <LoaderCircle className="animate-spin" size={14} /> : <RefreshCw size={14} />}
+                                  撤销 TOKEN
+                                </button>
+                              ) : null}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </GlassCard>
+
           <div className="grid gap-6 xl:grid-cols-2">
             <GlassCard className="space-y-5">
               <div className="flex items-center gap-3">
@@ -756,18 +1016,21 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
               {defaultTargetNeedsVerification && defaultRoute?.target_email ? (
                 <InlineNotice tone="info" message={`当前已保存的目标邮箱 ${defaultRoute.target_email} 尚未完成验证。完成验证后刷新状态，或直接改选其他已验证目标邮箱。`} />
               ) : null}
+              {defaultRoute?.target_type === 'api_token' && defaultRoute.target_token_public_id && !isActiveEmailTokenOwned(defaultRoute.target_token_public_id, activeAPITokens) ? (
+                <InlineNotice tone="info" message={`当前已保存的 TOKEN 目标 ${defaultRoute.target_token_public_id} 不再可用。你可以重新创建 TOKEN，或改选其他目标。`} />
+              ) : null}
 
               <form className="space-y-4" onSubmit={(event) => void handleSaveDefault(event)}>
                 <div className="space-y-2">
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">已验证的转发目标</label>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">转发目标</label>
                   <GlassSelect
                     options={selectableTargetOptions}
                     value={defaultTarget}
                     onChange={setDefaultTarget}
-                    placeholder={verifiedTargets.length > 0 ? '请选择已验证的目标邮箱' : '暂无已验证的目标邮箱'}
+                    placeholder={selectableTargetOptions.length > 1 ? '请选择目标邮箱或 TOKEN' : '暂无可用目标'}
                     disabled={savingDefault}
                   />
-                  <div className="text-sm leading-7 text-gray-600 dark:text-gray-300">只有上方“我的转发目标”中已经完成平台验证的邮箱，才允许被保存为默认邮箱转发目标。</div>
+                  <div className="text-sm leading-7 text-gray-600 dark:text-gray-300">你可以选择已验证的目标邮箱，也可以选择支持 EMAIL 的 TOKEN 作为实时收件目标。</div>
                 </div>
 
                 <ToggleSwitch
@@ -779,7 +1042,7 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
                 />
 
                 <div className="rounded-2xl border border-white/15 bg-white/35 p-4 text-sm leading-7 text-gray-700 dark:border-white/10 dark:bg-black/20 dark:text-gray-200">
-                  每个用户都会自动保留一个与用户名同名的邮箱地址。你可以选择已验证的目标邮箱进行转发，也可以直接清空目标来停用转发。
+                  每个用户都会自动保留一个与用户名同名的邮箱地址。你可以选择已验证的目标邮箱进行转发，也可以选择 TOKEN 进行实时收件，或直接清空目标来停用转发。
                 </div>
 
                 <button
@@ -806,6 +1069,9 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
               {catchAllNotice ? <InlineNotice tone={catchAllNotice.tone} message={catchAllNotice.message} /> : null}
               {catchAllTargetNeedsVerification && catchAllRoute?.target_email ? (
                 <InlineNotice tone="info" message={`当前已保存的邮箱泛解析目标邮箱 ${catchAllRoute.target_email} 尚未完成验证。完成验证后刷新状态，或改选其他已验证目标邮箱。`} />
+              ) : null}
+              {catchAllRoute?.target_type === 'api_token' && catchAllRoute.target_token_public_id && !isActiveEmailTokenOwned(catchAllRoute.target_token_public_id, activeAPITokens) ? (
+                <InlineNotice tone="info" message={`当前已保存的 TOKEN 目标 ${catchAllRoute.target_token_public_id} 不再可用。你可以重新创建 TOKEN，或改选其他目标。`} />
               ) : null}
               {!permission && !permissionError ? <InlineNotice tone="info" message="当前后端没有返回邮箱泛解析权限配置，暂时无法管理此功能。" /> : null}
 
@@ -866,15 +1132,15 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
                   {permission.can_manage_route ? (
                     <form className="space-y-4" onSubmit={(event) => void handleSaveCatchAll(event)}>
                       <div className="space-y-2">
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">已验证的转发目标</label>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">转发目标</label>
                         <GlassSelect
                           options={selectableTargetOptions}
                           value={catchAllTarget}
                           onChange={setCatchAllTarget}
-                          placeholder={verifiedTargets.length > 0 ? '请选择已验证的目标邮箱' : '暂无已验证的目标邮箱'}
+                          placeholder={selectableTargetOptions.length > 1 ? '请选择目标邮箱或 TOKEN' : '暂无可用目标'}
                           disabled={savingCatchAll}
                         />
-                        <div className="text-sm leading-7 text-gray-600 dark:text-gray-300">保存后会把整段命名空间 {catchAllAddress} 转发到所选目标邮箱。只有已经绑定到你账号且完成平台验证的邮箱，才允许被设置为转发目标。</div>
+                        <div className="text-sm leading-7 text-gray-600 dark:text-gray-300">保存后会把整段命名空间 {catchAllAddress} 转发到所选目标。目标可以是已验证邮箱，也可以是支持 EMAIL 的 TOKEN。</div>
                       </div>
 
                       <ToggleSwitch
@@ -1039,7 +1305,9 @@ function buildImplicitDefaultRoute(user: User, rootDomain: string): UserEmailRou
     address: `${prefix}@${rootDomain}`,
     prefix,
     root_domain: rootDomain,
+    target_type: 'email',
     target_email: '',
+    target_display: '',
     enabled: false,
     configured: false,
     can_manage: true,
@@ -1074,6 +1342,21 @@ function upsertEmailTarget(items: UserEmailTarget[], nextItem: UserEmailTarget):
       return left.verified ? -1 : 1;
     }
     return normalizeEmail(left.email).localeCompare(normalizeEmail(right.email));
+  });
+}
+
+function upsertAPIToken(items: UserAPIToken[], nextItem: UserAPIToken): UserAPIToken[] {
+  const existingIndex = items.findIndex((item) => item.public_id === nextItem.public_id);
+  if (existingIndex >= 0) {
+    return items.map((item, index) => (index === existingIndex ? nextItem : item));
+  }
+  return [...items, nextItem].sort((left, right) => {
+    const leftTime = Date.parse(left.created_at);
+    const rightTime = Date.parse(right.created_at);
+    if (!Number.isNaN(leftTime) && !Number.isNaN(rightTime) && leftTime !== rightTime) {
+      return rightTime - leftTime;
+    }
+    return right.public_id.localeCompare(left.public_id);
   });
 }
 
@@ -1252,10 +1535,68 @@ function isVerifiedTargetOwned(email: string, targets: UserEmailTarget[]): boole
   return targets.some((item) => item.verified && normalizeEmail(item.email) === normalizedEmail);
 }
 
-function routeTargetNeedsVerification(targetEmail: string | undefined, verifiedTargets: UserEmailTarget[]): boolean {
-  const normalizedTarget = normalizeEmail(targetEmail ?? '');
+function isActiveEmailTokenOwned(publicID: string, tokens: UserAPIToken[]): boolean {
+  const normalizedID = publicID.trim();
+  return tokens.some((item) => item.public_id === normalizedID && item.email_enabled && !item.revoked_at);
+}
+
+function routeTargetNeedsVerification(route: UserEmailRoute | null | undefined, verifiedTargets: UserEmailTarget[]): boolean {
+  if (!route || route.target_type !== 'email') {
+    return false;
+  }
+  const normalizedTarget = normalizeEmail(route.target_email ?? '');
   if (!normalizedTarget) {
     return false;
   }
   return !verifiedTargets.some((item) => normalizeEmail(item.email) === normalizedTarget);
+}
+
+function buildEmailTargetOptionValue(email: string): string {
+  return `email:${normalizeEmail(email)}`;
+}
+
+function buildAPITokenTargetOptionValue(publicID: string): string {
+  return `api_token:${publicID.trim()}`;
+}
+
+function routeTargetSelectionValue(route: UserEmailRoute): string {
+  if (route.target_type === 'api_token' && route.target_token_public_id) {
+    return buildAPITokenTargetOptionValue(route.target_token_public_id);
+  }
+  if (route.target_email) {
+    return buildEmailTargetOptionValue(route.target_email);
+  }
+  return '';
+}
+
+function parseRouteTargetSelection(value: string): {
+  targetType: EmailRouteTargetType;
+  targetEmail: string;
+  targetTokenPublicID: string;
+  configured: boolean;
+} {
+  const normalizedValue = value.trim();
+  if (!normalizedValue) {
+    return {
+      targetType: 'email',
+      targetEmail: '',
+      targetTokenPublicID: '',
+      configured: false,
+    };
+  }
+  if (normalizedValue.startsWith('api_token:')) {
+    return {
+      targetType: 'api_token',
+      targetEmail: '',
+      targetTokenPublicID: normalizedValue.slice('api_token:'.length).trim(),
+      configured: normalizedValue.slice('api_token:'.length).trim() !== '',
+    };
+  }
+  const email = normalizedValue.startsWith('email:') ? normalizedValue.slice('email:'.length).trim() : normalizeEmail(normalizedValue);
+  return {
+    targetType: 'email',
+    targetEmail: email,
+    targetTokenPublicID: '',
+    configured: email !== '',
+  };
 }

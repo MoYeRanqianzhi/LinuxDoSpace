@@ -79,16 +79,18 @@ type AdminDNSRecord struct {
 
 // EmailRoute stores one administrator-managed forwarding rule for a managed domain.
 type EmailRoute struct {
-	ID               int64     `json:"id"`
-	OwnerUserID      int64     `json:"owner_user_id"`
-	OwnerUsername    string    `json:"owner_username"`
-	OwnerDisplayName string    `json:"owner_display_name"`
-	RootDomain       string    `json:"root_domain"`
-	Prefix           string    `json:"prefix"`
-	TargetEmail      string    `json:"target_email"`
-	Enabled          bool      `json:"enabled"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID                  int64     `json:"id"`
+	OwnerUserID         int64     `json:"owner_user_id"`
+	OwnerUsername       string    `json:"owner_username"`
+	OwnerDisplayName    string    `json:"owner_display_name"`
+	RootDomain          string    `json:"root_domain"`
+	Prefix              string    `json:"prefix"`
+	TargetEmail         string    `json:"target_email"`
+	TargetKind          string    `json:"target_kind"`
+	TargetTokenPublicID string    `json:"target_token_public_id"`
+	Enabled             bool      `json:"enabled"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
 }
 
 // AdminApplication stores a moderation request awaiting administrative review.

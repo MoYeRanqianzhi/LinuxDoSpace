@@ -27,14 +27,14 @@ type Server struct {
 
 // NewServer constructs the SMTP listener from runtime configuration, the
 // database-backed recipient resolver, and the durable delivery queue.
-func NewServer(mail config.MailConfig, resolver RecipientResolver, queueStore QueueStore, logger smtp.Logger) *Server {
+func NewServer(mail config.MailConfig, resolver RecipientResolver, queueStore QueueStore, tokenHub *TokenStreamHub, logger smtp.Logger) *Server {
 	if logger == nil {
 		logger = log.Default()
 	}
 
 	backend := &smtpBackend{
 		resolver:             resolver,
-		queue:                NewPersistentQueue(mail, queueStore),
+		queue:                NewPersistentQueue(mail, queueStore, tokenHub),
 		logger:               logger,
 		resolveTimeout:       mail.ResolveTimeout,
 		enqueueTimeout:       mail.EnqueueTimeout,
@@ -183,7 +183,9 @@ func (s *smtpSession) Logout() error {
 // groupedRecipients is the per-target message fan-out plan derived from the
 // accepted inbound SMTP recipients.
 type groupedRecipients struct {
+	TargetKind           string
 	TargetEmail          string
+	TargetTokenPublicID  string
 	OriginalRecipients   []string
 	OwnerUserIDs         []int64
 	CatchAllOwnerUserIDs []int64
@@ -196,17 +198,29 @@ func groupRecipientsByTarget(recipients []ResolvedRecipient) []groupedRecipients
 	indexByTarget := make(map[string]int, len(recipients))
 
 	for _, item := range recipients {
+		targetKind := strings.TrimSpace(item.TargetKind)
+		targetKey := ""
 		targetEmail := strings.ToLower(strings.TrimSpace(item.TargetEmail))
-		if targetEmail == "" {
+		targetTokenPublicID := strings.TrimSpace(item.TargetTokenPublicID)
+		switch targetKind {
+		case "api_token":
+			targetKey = "api_token:" + targetTokenPublicID
+		default:
+			targetKind = "email"
+			targetKey = "email:" + targetEmail
+		}
+		if targetKey == "email:" || targetKey == "api_token:" {
 			continue
 		}
 
-		index, exists := indexByTarget[targetEmail]
+		index, exists := indexByTarget[targetKey]
 		if !exists {
 			index = len(groups)
-			indexByTarget[targetEmail] = index
+			indexByTarget[targetKey] = index
 			groups = append(groups, groupedRecipients{
+				TargetKind:           targetKind,
 				TargetEmail:          targetEmail,
+				TargetTokenPublicID:  targetTokenPublicID,
 				OriginalRecipients:   []string{item.OriginalRecipient},
 				OwnerUserIDs:         uniqueOwnerIDs(item),
 				CatchAllOwnerUserIDs: uniqueCatchAllOwners(item),
@@ -291,7 +305,7 @@ func recipientSMTPError(err error) error {
 			EnhancedCode: smtp.EnhancedCode{5, 2, 1},
 			Message:      "recipient mailbox is unavailable",
 		}
-	case errors.Is(err, ErrTargetNotVerified), errors.Is(err, ErrTargetOwnershipMismatch):
+	case errors.Is(err, ErrTargetNotVerified), errors.Is(err, ErrTargetOwnershipMismatch), errors.Is(err, ErrTargetTokenUnavailable):
 		return &smtp.SMTPError{
 			Code:         550,
 			EnhancedCode: smtp.EnhancedCode{5, 7, 1},

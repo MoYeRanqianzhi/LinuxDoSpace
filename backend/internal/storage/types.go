@@ -86,29 +86,51 @@ type UpsertUserControlInput struct {
 
 // CreateEmailRouteInput describes one new email forwarding rule.
 type CreateEmailRouteInput struct {
-	OwnerUserID int64
-	RootDomain  string
-	Prefix      string
-	TargetEmail string
-	Enabled     bool
+	OwnerUserID         int64
+	RootDomain          string
+	Prefix              string
+	TargetEmail         string
+	TargetKind          string
+	TargetTokenPublicID string
+	Enabled             bool
 }
 
 // UpsertEmailRouteByAddressInput describes an idempotent email-route write
 // keyed by root domain and local prefix.
 type UpsertEmailRouteByAddressInput struct {
-	OwnerUserID int64
-	RootDomain  string
-	Prefix      string
-	TargetEmail string
-	Enabled     bool
+	OwnerUserID         int64
+	RootDomain          string
+	Prefix              string
+	TargetEmail         string
+	TargetKind          string
+	TargetTokenPublicID string
+	Enabled             bool
 }
 
 // UpdateEmailRouteInput describes the mutable portion of one email forwarding
 // rule.
 type UpdateEmailRouteInput struct {
-	ID          int64
-	TargetEmail string
-	Enabled     bool
+	ID                  int64
+	TargetEmail         string
+	TargetKind          string
+	TargetTokenPublicID string
+	Enabled             bool
+}
+
+// CreateAPITokenInput describes one newly issued user-managed API token.
+type CreateAPITokenInput struct {
+	OwnerUserID int64
+	Name        string
+	PublicID    string
+	TokenHash   string
+	Scopes      []string
+}
+
+// UpdateAPITokenInput describes the mutable fields of one persisted API token.
+type UpdateAPITokenInput struct {
+	ID         int64
+	LastUsedAt *time.Time
+	RevokedAt  *time.Time
 }
 
 // CreateEmailTargetInput describes one new user-owned forwarding destination

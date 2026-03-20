@@ -42,6 +42,10 @@ var (
 	// and should never be used by the current route owner.
 	ErrTargetOwnershipMismatch = errors.New("target email belongs to another user")
 
+	// ErrTargetTokenUnavailable means the stored API-token target is missing,
+	// revoked, or no longer allowed to receive email stream traffic.
+	ErrTargetTokenUnavailable = errors.New("target api token is unavailable")
+
 	// ErrForwardingDailyLimitExceeded means one route owner already consumed the
 	// hidden per-day forwarding cap enforced by the local SMTP relay.
 	ErrForwardingDailyLimitExceeded = errors.New("mail forwarding daily limit exceeded")
@@ -52,6 +56,7 @@ var (
 type ResolverStore interface {
 	GetEmailRouteByAddress(ctx context.Context, rootDomain string, prefix string) (model.EmailRoute, error)
 	GetEmailTargetByEmail(ctx context.Context, email string) (model.EmailTarget, error)
+	GetAPITokenByPublicID(ctx context.Context, publicID string) (model.APIToken, error)
 }
 
 // RecipientResolver turns one SMTP envelope recipient into the target inbox
@@ -68,14 +73,16 @@ type DBResolver struct {
 
 // ResolvedRecipient is the routing result for one accepted SMTP recipient.
 type ResolvedRecipient struct {
-	OriginalRecipient string
-	LocalPart         string
-	Domain            string
-	TargetEmail       string
-	RouteID           int64
-	RouteOwnerUserID  int64
-	RoutePrefix       string
-	UsedCatchAll      bool
+	OriginalRecipient   string
+	LocalPart           string
+	Domain              string
+	TargetKind          string
+	TargetEmail         string
+	TargetTokenPublicID string
+	RouteID             int64
+	RouteOwnerUserID    int64
+	RoutePrefix         string
+	UsedCatchAll        bool
 }
 
 // NewDBResolver constructs the database-backed recipient resolver used by the
@@ -121,37 +128,78 @@ func (r *DBResolver) resolveStoredRoute(ctx context.Context, originalRecipient s
 		return ResolvedRecipient{}, fmt.Errorf("%w: %s", ErrRouteDisabled, originalRecipient)
 	}
 
-	targetEmail := strings.ToLower(strings.TrimSpace(route.TargetEmail))
-	if targetEmail == "" {
-		return ResolvedRecipient{}, fmt.Errorf("%w: %s", ErrRouteHasNoTarget, originalRecipient)
+	targetKind := strings.TrimSpace(route.TargetKind)
+	if targetKind == "" {
+		targetKind = model.EmailRouteTargetKindEmail
 	}
 
-	target, err := r.store.GetEmailTargetByEmail(ctx, targetEmail)
-	switch {
-	case err == nil:
-		if target.OwnerUserID != route.OwnerUserID {
-			return ResolvedRecipient{}, fmt.Errorf("%w: route owner=%d target owner=%d target=%s", ErrTargetOwnershipMismatch, route.OwnerUserID, target.OwnerUserID, targetEmail)
+	targetEmail := ""
+	targetTokenPublicID := ""
+	switch targetKind {
+	case model.EmailRouteTargetKindAPIToken:
+		targetTokenPublicID = strings.TrimSpace(route.TargetTokenPublicID)
+		if targetTokenPublicID == "" {
+			return ResolvedRecipient{}, fmt.Errorf("%w: %s", ErrTargetTokenUnavailable, originalRecipient)
 		}
-		if target.VerifiedAt == nil {
-			return ResolvedRecipient{}, fmt.Errorf("%w: %s", ErrTargetNotVerified, targetEmail)
+		token, err := r.store.GetAPITokenByPublicID(ctx, targetTokenPublicID)
+		switch {
+		case err == nil:
+			if token.OwnerUserID != route.OwnerUserID {
+				return ResolvedRecipient{}, fmt.Errorf("%w: route owner=%d token owner=%d token=%s", ErrTargetOwnershipMismatch, route.OwnerUserID, token.OwnerUserID, targetTokenPublicID)
+			}
+			if token.RevokedAt != nil || !apiTokenSupportsEmail(token) {
+				return ResolvedRecipient{}, fmt.Errorf("%w: %s", ErrTargetTokenUnavailable, targetTokenPublicID)
+			}
+		case storage.IsNotFound(err):
+			return ResolvedRecipient{}, fmt.Errorf("%w: %s", ErrTargetTokenUnavailable, targetTokenPublicID)
+		default:
+			return ResolvedRecipient{}, fmt.Errorf("load target api token for %s: %w", targetTokenPublicID, err)
 		}
-	case storage.IsNotFound(err):
-		// Legacy administrator-managed routes may legitimately point at a target
-		// address that predates the email_targets ownership table.
 	default:
-		return ResolvedRecipient{}, fmt.Errorf("load target email binding for %s: %w", targetEmail, err)
+		targetKind = model.EmailRouteTargetKindEmail
+		targetEmail = strings.ToLower(strings.TrimSpace(route.TargetEmail))
+		if targetEmail == "" {
+			return ResolvedRecipient{}, fmt.Errorf("%w: %s", ErrRouteHasNoTarget, originalRecipient)
+		}
+
+		target, err := r.store.GetEmailTargetByEmail(ctx, targetEmail)
+		switch {
+		case err == nil:
+			if target.OwnerUserID != route.OwnerUserID {
+				return ResolvedRecipient{}, fmt.Errorf("%w: route owner=%d target owner=%d target=%s", ErrTargetOwnershipMismatch, route.OwnerUserID, target.OwnerUserID, targetEmail)
+			}
+			if target.VerifiedAt == nil {
+				return ResolvedRecipient{}, fmt.Errorf("%w: %s", ErrTargetNotVerified, targetEmail)
+			}
+		case storage.IsNotFound(err):
+			// Legacy administrator-managed routes may legitimately point at a target
+			// address that predates the email_targets ownership table.
+		default:
+			return ResolvedRecipient{}, fmt.Errorf("load target email binding for %s: %w", targetEmail, err)
+		}
 	}
 
 	return ResolvedRecipient{
-		OriginalRecipient: strings.ToLower(strings.TrimSpace(originalRecipient)),
-		LocalPart:         localPart,
-		Domain:            domain,
-		TargetEmail:       targetEmail,
-		RouteID:           route.ID,
-		RouteOwnerUserID:  route.OwnerUserID,
-		RoutePrefix:       route.Prefix,
-		UsedCatchAll:      usedCatchAll,
+		OriginalRecipient:   strings.ToLower(strings.TrimSpace(originalRecipient)),
+		LocalPart:           localPart,
+		Domain:              domain,
+		TargetKind:          targetKind,
+		TargetEmail:         targetEmail,
+		TargetTokenPublicID: targetTokenPublicID,
+		RouteID:             route.ID,
+		RouteOwnerUserID:    route.OwnerUserID,
+		RoutePrefix:         route.Prefix,
+		UsedCatchAll:        usedCatchAll,
 	}, nil
+}
+
+func apiTokenSupportsEmail(token model.APIToken) bool {
+	for _, scope := range token.Scopes {
+		if strings.EqualFold(strings.TrimSpace(scope), model.APITokenScopeEmail) {
+			return true
+		}
+	}
+	return false
 }
 
 // normalizeEnvelopeAddress converts one SMTP envelope address into the exact

@@ -54,6 +54,11 @@ type Store interface {
 	UpsertEmailRouteByAddress(ctx context.Context, input UpsertEmailRouteByAddressInput) (model.EmailRoute, error)
 	UpdateEmailRoute(ctx context.Context, input UpdateEmailRouteInput) (model.EmailRoute, error)
 	DeleteEmailRoute(ctx context.Context, id int64) error
+	ListAPITokensByOwner(ctx context.Context, ownerUserID int64) ([]model.APIToken, error)
+	GetAPITokenByPublicID(ctx context.Context, publicID string) (model.APIToken, error)
+	GetAPITokenByTokenHash(ctx context.Context, tokenHash string) (model.APIToken, error)
+	CreateAPIToken(ctx context.Context, input CreateAPITokenInput) (model.APIToken, error)
+	UpdateAPIToken(ctx context.Context, input UpdateAPITokenInput) (model.APIToken, error)
 	ListEmailTargetsByOwner(ctx context.Context, ownerUserID int64) ([]model.EmailTarget, error)
 	GetEmailTargetByEmail(ctx context.Context, email string) (model.EmailTarget, error)
 	GetEmailTargetByVerificationTokenHash(ctx context.Context, tokenHash string) (model.EmailTarget, error)

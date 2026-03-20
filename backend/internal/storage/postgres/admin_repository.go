@@ -272,6 +272,8 @@ SELECT
     er.root_domain,
     er.prefix,
     er.target_email,
+    er.target_kind,
+    er.target_token_public_id,
     er.enabled,
     er.created_at,
     er.updated_at
@@ -309,6 +311,8 @@ SELECT
     er.root_domain,
     er.prefix,
     er.target_email,
+    er.target_kind,
+    er.target_token_public_id,
     er.enabled,
     er.created_at,
     er.updated_at
@@ -347,6 +351,8 @@ SELECT
     er.root_domain,
     er.prefix,
     er.target_email,
+    er.target_kind,
+    er.target_token_public_id,
     er.enabled,
     er.created_at,
     er.updated_at
@@ -366,16 +372,20 @@ INSERT INTO email_routes (
     root_domain,
     prefix,
     target_email,
+    target_kind,
+    target_token_public_id,
     enabled,
     created_at,
     updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING id
 `,
 		input.OwnerUserID,
 		strings.ToLower(strings.TrimSpace(input.RootDomain)),
 		strings.ToLower(strings.TrimSpace(input.Prefix)),
 		strings.ToLower(strings.TrimSpace(input.TargetEmail)),
+		strings.TrimSpace(input.TargetKind),
+		strings.TrimSpace(input.TargetTokenPublicID),
 		boolToInt(input.Enabled),
 		formatTime(now),
 		formatTime(now),
@@ -398,13 +408,17 @@ INSERT INTO email_routes (
     root_domain,
     prefix,
     target_email,
+    target_kind,
+    target_token_public_id,
     enabled,
     created_at,
     updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(root_domain, prefix) DO UPDATE SET
     owner_user_id = excluded.owner_user_id,
     target_email = excluded.target_email,
+    target_kind = excluded.target_kind,
+    target_token_public_id = excluded.target_token_public_id,
     enabled = excluded.enabled,
     updated_at = excluded.updated_at
 RETURNING id
@@ -413,6 +427,8 @@ RETURNING id
 		strings.ToLower(strings.TrimSpace(input.RootDomain)),
 		strings.ToLower(strings.TrimSpace(input.Prefix)),
 		strings.ToLower(strings.TrimSpace(input.TargetEmail)),
+		strings.TrimSpace(input.TargetKind),
+		strings.TrimSpace(input.TargetTokenPublicID),
 		boolToInt(input.Enabled),
 		formatTime(now),
 		formatTime(now),
@@ -432,12 +448,16 @@ func (s *Store) UpdateEmailRoute(ctx context.Context, input UpdateEmailRouteInpu
 UPDATE email_routes
 SET
     target_email = ?,
+    target_kind = ?,
+    target_token_public_id = ?,
     enabled = ?,
     updated_at = ?
 WHERE id = ?
 RETURNING id
 `,
 		strings.ToLower(strings.TrimSpace(input.TargetEmail)),
+		strings.TrimSpace(input.TargetKind),
+		strings.TrimSpace(input.TargetTokenPublicID),
 		boolToInt(input.Enabled),
 		formatTime(now),
 		input.ID,
@@ -820,6 +840,8 @@ SELECT
     er.root_domain,
     er.prefix,
     er.target_email,
+    er.target_kind,
+    er.target_token_public_id,
     er.enabled,
     er.created_at,
     er.updated_at
@@ -1024,6 +1046,8 @@ func scanEmailRoute(scanner interface{ Scan(dest ...any) error }) (model.EmailRo
 		&item.RootDomain,
 		&item.Prefix,
 		&item.TargetEmail,
+		&item.TargetKind,
+		&item.TargetTokenPublicID,
 		&enabled,
 		&createdAt,
 		&updatedAt,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"linuxdospace/backend/internal/config"
@@ -40,14 +41,16 @@ type EnqueueRequest struct {
 // and maps storage errors back into relay-specific semantics.
 type PersistentQueue struct {
 	store       QueueStore
+	hub         *TokenStreamHub
 	maxAttempts int
 	now         func() time.Time
 }
 
 // NewPersistentQueue constructs the queue adapter used by the SMTP listener.
-func NewPersistentQueue(mail config.MailConfig, store QueueStore) *PersistentQueue {
+func NewPersistentQueue(mail config.MailConfig, store QueueStore, hub *TokenStreamHub) *PersistentQueue {
 	return &PersistentQueue{
 		store:       store,
+		hub:         hub,
 		maxAttempts: mail.MaxAttempts,
 		now: func() time.Time {
 			return time.Now().UTC()
@@ -70,12 +73,33 @@ func (q *PersistentQueue) Enqueue(ctx context.Context, request EnqueueRequest) e
 
 	groups := make([]storage.EnqueueMailDeliveryGroupInput, 0, len(request.Groups))
 	for _, group := range request.Groups {
+		if group.TargetKind == model.EmailRouteTargetKindAPIToken {
+			if strings.TrimSpace(group.TargetTokenPublicID) == "" {
+				continue
+			}
+			if q.hub != nil {
+				_ = q.hub.Publish(TokenMailEvent{
+					TokenPublicID:        group.TargetTokenPublicID,
+					OriginalEnvelopeFrom: request.OriginalEnvelopeFrom,
+					OriginalRecipients:   append([]string(nil), group.OriginalRecipients...),
+					ReceivedAt:           q.now(),
+					RawMessage:           append([]byte(nil), request.RawMessage...),
+				})
+			}
+			continue
+		}
+		if strings.TrimSpace(group.TargetEmail) == "" {
+			continue
+		}
 		groups = append(groups, storage.EnqueueMailDeliveryGroupInput{
 			OriginalRecipients:   append([]string(nil), group.OriginalRecipients...),
 			TargetRecipients:     []string{group.TargetEmail},
 			OwnerUserIDs:         append([]int64(nil), group.OwnerUserIDs...),
 			CatchAllOwnerUserIDs: append([]int64(nil), group.CatchAllOwnerUserIDs...),
 		})
+	}
+	if len(groups) == 0 {
+		return nil
 	}
 
 	_, err := q.store.EnqueueMailDeliveryBatch(ctx, storage.EnqueueMailDeliveryBatchInput{

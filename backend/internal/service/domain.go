@@ -643,7 +643,7 @@ func (s *DomainService) enableCatchAllSyntheticDNSRecord(ctx context.Context, us
 	if route.OwnerUserID != user.ID {
 		return model.DNSRecord{}, UnavailableError("catch-all mailbox is assigned to another user", nil)
 	}
-	if strings.TrimSpace(route.TargetEmail) == "" {
+	if !routeHasConfiguredTarget(route) {
 		return model.DNSRecord{}, ConflictError("请先在邮箱分发页面配置并保存邮箱泛解析的目标邮箱，然后再回来启用该特殊记录")
 	}
 
@@ -658,9 +658,11 @@ func (s *DomainService) enableCatchAllSyntheticDNSRecord(ctx context.Context, us
 		if err := newEmailRoutingProvisioner(s.cfg, s.cf).SyncForwardingState(ctx, beforeState, afterState, func() error {
 			var persistErr error
 			updated, persistErr = s.db.UpdateEmailRoute(ctx, storage.UpdateEmailRouteInput{
-				ID:          route.ID,
-				TargetEmail: route.TargetEmail,
-				Enabled:     true,
+				ID:                  route.ID,
+				TargetEmail:         route.TargetEmail,
+				TargetKind:          route.TargetKind,
+				TargetTokenPublicID: route.TargetTokenPublicID,
+				Enabled:             true,
 			})
 			if persistErr != nil {
 				return InternalError("failed to enable catch-all email route from dns panel", persistErr)
@@ -725,9 +727,11 @@ func (s *DomainService) disableCatchAllSyntheticDNSRecord(ctx context.Context, u
 	if err := newEmailRoutingProvisioner(s.cfg, s.cf).SyncForwardingState(ctx, beforeState, afterState, func() error {
 		var persistErr error
 		updated, persistErr = s.db.UpdateEmailRoute(ctx, storage.UpdateEmailRouteInput{
-			ID:          route.ID,
-			TargetEmail: route.TargetEmail,
-			Enabled:     false,
+			ID:                  route.ID,
+			TargetEmail:         route.TargetEmail,
+			TargetKind:          route.TargetKind,
+			TargetTokenPublicID: route.TargetTokenPublicID,
+			Enabled:             false,
 		})
 		if persistErr != nil {
 			return InternalError("failed to disable catch-all email route from dns panel", persistErr)
