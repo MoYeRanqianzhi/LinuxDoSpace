@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GlassCard } from '../components/GlassCard';
+import { APITokenManager } from '../components/APITokenManager';
 import { GlassSelect, type GlassSelectOption } from '../components/GlassSelect';
 import { ToggleSwitch } from '../components/ToggleSwitch';
 import {
@@ -317,14 +318,49 @@ export function Settings({
     );
   }
 
-  // 已登录但没有 allocation 时，提示用户先去申请命名空间。
-  if (!sessionLoading && allocations.length === 0) {
-    return (
-      <div className="max-w-4xl mx-auto pt-32 pb-24 px-6">
+  return (
+    <div className="max-w-5xl mx-auto pt-32 pb-24 px-6 relative">
+      <motion.div
+        initial={{ y: 20, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        className="mb-8 flex flex-col gap-4"
+      >
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-extrabold text-gray-900 dark:text-white">解析配置中心</h1>
+            <p className="text-gray-700 dark:text-gray-300 mt-2">
+              管理你的通用 TOKEN 与 Cloudflare DNS 记录
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={() => void onLogout()}
+              className="flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-white/45 dark:bg-black/30 hover:bg-white/60 dark:hover:bg-black/45 text-gray-900 dark:text-white font-medium transition-colors"
+            >
+              <LogOut size={18} />
+              退出
+            </button>
+            {allocations.length > 0 ? (
+              <button
+                onClick={() => openModal()}
+                disabled={!selectedAllocation}
+                className="flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-600 hover:to-emerald-700 disabled:opacity-60 disabled:cursor-not-allowed text-white font-medium shadow-lg transition-all transform hover:scale-105"
+              >
+                <Plus size={18} />
+                添加记录
+              </button>
+            ) : null}
+          </div>
+        </div>
+
+        <APITokenManager csrfToken={csrfToken} />
+      </motion.div>
+
+      {!sessionLoading && allocations.length === 0 ? (
         <GlassCard className="text-center">
-          <h1 className="text-3xl font-extrabold text-gray-900 dark:text-white">解析配置中心</h1>
+          <h2 className="text-2xl font-extrabold text-gray-900 dark:text-white">命名空间尚未开通</h2>
           <p className="mt-3 text-gray-700 dark:text-gray-300">
-            {user?.display_name || user?.username}，你当前还没有可管理的命名空间。
+            {user?.display_name || user?.username}，你当前还没有可管理的命名空间，但上面的通用 TOKEN 已经可以正常创建和管理。
           </p>
           <div className="mt-6 flex flex-col sm:flex-row items-center justify-center gap-3">
             <button
@@ -342,259 +378,225 @@ export function Settings({
             </button>
           </div>
         </GlassCard>
-      </div>
-    );
-  }
-
-  return (
-    <div className="max-w-5xl mx-auto pt-32 pb-24 px-6 relative">
-      <motion.div
-        initial={{ y: 20, opacity: 0 }}
-        animate={{ y: 0, opacity: 1 }}
-        className="mb-8 flex flex-col gap-4"
-      >
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div>
-            <h1 className="text-3xl font-extrabold text-gray-900 dark:text-white">解析配置中心</h1>
-            <p className="text-gray-700 dark:text-gray-300 mt-2">
-              管理你在 Cloudflare 上的真实 DNS 记录
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <button
-              onClick={() => void onLogout()}
-              className="flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-white/45 dark:bg-black/30 hover:bg-white/60 dark:hover:bg-black/45 text-gray-900 dark:text-white font-medium transition-colors"
-            >
-              <LogOut size={18} />
-              退出
-            </button>
-            <button
-              onClick={() => openModal()}
-              disabled={!selectedAllocation}
-              className="flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-600 hover:to-emerald-700 disabled:opacity-60 disabled:cursor-not-allowed text-white font-medium shadow-lg transition-all transform hover:scale-105"
-            >
-              <Plus size={18} />
-              添加记录
-            </button>
-          </div>
-        </div>
-
-        <GlassCard className="p-5">
-          <div className="flex flex-col gap-4">
-            <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
-              <div>
-                <div className="text-sm uppercase tracking-[0.22em] text-teal-600 dark:text-teal-300 font-bold">
-                  Namespace Library
+      ) : (
+        <>
+          <GlassCard className="p-5">
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+                <div>
+                  <div className="text-sm uppercase tracking-[0.22em] text-teal-600 dark:text-teal-300 font-bold">
+                    Namespace Library
+                  </div>
+                  <div className="mt-2 text-xl font-extrabold text-gray-900 dark:text-white">
+                    你当前共有 {allocations.length} 个可管理命名空间
+                  </div>
+                  <div className="mt-2 text-sm text-gray-600 dark:text-gray-300">
+                    默认命名空间与管理员额外发放的命名空间都会出现在这里，你可以随时切换。
+                  </div>
                 </div>
-                <div className="mt-2 text-xl font-extrabold text-gray-900 dark:text-white">
-                  你当前共有 {allocations.length} 个可管理命名空间
-                </div>
-                <div className="mt-2 text-sm text-gray-600 dark:text-gray-300">
-                  默认命名空间与管理员额外发放的命名空间都会出现在这里，你可以随时切换。
-                </div>
+                {primaryAllocation ? (
+                  <div className="rounded-2xl bg-white/35 dark:bg-black/30 border border-white/20 px-4 py-3 text-sm text-gray-700 dark:text-gray-200">
+                    <div>默认命名空间：{primaryAllocation.fqdn}</div>
+                    <div>额外命名空间：{Math.max(0, allocations.length - 1)} 个</div>
+                  </div>
+                ) : null}
               </div>
-              {primaryAllocation ? (
-                <div className="rounded-2xl bg-white/35 dark:bg-black/30 border border-white/20 px-4 py-3 text-sm text-gray-700 dark:text-gray-200">
-                  <div>默认命名空间：{primaryAllocation.fqdn}</div>
-                  <div>额外命名空间：{Math.max(0, allocations.length - 1)} 个</div>
+
+              <div className="grid gap-3 xl:grid-cols-2">
+                {allocations.map((allocation) => {
+                  const isSelected = selectedAllocationID === allocation.id;
+                  return (
+                    <button
+                      key={allocation.id}
+                      type="button"
+                      onClick={() => setSelectedAllocationID(allocation.id)}
+                      className={`rounded-3xl border p-4 text-left transition-all ${
+                        isSelected
+                          ? 'border-teal-400/60 bg-gradient-to-r from-teal-500 to-emerald-500 text-white shadow-xl'
+                          : 'border-white/20 bg-white/40 text-gray-800 hover:bg-white/60 dark:border-white/10 dark:bg-black/25 dark:text-gray-100 dark:hover:bg-black/35'
+                      }`}
+                    >
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${isSelected ? 'bg-white/20 text-white' : 'bg-teal-100 text-teal-700 dark:bg-teal-900/35 dark:text-teal-300'}`}>
+                          {allocation.is_primary ? '默认命名空间' : '额外命名空间'}
+                        </span>
+                        <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${isSelected ? 'bg-white/15 text-white/90' : 'bg-white/70 text-gray-600 dark:bg-white/10 dark:text-gray-300'}`}>
+                          {formatAllocationSource(allocation.source)}
+                        </span>
+                        <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${allocation.status === 'active' ? isSelected ? 'bg-emerald-400/25 text-white' : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/35 dark:text-emerald-300' : isSelected ? 'bg-white/15 text-white/90' : 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300'}`}>
+                          {allocation.status === 'active' ? '启用中' : '已停用'}
+                        </span>
+                      </div>
+                      <div className="mt-3 text-lg font-extrabold break-all">
+                        {allocation.fqdn}
+                      </div>
+                      <div className={`mt-2 text-sm ${isSelected ? 'text-white/90' : 'text-gray-600 dark:text-gray-300'}`}>
+                        根域名：{allocation.root_domain || allocation.fqdn.split('.').slice(1).join('.')}
+                      </div>
+                      <div className={`mt-1 text-sm ${isSelected ? 'text-white/90' : 'text-gray-600 dark:text-gray-300'}`}>
+                        记录空间：支持 `@`、`www`、`api.v2` 等属于该命名空间的记录
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {additionalAllocations.length > 0 ? (
+                <div className="rounded-2xl border border-sky-300/35 bg-sky-100/45 px-4 py-3 text-sm text-sky-900 dark:border-sky-700/35 dark:bg-sky-950/25 dark:text-sky-200">
+                  管理员已为你额外分配 {additionalAllocations.length} 个命名空间。它们与默认同名子域一样，会在这里长期显示并可切换管理。
+                </div>
+              ) : null}
+
+              {selectedAllocation ? (
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div>
+                    <div className="text-sm uppercase tracking-[0.25em] text-teal-600 dark:text-teal-300 font-bold">
+                      Active Namespace
+                    </div>
+                    <div className="mt-2 text-2xl font-extrabold text-gray-900 dark:text-white">
+                      {selectedAllocation.fqdn}
+                    </div>
+                    <div className="mt-2 text-sm text-gray-600 dark:text-gray-300">
+                      你现在可以管理 `@`、`www`、`api.v2` 等所有属于该命名空间的记录。
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl bg-white/35 dark:bg-black/30 border border-white/20 px-4 py-3 text-sm text-gray-700 dark:text-gray-200">
+                    <div>来源：{formatAllocationSource(selectedAllocation.source)}</div>
+                    <div>默认命名空间：{selectedAllocation.is_primary ? '是' : '否'}</div>
+                    <div>状态：{selectedAllocation.status === 'active' ? '启用中' : '已停用'}</div>
+                  </div>
                 </div>
               ) : null}
             </div>
+          </GlassCard>
 
-            <div className="grid gap-3 xl:grid-cols-2">
-              {allocations.map((allocation) => {
-                const isSelected = selectedAllocationID === allocation.id;
-                return (
-                  <button
-                    key={allocation.id}
-                    type="button"
-                    onClick={() => setSelectedAllocationID(allocation.id)}
-                    className={`rounded-3xl border p-4 text-left transition-all ${
-                      isSelected
-                        ? 'border-teal-400/60 bg-gradient-to-r from-teal-500 to-emerald-500 text-white shadow-xl'
-                        : 'border-white/20 bg-white/40 text-gray-800 hover:bg-white/60 dark:border-white/10 dark:bg-black/25 dark:text-gray-100 dark:hover:bg-black/35'
-                    }`}
-                  >
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${isSelected ? 'bg-white/20 text-white' : 'bg-teal-100 text-teal-700 dark:bg-teal-900/35 dark:text-teal-300'}`}>
-                        {allocation.is_primary ? '默认命名空间' : '额外命名空间'}
-                      </span>
-                      <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${isSelected ? 'bg-white/15 text-white/90' : 'bg-white/70 text-gray-600 dark:bg-white/10 dark:text-gray-300'}`}>
-                        {formatAllocationSource(allocation.source)}
-                      </span>
-                      <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${allocation.status === 'active' ? isSelected ? 'bg-emerald-400/25 text-white' : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/35 dark:text-emerald-300' : isSelected ? 'bg-white/15 text-white/90' : 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300'}`}>
-                        {allocation.status === 'active' ? '启用中' : '已停用'}
-                      </span>
-                    </div>
-                    <div className="mt-3 text-lg font-extrabold break-all">
-                      {allocation.fqdn}
-                    </div>
-                    <div className={`mt-2 text-sm ${isSelected ? 'text-white/90' : 'text-gray-600 dark:text-gray-300'}`}>
-                      根域名：{allocation.root_domain || allocation.fqdn.split('.').slice(1).join('.')}
-                    </div>
-                    <div className={`mt-1 text-sm ${isSelected ? 'text-white/90' : 'text-gray-600 dark:text-gray-300'}`}>
-                      记录空间：支持 `@`、`www`、`api.v2` 等属于该命名空间的记录
-                    </div>
-                  </button>
-                );
-              })}
+          {notice ? (
+            <div className="rounded-2xl border border-teal-300/40 bg-teal-100/60 dark:bg-teal-950/25 dark:border-teal-700/40 px-4 py-3 text-sm text-teal-900 dark:text-teal-200">
+              {notice}
             </div>
+          ) : null}
 
-            {additionalAllocations.length > 0 ? (
-              <div className="rounded-2xl border border-sky-300/35 bg-sky-100/45 px-4 py-3 text-sm text-sky-900 dark:border-sky-700/35 dark:bg-sky-950/25 dark:text-sky-200">
-                管理员已为你额外分配 {additionalAllocations.length} 个命名空间。它们与默认同名子域一样，会在这里长期显示并可切换管理。
+          {recordsError ? (
+            <div className="rounded-2xl border border-red-300/40 bg-red-100/60 dark:bg-red-950/25 dark:border-red-700/40 px-4 py-3 text-sm text-red-900 dark:text-red-200">
+              {recordsError}
+            </div>
+          ) : null}
+
+          <GlassCard className="overflow-hidden p-0">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-white/20 dark:border-white/10 bg-white/20 dark:bg-black/20">
+                    <th className="p-4 font-semibold text-gray-900 dark:text-white">类型</th>
+                    <th className="p-4 font-semibold text-gray-900 dark:text-white">名称</th>
+                    <th className="p-4 font-semibold text-gray-900 dark:text-white">内容</th>
+                    <th className="p-4 font-semibold text-gray-900 dark:text-white">代理状态</th>
+                    <th className="p-4 font-semibold text-gray-900 dark:text-white text-right">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <AnimatePresence>
+                    {records.map((record) => (
+                      <motion.tr
+                        key={record.id}
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 'auto' }}
+                        exit={{ opacity: 0, x: -50, backgroundColor: 'rgba(239, 68, 68, 0.2)' }}
+                        transition={{ duration: 0.3 }}
+                        className="border-b border-white/10 dark:border-white/5 hover:bg-white/30 dark:hover:bg-white/5 transition-colors"
+                      >
+                        <td className="p-4">
+                          <span className="px-2 py-1 rounded-md bg-teal-100 dark:bg-teal-900/50 text-teal-700 dark:text-teal-300 text-sm font-bold">
+                            {formatRecordTypeLabel(record.type)}
+                          </span>
+                        </td>
+                        <td className="p-4 font-medium text-gray-800 dark:text-gray-200">{record.relative_name}</td>
+                        <td className="p-4 text-gray-600 dark:text-gray-400 font-mono text-sm">
+                          <div>{describeRecordContent(record)}</div>
+                          {!isSpecialDNSRecordType(record.type) && (record.comment || record.ttl || record.priority != null) ? (
+                            <div className="mt-1 text-xs text-gray-500 dark:text-gray-500">
+                              TTL: {record.ttl === 1 ? 'Auto' : record.ttl}s
+                              {record.priority != null ? ` · Priority: ${record.priority}` : ''}
+                              {record.comment ? ` · ${record.comment}` : ''}
+                            </div>
+                          ) : null}
+                        </td>
+                        <td className="p-4">
+                          <div className="flex items-center gap-2">
+                            <div
+                              className={`w-3 h-3 rounded-full ${
+                                isSpecialDNSRecordType(record.type)
+                                  ? 'bg-teal-500 shadow-[0_0_8px_#14b8a6]'
+                                  : record.proxied
+                                    ? 'bg-orange-500 shadow-[0_0_8px_#f97316]'
+                                    : 'bg-gray-400'
+                              }`}
+                            />
+                            <span className="text-sm text-gray-700 dark:text-gray-300">
+                              {isSpecialDNSRecordType(record.type)
+                                ? '系统托管'
+                                : record.proxied
+                                  ? '已代理'
+                                  : '仅 DNS'}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="p-4 text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              onClick={() => {
+                                if (!supportsEditableDNSRecordType(record.type)) {
+                                  setNotice(
+                                    isSpecialDNSRecordType(record.type)
+                                      ? '邮箱泛解析是特殊记录。需要删除后重新创建，不能像普通 DNS 一样直接编辑。'
+                                      : 'MX 记录由系统托管，当前不能在解析面板中手动编辑。',
+                                  );
+                                  return;
+                                }
+                                openModal(record);
+                              }}
+                              disabled={!supportsEditableDNSRecordType(record.type)}
+                              title={
+                                supportsEditableDNSRecordType(record.type)
+                                  ? '编辑记录'
+                                  : isSpecialDNSRecordType(record.type)
+                                    ? '邮箱泛解析特殊记录不支持直接编辑'
+                                    : 'MX 记录由系统托管'
+                              }
+                              className="p-2 rounded-lg hover:bg-white/50 dark:hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40 text-blue-600 dark:text-blue-400 transition-colors"
+                            >
+                              <Edit2 size={16} />
+                            </button>
+                            <button
+                              onClick={() => void handleDelete(record.id)}
+                              disabled={deletingRecordID === record.id || isPlaceholderRecord(record)}
+                              className="p-2 rounded-lg hover:bg-white/50 dark:hover:bg-white/10 disabled:opacity-60 text-red-600 dark:text-red-400 transition-colors"
+                            >
+                              {deletingRecordID === record.id ? <LoaderCircle size={16} className="animate-spin" /> : <Trash2 size={16} />}
+                            </button>
+                          </div>
+                        </td>
+                      </motion.tr>
+                    ))}
+                  </AnimatePresence>
+                </tbody>
+              </table>
+            </div>
+            {recordsLoading ? (
+              <div className="p-12 text-center text-gray-500 dark:text-gray-400 flex items-center justify-center gap-3">
+                <LoaderCircle size={18} className="animate-spin" />
+                正在同步 Cloudflare DNS 记录...
               </div>
             ) : null}
-
-            {selectedAllocation && (
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div>
-                  <div className="text-sm uppercase tracking-[0.25em] text-teal-600 dark:text-teal-300 font-bold">
-                    Active Namespace
-                  </div>
-                  <div className="mt-2 text-2xl font-extrabold text-gray-900 dark:text-white">
-                    {selectedAllocation.fqdn}
-                  </div>
-                  <div className="mt-2 text-sm text-gray-600 dark:text-gray-300">
-                    你现在可以管理 `@`、`www`、`api.v2` 等所有属于该命名空间的记录。
-                  </div>
-                </div>
-
-                <div className="rounded-2xl bg-white/35 dark:bg-black/30 border border-white/20 px-4 py-3 text-sm text-gray-700 dark:text-gray-200">
-                  <div>来源：{formatAllocationSource(selectedAllocation.source)}</div>
-                  <div>默认命名空间：{selectedAllocation.is_primary ? '是' : '否'}</div>
-                  <div>状态：{selectedAllocation.status === 'active' ? '启用中' : '已停用'}</div>
-                </div>
+            {!recordsLoading && records.length === 0 ? (
+              <div className="p-12 text-center text-gray-500 dark:text-gray-400">
+                当前命名空间还没有记录，点击上方按钮即可添加。
               </div>
-            )}
-          </div>
-        </GlassCard>
-
-        {notice && (
-          <div className="rounded-2xl border border-teal-300/40 bg-teal-100/60 dark:bg-teal-950/25 dark:border-teal-700/40 px-4 py-3 text-sm text-teal-900 dark:text-teal-200">
-            {notice}
-          </div>
-        )}
-
-        {recordsError && (
-          <div className="rounded-2xl border border-red-300/40 bg-red-100/60 dark:bg-red-950/25 dark:border-red-700/40 px-4 py-3 text-sm text-red-900 dark:text-red-200">
-            {recordsError}
-          </div>
-        )}
-      </motion.div>
-
-      <GlassCard className="overflow-hidden p-0">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="border-b border-white/20 dark:border-white/10 bg-white/20 dark:bg-black/20">
-                <th className="p-4 font-semibold text-gray-900 dark:text-white">类型</th>
-                <th className="p-4 font-semibold text-gray-900 dark:text-white">名称</th>
-                <th className="p-4 font-semibold text-gray-900 dark:text-white">内容</th>
-                <th className="p-4 font-semibold text-gray-900 dark:text-white">代理状态</th>
-                <th className="p-4 font-semibold text-gray-900 dark:text-white text-right">操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              <AnimatePresence>
-                {records.map((record) => (
-                  <motion.tr
-                    key={record.id}
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: 'auto' }}
-                    exit={{ opacity: 0, x: -50, backgroundColor: 'rgba(239, 68, 68, 0.2)' }}
-                    transition={{ duration: 0.3 }}
-                    className="border-b border-white/10 dark:border-white/5 hover:bg-white/30 dark:hover:bg-white/5 transition-colors"
-                  >
-                    <td className="p-4">
-                      <span className="px-2 py-1 rounded-md bg-teal-100 dark:bg-teal-900/50 text-teal-700 dark:text-teal-300 text-sm font-bold">
-                        {formatRecordTypeLabel(record.type)}
-                      </span>
-                    </td>
-                    <td className="p-4 font-medium text-gray-800 dark:text-gray-200">{record.relative_name}</td>
-                    <td className="p-4 text-gray-600 dark:text-gray-400 font-mono text-sm">
-                      <div>{describeRecordContent(record)}</div>
-                      {!isSpecialDNSRecordType(record.type) && (record.comment || record.ttl || record.priority != null) && (
-                        <div className="mt-1 text-xs text-gray-500 dark:text-gray-500">
-                          TTL: {record.ttl === 1 ? 'Auto' : record.ttl}s
-                          {record.priority != null ? ` · Priority: ${record.priority}` : ''}
-                          {record.comment ? ` · ${record.comment}` : ''}
-                        </div>
-                      )}
-                    </td>
-                    <td className="p-4">
-                      <div className="flex items-center gap-2">
-                        <div
-                          className={`w-3 h-3 rounded-full ${
-                            isSpecialDNSRecordType(record.type)
-                              ? 'bg-teal-500 shadow-[0_0_8px_#14b8a6]'
-                              : record.proxied
-                                ? 'bg-orange-500 shadow-[0_0_8px_#f97316]'
-                                : 'bg-gray-400'
-                          }`}
-                        />
-                        <span className="text-sm text-gray-700 dark:text-gray-300">
-                          {isSpecialDNSRecordType(record.type)
-                            ? '系统托管'
-                            : record.proxied
-                              ? '已代理'
-                              : '仅 DNS'}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="p-4 text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        <button
-                          onClick={() => {
-                            if (!supportsEditableDNSRecordType(record.type)) {
-                              setNotice(
-                                isSpecialDNSRecordType(record.type)
-                                  ? '邮箱泛解析是特殊记录。需要删除后重新创建，不能像普通 DNS 一样直接编辑。'
-                                  : 'MX 记录由系统托管，当前不能在解析面板中手动编辑。',
-                              );
-                              return;
-                            }
-                            openModal(record);
-                          }}
-                          disabled={!supportsEditableDNSRecordType(record.type)}
-                          title={
-                            supportsEditableDNSRecordType(record.type)
-                              ? '编辑记录'
-                              : isSpecialDNSRecordType(record.type)
-                                ? '邮箱泛解析特殊记录不支持直接编辑'
-                                : 'MX 记录由系统托管'
-                          }
-                          className="p-2 rounded-lg hover:bg-white/50 dark:hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40 text-blue-600 dark:text-blue-400 transition-colors"
-                        >
-                          <Edit2 size={16} />
-                        </button>
-                        <button
-                          onClick={() => void handleDelete(record.id)}
-                          disabled={deletingRecordID === record.id || isPlaceholderRecord(record)}
-                          className="p-2 rounded-lg hover:bg-white/50 dark:hover:bg-white/10 disabled:opacity-60 text-red-600 dark:text-red-400 transition-colors"
-                        >
-                          {deletingRecordID === record.id ? <LoaderCircle size={16} className="animate-spin" /> : <Trash2 size={16} />}
-                        </button>
-                      </div>
-                    </td>
-                  </motion.tr>
-                ))}
-              </AnimatePresence>
-            </tbody>
-          </table>
-        </div>
-        {recordsLoading && (
-          <div className="p-12 text-center text-gray-500 dark:text-gray-400 flex items-center justify-center gap-3">
-            <LoaderCircle size={18} className="animate-spin" />
-            正在同步 Cloudflare DNS 记录...
-          </div>
-        )}
-        {!recordsLoading && records.length === 0 && (
-          <div className="p-12 text-center text-gray-500 dark:text-gray-400">
-            当前命名空间还没有记录，点击上方按钮即可添加。
-          </div>
-        )}
-      </GlassCard>
+            ) : null}
+          </GlassCard>
+        </>
+      )}
 
       <AnimatePresence>
         {isModalOpen && (
