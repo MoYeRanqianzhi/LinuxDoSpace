@@ -377,7 +377,7 @@ export function Settings({
           </div>
         </GlassCard>
       ) : (
-        <>
+        <div className="space-y-4">
           <GlassCard className="p-5">
             <div className="flex flex-col gap-4">
               <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
@@ -593,7 +593,7 @@ export function Settings({
               </div>
             ) : null}
           </GlassCard>
-        </>
+        </div>
       )}
 
       {!sessionLoading ? <APITokenManager csrfToken={csrfToken} className="mt-6" /> : null}
