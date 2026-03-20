@@ -22,9 +22,9 @@
 示例：
 
 ```json
-{"type":"ready","token_public_id":"tok123"}
+{"type":"ready","token_public_id":"tok123","owner_username":"testuser"}
 {"type":"heartbeat"}
-{"type":"mail","original_envelope_from":"bounce@example.com","original_recipients":["alice@linuxdo.space"],"received_at":"2026-03-20T10:11:12Z","raw_message_base64":"RnJvbTogLi4u"}
+{"type":"mail","original_envelope_from":"bounce@example.com","original_recipients":["alice@testuser.linuxdo.space"],"received_at":"2026-03-20T10:11:12Z","raw_message_base64":"RnJvbTogLi4u"}
 ```
 
 ## 事件类型
@@ -33,12 +33,17 @@
 
 表示连接已经建立成功，当前 SDK 应忽略该事件或仅用于内部握手。
 
+`owner_username` 是必需字段。SDK 使用它把第一方枚举后缀
+`linuxdo.space` 解析成当前 token 拥有者的真实命名空间后缀
+`<owner_username>.linuxdo.space`。
+
 示例：
 
 ```json
 {
   "type": "ready",
-  "token_public_id": "tok123"
+  "token_public_id": "tok123",
+  "owner_username": "testuser"
 }
 ```
 
@@ -72,7 +77,7 @@
   "type": "mail",
   "original_envelope_from": "bounce@example.com",
   "original_recipients": [
-    "alice@linuxdo.space"
+    "alice@testuser.linuxdo.space"
   ],
   "received_at": "2026-03-20T10:11:12Z",
   "raw_message_base64": "RnJvbTogU2VuZGVyIDxzZW5kZXJAZXhhbXBsZS5jb20+DQpUbzogUmVjZWl2ZXIgPGFsaWNlQGxpbnV4ZG8uc3BhY2U+DQpTdWJqZWN0OiBUZXN0DQoNCkhlbGxv"
@@ -96,6 +101,8 @@
 ### 本地绑定
 
 - 绑定基于邮箱地址的 local-part 与 suffix
+- 第一方枚举后缀 `linuxdo.space` 是语义后缀，不是字面父域名
+- SDK 必须把它解析为 `<owner_username>.linuxdo.space`
 - `prefix` 与 `pattern` 二选一
 - `pattern` 使用全匹配，不是搜索匹配
 - 同一 suffix 下的所有绑定共享一条创建顺序链
