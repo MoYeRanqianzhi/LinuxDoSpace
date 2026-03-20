@@ -329,7 +329,7 @@ export function Settings({
           <div>
             <h1 className="text-3xl font-extrabold text-gray-900 dark:text-white">解析配置中心</h1>
             <p className="text-gray-700 dark:text-gray-300 mt-2">
-              管理你的通用 TOKEN 与 Cloudflare DNS 记录
+              管理你在 Cloudflare 上的真实 DNS 记录
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
@@ -352,15 +352,13 @@ export function Settings({
             ) : null}
           </div>
         </div>
-
-        <APITokenManager csrfToken={csrfToken} />
       </motion.div>
 
       {!sessionLoading && allocations.length === 0 ? (
         <GlassCard className="text-center">
           <h2 className="text-2xl font-extrabold text-gray-900 dark:text-white">命名空间尚未开通</h2>
           <p className="mt-3 text-gray-700 dark:text-gray-300">
-            {user?.display_name || user?.username}，你当前还没有可管理的命名空间，但上面的通用 TOKEN 已经可以正常创建和管理。
+            {user?.display_name || user?.username}，你当前还没有可管理的命名空间。
           </p>
           <div className="mt-6 flex flex-col sm:flex-row items-center justify-center gap-3">
             <button
@@ -597,6 +595,8 @@ export function Settings({
           </GlassCard>
         </>
       )}
+
+      {!sessionLoading ? <APITokenManager csrfToken={csrfToken} className="mt-6" /> : null}
 
       <AnimatePresence>
         {isModalOpen && (

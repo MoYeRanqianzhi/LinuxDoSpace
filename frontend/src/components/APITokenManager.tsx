@@ -1,63 +1,81 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
-import { Copy, KeyRound, LoaderCircle, Plus, RefreshCw } from 'lucide-react';
+import { ChevronDown, Copy, KeyRound, LoaderCircle, Plus, Trash2, X } from 'lucide-react';
 import { GlassCard } from './GlassCard';
 import { APIError, createMyAPIToken, listMyAPITokens, revokeMyAPIToken } from '../lib/api';
 import type { UserAPIToken } from '../types/api';
 
-// APITokenManagerProps 描述通用 TOKEN 管理卡片所需的最小输入。
-// 该组件刻意不依赖 DNS 或邮箱页面状态，避免再次被放错位置。
+// compactPreviewCount 控制折叠态下最多展示多少条 TOKEN 摘要。
+// 这样可以保留“我确实已有 TOKEN”的反馈，但避免把高级功能铺满整个配置页。
+const compactPreviewCount = 2;
+
+// APITokenManagerProps 描述通用 TOKEN 管理卡片的输入契约。
+// className 允许设置页把它放到页面底部时继续复用统一间距。
 interface APITokenManagerProps {
   csrfToken?: string;
+  className?: string;
 }
 
-// NoticeTone 统一描述卡片中的反馈语气。
+// NoticeTone 统一描述当前操作反馈的语气。
 type NoticeTone = 'error' | 'success' | 'info';
 
-// SectionNotice 用于在组件内展示用户可读的状态信息。
+// SectionNotice 用于渲染组件内的反馈条。
 interface SectionNotice {
   tone: NoticeTone;
   message: string;
 }
 
-// APITokenManager 负责创建、展示与撤销用户的通用 API TOKEN。
-// 这些 TOKEN 会在邮箱页中作为可选实时收件目标，也会给后续 API 能力复用。
-export function APITokenManager({ csrfToken }: APITokenManagerProps) {
-  // apiTokens 保存当前用户已创建的全部 TOKEN。
+// APITokenManager 负责管理通用 API TOKEN。
+// 设计上它属于高级功能，所以默认收起创建表单和完整列表，只保留摘要与入口按钮。
+export function APITokenManager({ csrfToken, className = '' }: APITokenManagerProps) {
+  // apiTokens 保存后端返回的全部 TOKEN。
   const [apiTokens, setApiTokens] = useState<UserAPIToken[]>([]);
 
-  // loading 控制首次加载和刷新时的骨架状态。
+  // loading 控制首次读取与后续异步写操作后的同步状态。
   const [loading, setLoading] = useState(true);
 
-  // tokenError 用于显示列表读取失败。
+  // tokenError 保存列表读取失败消息。
   const [tokenError, setTokenError] = useState('');
 
-  // tokenNotice 用于显示创建、复制、撤销等操作反馈。
+  // tokenNotice 保存创建、复制、撤销等操作反馈。
   const [tokenNotice, setTokenNotice] = useState<SectionNotice | null>(null);
 
-  // newTokenName 保存“创建 TOKEN”输入框中的名称。
+  // newTokenName 保存创建表单中的 TOKEN 名称。
   const [newTokenName, setNewTokenName] = useState('');
 
-  // creatingToken 控制创建按钮的提交中状态。
+  // creatingToken 控制创建提交按钮的 loading 态。
   const [creatingToken, setCreatingToken] = useState(false);
 
-  // createdTokenSecret 保存新建 TOKEN 后后端一次性返回的原始密钥。
+  // createdTokenSecret 保存创建成功后一次性返回的原始 TOKEN。
   const [createdTokenSecret, setCreatedTokenSecret] = useState('');
 
-  // revokingTokenPublicIDs 用于逐行标记正在撤销中的 TOKEN。
+  // revokingTokenPublicIDs 逐行记录哪些 TOKEN 正在撤销。
   const [revokingTokenPublicIDs, setRevokingTokenPublicIDs] = useState<Record<string, boolean>>({});
 
-  // activeAPITokens 统计当前仍可用的 EMAIL TOKEN 数量。
-  const activeAPITokens = useMemo(
-    () => apiTokens.filter((item) => item.email_enabled && !item.revoked_at),
+  // isCreateFormOpen 控制“创建 TOKEN”表单是否展开。
+  const [isCreateFormOpen, setIsCreateFormOpen] = useState(false);
+
+  // isListExpanded 控制完整 TOKEN 列表是否展开。
+  const [isListExpanded, setIsListExpanded] = useState(false);
+
+  // activeTokenCount 统计当前未撤销的 TOKEN 数量。
+  const activeTokenCount = useMemo(
+    () => apiTokens.filter((item) => !item.revoked_at).length,
     [apiTokens],
   );
 
-  // 首次挂载时加载 TOKEN 列表。
+  // compactPreviewTokens 保存折叠态下展示的少量摘要行。
+  const compactPreviewTokens = useMemo(
+    () => apiTokens.slice(0, compactPreviewCount),
+    [apiTokens],
+  );
+
+  // 组件挂载时读取一次 TOKEN 列表。
   useEffect(() => {
     void loadTokens();
   }, []);
 
-  // loadTokens 从后端读取当前用户已创建的 TOKEN 列表。
+  // loadTokens 从后端读取当前用户的 TOKEN 列表。
+  // 本组件不再提供显式“刷新”按钮，而是由挂载和写操作后的自动同步负责。
   async function loadTokens(): Promise<void> {
     setLoading(true);
     try {
@@ -78,7 +96,7 @@ export function APITokenManager({ csrfToken }: APITokenManagerProps) {
     }
   }
 
-  // handleCreateToken 创建一个支持 EMAIL 能力的新 TOKEN。
+  // handleCreateToken 创建新的 TOKEN，并在成功后自动收起创建表单。
   async function handleCreateToken(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     if (!csrfToken) {
@@ -99,6 +117,8 @@ export function APITokenManager({ csrfToken }: APITokenManagerProps) {
       setApiTokens((currentItems) => upsertAPIToken(currentItems, result.token));
       setCreatedTokenSecret(result.raw_token);
       setNewTokenName('');
+      setIsCreateFormOpen(false);
+      setIsListExpanded(true);
       setTokenNotice({
         tone: 'success',
         message: `TOKEN ${result.token.name} 已创建。请立即复制保存原始密钥，离开当前提示后将无法再次查看。`,
@@ -110,7 +130,7 @@ export function APITokenManager({ csrfToken }: APITokenManagerProps) {
     }
   }
 
-  // handleRevokeToken 撤销指定 TOKEN，阻止后续新的实时连接继续使用它。
+  // handleRevokeToken 撤销指定 TOKEN，并把结果回写到当前列表。
   async function handleRevokeToken(publicID: string): Promise<void> {
     if (!csrfToken) {
       setTokenNotice({ tone: 'error', message: '当前会话缺少 CSRF Token，请重新登录后再试。' });
@@ -121,7 +141,7 @@ export function APITokenManager({ csrfToken }: APITokenManagerProps) {
       setRevokingTokenPublicIDs((current) => ({ ...current, [publicID]: true }));
       const item = await revokeMyAPIToken(publicID, csrfToken);
       setApiTokens((currentItems) => upsertAPIToken(currentItems, item));
-      setTokenNotice({ tone: 'info', message: `TOKEN ${item.name} 已撤销，新的实时连接将不再被接受。` });
+      setTokenNotice({ tone: 'info', message: `TOKEN ${item.name} 已撤销。` });
     } catch (error) {
       setTokenNotice({ tone: 'error', message: readableErrorMessage(error, '撤销 API TOKEN 失败。') });
     } finally {
@@ -147,29 +167,57 @@ export function APITokenManager({ csrfToken }: APITokenManagerProps) {
   }
 
   return (
-    <GlassCard className="space-y-5">
-      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-        <div className="flex items-center gap-3">
+    <GlassCard className={`space-y-4 ${className}`.trim()}>
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="flex items-start gap-3">
           <div className="rounded-2xl bg-violet-500/15 p-3 text-violet-700 dark:text-violet-300">
-            <KeyRound size={20} />
+            <KeyRound size={18} />
           </div>
           <div>
-            <h2 className="text-xl font-bold text-gray-900 dark:text-white">通用 API TOKEN</h2>
-            <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
-              在配置中心统一创建和管理 TOKEN。邮箱页会把这些 TOKEN 作为可选实时收件目标，后续 API 能力也会复用这里的凭据。
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-lg font-bold text-gray-900 dark:text-white">API TOKEN</h2>
+              <span className="rounded-full bg-violet-100 px-2.5 py-1 text-[11px] font-semibold text-violet-700 dark:bg-violet-900/35 dark:text-violet-300">
+                高级功能
+              </span>
+            </div>
+            <p className="mt-1 text-sm leading-7 text-gray-600 dark:text-gray-300">
+              用于 SDK 或 API 客户端访问。它不是常规解析配置的一部分，所以默认只显示摘要；具体权限范围由 TOKEN 自身权限配置决定。
             </p>
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={() => void loadTokens()}
-          disabled={loading}
-          className="inline-flex items-center justify-center gap-2 rounded-2xl border border-white/20 bg-white/55 px-4 py-3 text-sm font-semibold text-gray-800 transition hover:bg-white/70 disabled:cursor-not-allowed disabled:opacity-60 dark:border-white/10 dark:bg-black/30 dark:text-gray-100 dark:hover:bg-black/40"
-        >
-          {loading ? <LoaderCircle className="animate-spin" size={16} /> : <RefreshCw size={16} />}
-          刷新 TOKEN
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          {apiTokens.length > 0 ? (
+            <button
+              type="button"
+              onClick={() => setIsListExpanded((current) => !current)}
+              className="inline-flex items-center gap-2 rounded-2xl border border-white/20 bg-white/55 px-4 py-3 text-sm font-semibold text-gray-800 transition hover:bg-white/70 dark:border-white/10 dark:bg-black/30 dark:text-gray-100 dark:hover:bg-black/40"
+            >
+              <ChevronDown
+                size={16}
+                className={`transition-transform ${isListExpanded ? 'rotate-180' : ''}`}
+              />
+              {isListExpanded ? '收起 TOKEN 列表' : `查看 ${apiTokens.length} 个 TOKEN`}
+            </button>
+          ) : null}
+
+          <button
+            type="button"
+            onClick={() => {
+              setCreatedTokenSecret('');
+              setTokenNotice(null);
+              setIsCreateFormOpen((current) => !current);
+            }}
+            className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-violet-500 to-fuchsia-600 px-4 py-3 text-sm font-semibold text-white shadow-lg transition hover:from-violet-600 hover:to-fuchsia-700"
+          >
+            {isCreateFormOpen ? <X size={16} /> : <Plus size={16} />}
+            {isCreateFormOpen ? '收起创建' : '创建 TOKEN'}
+          </button>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-white/15 bg-white/35 px-4 py-3 text-sm text-gray-700 dark:border-white/10 dark:bg-black/20 dark:text-gray-200">
+        {loading ? '正在读取 TOKEN 摘要...' : `当前共有 ${apiTokens.length} 个 TOKEN，其中 ${activeTokenCount} 个未撤销。`}
       </div>
 
       {tokenError ? <InlineNotice tone="error" message={`TOKEN 列表加载失败：${tokenError}`} /> : null}
@@ -199,56 +247,92 @@ export function APITokenManager({ csrfToken }: APITokenManagerProps) {
         </div>
       ) : null}
 
-      <div className="grid gap-3 md:grid-cols-3">
-        <InfoStat title="可用 TOKEN" value={`${activeAPITokens.length} 个`} />
-        <InfoStat title="全部 TOKEN" value={`${apiTokens.length} 个`} />
-        <InfoStat title="能力" value="EMAIL 实时流" />
-      </div>
-
-      <div className="rounded-2xl border border-white/15 bg-white/35 p-4 text-sm leading-7 text-gray-700 dark:border-white/10 dark:bg-black/20 dark:text-gray-200">
-        TOKEN 被设置为邮箱目标后，只有在客户端保持连接时才会收到实时邮件事件；如果没有连接，服务器会直接丢弃该目标邮件，不会为了 TOKEN 目标额外堆积队列。
-      </div>
-
-      <form className="space-y-4" onSubmit={(event) => void handleCreateToken(event)}>
-        <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
-          <div className="flex min-w-0 items-center rounded-2xl border border-white/20 bg-white/55 px-4 py-3 shadow-inner dark:border-white/10 dark:bg-black/35">
-            <input
-              type="text"
-              value={newTokenName}
-              onChange={(event) => setNewTokenName(event.target.value)}
-              placeholder="例如 Python SDK / 邮件机器人 / 自建客户端"
-              className="min-w-0 flex-1 bg-transparent text-base text-gray-900 outline-none placeholder:text-gray-400 dark:text-white dark:placeholder:text-gray-500"
-            />
+      {isCreateFormOpen ? (
+        <form className="space-y-4 rounded-3xl border border-white/15 bg-white/30 p-5 dark:border-white/10 dark:bg-black/15" onSubmit={(event) => void handleCreateToken(event)}>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">TOKEN 名称</label>
+            <div className="mt-2 flex min-w-0 items-center rounded-2xl border border-white/20 bg-white/55 px-4 py-3 shadow-inner dark:border-white/10 dark:bg-black/35">
+              <input
+                type="text"
+                value={newTokenName}
+                onChange={(event) => setNewTokenName(event.target.value)}
+                placeholder="例如 Python SDK / 邮件机器人 / 自动化脚本"
+                className="min-w-0 flex-1 bg-transparent text-base text-gray-900 outline-none placeholder:text-gray-400 dark:text-white dark:placeholder:text-gray-500"
+              />
+            </div>
           </div>
-          <button
-            type="submit"
-            disabled={creatingToken}
-            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-500 to-fuchsia-600 px-5 py-3 font-semibold text-white shadow-lg transition hover:from-violet-600 hover:to-fuchsia-700 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {creatingToken ? <LoaderCircle className="animate-spin" size={18} /> : <Plus size={18} />}
-            创建 TOKEN
-          </button>
-        </div>
-      </form>
 
-      {loading ? (
-        <div className="rounded-3xl border border-dashed border-white/20 bg-white/25 p-6 text-sm leading-7 text-gray-700 dark:border-white/10 dark:bg-black/15 dark:text-gray-200">
-          正在加载你的 API TOKEN 列表...
-        </div>
-      ) : apiTokens.length === 0 ? (
-        <div className="rounded-3xl border border-dashed border-white/20 bg-white/25 p-6 text-sm leading-7 text-gray-700 dark:border-white/10 dark:bg-black/15 dark:text-gray-200">
-          你当前还没有创建任何 API TOKEN。创建后，它们会在邮箱页中出现在目标下拉框里，可直接作为实时收件目标使用。
-        </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="submit"
+              disabled={creatingToken}
+              className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-500 to-fuchsia-600 px-5 py-3 font-semibold text-white shadow-lg transition hover:from-violet-600 hover:to-fuchsia-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {creatingToken ? <LoaderCircle className="animate-spin" size={18} /> : <Plus size={18} />}
+              创建 TOKEN
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsCreateFormOpen(false)}
+              className="inline-flex items-center justify-center gap-2 rounded-2xl border border-white/20 bg-white/55 px-5 py-3 font-semibold text-gray-800 transition hover:bg-white/70 dark:border-white/10 dark:bg-black/30 dark:text-gray-100 dark:hover:bg-black/40"
+            >
+              取消
+            </button>
+          </div>
+        </form>
+      ) : null}
+
+      {!isListExpanded ? (
+        loading ? null : apiTokens.length === 0 ? (
+          <div className="rounded-3xl border border-dashed border-white/20 bg-white/25 p-6 text-sm leading-7 text-gray-700 dark:border-white/10 dark:bg-black/15 dark:text-gray-200">
+            当前还没有 TOKEN。需要时再点击右上角“创建 TOKEN”即可。
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="text-sm font-medium text-gray-600 dark:text-gray-300">
+              仅展示最近 {compactPreviewTokens.length} 个 TOKEN 摘要。
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              {compactPreviewTokens.map((item) => {
+                const isRevoked = Boolean(item.revoked_at);
+                return (
+                  <div
+                    key={item.public_id}
+                    className="rounded-2xl border border-white/15 bg-white/35 p-4 dark:border-white/10 dark:bg-black/20"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="truncate font-semibold text-gray-900 dark:text-white">{item.name}</div>
+                        <div className="mt-1 truncate font-mono text-xs text-gray-500 dark:text-gray-400">{item.public_id}</div>
+                      </div>
+                      <StatusChip
+                        label={isRevoked ? '已撤销' : '可用'}
+                        className={
+                          isRevoked
+                            ? 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
+                            : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-300'
+                        }
+                      />
+                    </div>
+                    <div className="mt-3 text-sm text-gray-600 dark:text-gray-300">
+                      最近使用：{item.last_used_at ? formatDate(item.last_used_at) : '尚未使用'}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )
       ) : (
         <div className="overflow-x-auto rounded-3xl border border-white/15 bg-white/35 dark:border-white/10 dark:bg-black/20">
-          <table className="w-full min-w-[820px] border-collapse text-left">
+          <table className="w-full min-w-[760px] border-collapse text-left">
             <thead>
               <tr className="border-b border-white/15 text-sm text-gray-600 dark:border-white/10 dark:text-gray-300">
                 <th className="px-5 py-4 font-semibold">名称</th>
                 <th className="px-5 py-4 font-semibold">公开 ID</th>
-                <th className="px-5 py-4 font-semibold">能力</th>
                 <th className="px-5 py-4 font-semibold">最近使用</th>
                 <th className="px-5 py-4 font-semibold">状态</th>
+                <th className="px-5 py-4 font-semibold">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -263,31 +347,32 @@ export function APITokenManager({ csrfToken }: APITokenManagerProps) {
                       <div className="font-semibold text-gray-900 dark:text-white">{item.name}</div>
                       <div className="mt-1 text-sm text-gray-500 dark:text-gray-400">创建于 {formatDate(item.created_at)}</div>
                     </td>
-                    <td className="px-5 py-4 align-top text-sm font-mono text-gray-700 dark:text-gray-200">{item.public_id}</td>
-                    <td className="px-5 py-4 align-top text-sm text-gray-700 dark:text-gray-200">{item.email_enabled ? 'EMAIL 实时流' : '未启用'}</td>
+                    <td className="px-5 py-4 align-top font-mono text-sm text-gray-700 dark:text-gray-200">{item.public_id}</td>
                     <td className="px-5 py-4 align-top text-sm text-gray-700 dark:text-gray-200">{item.last_used_at ? formatDate(item.last_used_at) : '尚未使用'}</td>
                     <td className="px-5 py-4 align-top">
-                      <div className="flex flex-col items-start gap-3">
-                        <StatusChip
-                          label={isRevoked ? '已撤销' : '可用'}
-                          className={
-                            isRevoked
-                              ? 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
-                              : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-300'
-                          }
-                        />
-                        {!isRevoked ? (
-                          <button
-                            type="button"
-                            onClick={() => void handleRevokeToken(item.public_id)}
-                            disabled={Boolean(revokingTokenPublicIDs[item.public_id])}
-                            className="inline-flex items-center gap-2 rounded-xl border border-red-200 bg-white/70 px-3 py-2 text-xs font-semibold text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-red-800/35 dark:bg-black/20 dark:text-red-300 dark:hover:bg-red-950/20"
-                          >
-                            {revokingTokenPublicIDs[item.public_id] ? <LoaderCircle className="animate-spin" size={14} /> : <RefreshCw size={14} />}
-                            撤销 TOKEN
-                          </button>
-                        ) : null}
-                      </div>
+                      <StatusChip
+                        label={isRevoked ? '已撤销' : '可用'}
+                        className={
+                          isRevoked
+                            ? 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
+                            : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-300'
+                        }
+                      />
+                    </td>
+                    <td className="px-5 py-4 align-top">
+                      {!isRevoked ? (
+                        <button
+                          type="button"
+                          onClick={() => void handleRevokeToken(item.public_id)}
+                          disabled={Boolean(revokingTokenPublicIDs[item.public_id])}
+                          className="inline-flex items-center gap-2 rounded-xl border border-red-200 bg-white/70 px-3 py-2 text-xs font-semibold text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-red-800/35 dark:bg-black/20 dark:text-red-300 dark:hover:bg-red-950/20"
+                        >
+                          {revokingTokenPublicIDs[item.public_id] ? <LoaderCircle className="animate-spin" size={14} /> : <Trash2 size={14} />}
+                          撤销 TOKEN
+                        </button>
+                      ) : (
+                        <span className="text-sm text-gray-500 dark:text-gray-400">无可用操作</span>
+                      )}
                     </td>
                   </tr>
                 );
@@ -300,17 +385,7 @@ export function APITokenManager({ csrfToken }: APITokenManagerProps) {
   );
 }
 
-// InfoStat 渲染卡片中的小型统计块。
-function InfoStat({ title, value }: { title: string; value: string }) {
-  return (
-    <div className="rounded-2xl border border-white/15 bg-white/35 p-4 dark:border-white/10 dark:bg-black/20">
-      <div className="text-xs font-semibold uppercase tracking-[0.22em] text-gray-500 dark:text-gray-400">{title}</div>
-      <div className="mt-2 text-lg font-bold text-gray-900 dark:text-white">{value}</div>
-    </div>
-  );
-}
-
-// InlineNotice 统一渲染组件内部的操作反馈。
+// InlineNotice 统一渲染组件内部的反馈消息条。
 function InlineNotice({ tone, message }: SectionNotice) {
   const toneClassName =
     tone === 'success'
@@ -322,18 +397,18 @@ function InlineNotice({ tone, message }: SectionNotice) {
   return <div className={`rounded-2xl border px-4 py-3 text-sm ${toneClassName}`}>{message}</div>;
 }
 
-// StatusChip 用于在 TOKEN 列表中显示简洁状态标签。
+// StatusChip 统一渲染 TOKEN 状态标签。
 function StatusChip({ label, className }: { label: string; className: string }) {
   return <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${className}`}>{label}</span>;
 }
 
-// upsertAPIToken 把新增或更新的 TOKEN 合并回当前列表。
+// upsertAPIToken 把新增或更新的 TOKEN 合并回列表。
 function upsertAPIToken(items: UserAPIToken[], nextItem: UserAPIToken): UserAPIToken[] {
   const nextItems = items.filter((item) => item.public_id !== nextItem.public_id);
   return [nextItem, ...nextItems].sort((left, right) => right.created_at.localeCompare(left.created_at));
 }
 
-// formatDate 统一把 ISO 时间转成人类可读格式。
+// formatDate 把 ISO 时间转成人类可读时间。
 function formatDate(value?: string): string {
   if (!value) {
     return '未记录';
@@ -351,7 +426,7 @@ function formatDate(value?: string): string {
   }).format(parsed);
 }
 
-// readableErrorMessage 把前端异常转换成稳定的可读错误提示。
+// readableErrorMessage 把前端异常转成稳定的用户提示。
 function readableErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof APIError) {
     return error.message;
