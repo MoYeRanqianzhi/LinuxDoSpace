@@ -215,6 +215,35 @@ func (s *DomainService) CheckAvailability(ctx context.Context, rootDomain string
 	return result, nil
 }
 
+// CheckPublicAvailability keeps the anonymous availability API cheap and
+// predictable by relying on validated local state only. The write path still
+// performs the stricter live Cloudflare conflict check right before commit.
+func (s *DomainService) CheckPublicAvailability(ctx context.Context, rootDomain string, prefix string) (AvailabilityResult, error) {
+	managedDomain, normalizedPrefix, fqdn, err := s.prepareAllocation(ctx, rootDomain, prefix)
+	if err != nil {
+		return AvailabilityResult{}, err
+	}
+
+	result := AvailabilityResult{
+		RootDomain:       managedDomain.RootDomain,
+		Prefix:           strings.TrimSpace(prefix),
+		NormalizedPrefix: normalizedPrefix,
+		FQDN:             fqdn,
+		Available:        true,
+	}
+
+	existing, err := s.db.FindAllocationByNormalizedPrefix(ctx, managedDomain.ID, normalizedPrefix)
+	if err == nil && existing.ID > 0 {
+		result.Available = false
+		result.Reasons = append(result.Reasons, "reserved_in_database")
+	}
+	if err != nil && !storage.IsNotFound(err) {
+		return AvailabilityResult{}, InternalError("failed to check allocation conflicts", err)
+	}
+
+	return result, nil
+}
+
 // AutoProvisionForUser 尝试为刚登录的用户自动分配 `<username>.<root_domain>`。
 func (s *DomainService) AutoProvisionForUser(ctx context.Context, user model.User) error {
 	managedDomains, err := s.db.ListManagedDomains(ctx, false)

@@ -27,8 +27,10 @@ services:
       - 1.1.1.1
       - 8.8.8.8
     ports:
-      - "${APP_PORT:-8080}:8080"
-      - "${MAIL_RELAY_PORT:-25}:2525"
+      # API 默认只绑定到宿主机环回地址，避免绕过 Nginx / Cloudflare 直接暴露源站。
+      - "${APP_BIND_HOST:-127.0.0.1}:${APP_PORT:-8080}:8080"
+      # SMTP 默认同样 fail-closed。只有显式改成 0.0.0.0 才会公开接收入站邮件。
+      - "${MAIL_RELAY_BIND_HOST:-127.0.0.1}:${MAIL_RELAY_PORT:-25}:2525"
     env_file:
       - .env
     volumes:

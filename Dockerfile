@@ -60,7 +60,7 @@ COPY --from=backend-builder /out/linuxdospace /usr/local/bin/linuxdospace
 # 这里设置容器内默认环境变量，方便 Debian 服务器直接通过 `.env` 覆盖。
 ENV APP_ENV=production \
     APP_ADDR=:8080 \
-    SQLITE_PATH=/app/data/linuxdospace.sqlite \
+    DATABASE_DRIVER=postgres \
     EMAIL_FORWARDING_BACKEND=database_relay \
     MAIL_RELAY_ENABLED=false \
     MAIL_RELAY_SMTP_ADDR=:2525 \

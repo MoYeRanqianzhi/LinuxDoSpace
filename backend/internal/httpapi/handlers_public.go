@@ -8,15 +8,9 @@ import (
 // handleHealth 返回服务健康状态。
 func (a *API) handleHealth(w http.ResponseWriter, r *http.Request) {
 	payload := map[string]any{
-		"status":                  "ok",
-		"app":                     a.config.App.Name,
-		"version":                 a.version,
-		"env":                     a.config.App.Env,
-		"oauth_ready":             a.config.OAuthConfigured(),
-		"cf_ready":                a.config.CloudflareConfigured(),
-		"mail_forwarding_backend": a.config.Mail.ForwardingBackend,
-		"mail_relay_enabled":      a.config.Mail.RelayEnabled,
-		"time":                    time.Now().UTC(),
+		"status":  "ok",
+		"version": a.version,
+		"time":    time.Now().UTC(),
 	}
 	if len(a.startupWarnings) > 0 {
 		payload["degraded"] = true
@@ -50,7 +44,7 @@ func (a *API) handleAllocationAvailability(w http.ResponseWriter, r *http.Reques
 	rootDomain := r.URL.Query().Get("root_domain")
 	prefix := r.URL.Query().Get("prefix")
 
-	result, err := a.domainService.CheckAvailability(r.Context(), rootDomain, prefix)
+	result, err := a.domainService.CheckPublicAvailability(r.Context(), rootDomain, prefix)
 	if err != nil {
 		writeError(w, err)
 		return

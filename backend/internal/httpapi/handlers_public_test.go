@@ -26,10 +26,6 @@ func TestHandleHealthIncludesStartupWarnings(t *testing.T) {
 			Cloudflare: config.CloudflareConfig{
 				APIToken: "test-token",
 			},
-			Mail: config.MailConfig{
-				ForwardingBackend: config.EmailForwardingBackendDatabaseRelay,
-				RelayEnabled:      true,
-			},
 		},
 		version:         "test-revision",
 		startupWarnings: []string{"default mail root linuxdo.space still uses Cloudflare-managed Email Routing MX records"},

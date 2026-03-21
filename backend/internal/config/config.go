@@ -242,7 +242,7 @@ func Load() (Config, error) {
 	if cfg.App.Env == "production" && !cfg.App.SessionSecure {
 		return Config{}, fmt.Errorf("APP_SESSION_SECURE must be true when APP_ENV=production")
 	}
-	if err := validateDatabaseConfig(cfg.Database); err != nil {
+	if err := validateDatabaseConfig(cfg.App, cfg.Database); err != nil {
 		return Config{}, err
 	}
 	if err := validateLinuxDOCreditConfig(cfg.LinuxDOCredit); err != nil {
@@ -452,7 +452,11 @@ func mustParseAdminPasswordHashes(raw string) map[string]string {
 
 // validateDatabaseConfig keeps startup fail-closed so production never silently
 // boots with the wrong database backend.
-func validateDatabaseConfig(database DatabaseConfig) error {
+func validateDatabaseConfig(app AppConfig, database DatabaseConfig) error {
+	if strings.EqualFold(strings.TrimSpace(app.Env), "production") && strings.TrimSpace(database.Driver) != "postgres" {
+		return fmt.Errorf("DATABASE_DRIVER must be postgres when APP_ENV=production")
+	}
+
 	switch database.Driver {
 	case "sqlite":
 		if strings.TrimSpace(database.SQLitePath) == "" {

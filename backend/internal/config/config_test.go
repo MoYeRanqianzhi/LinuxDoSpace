@@ -77,6 +77,8 @@ func TestLoadRequiresExplicitAdminConfigInProduction(t *testing.T) {
 	t.Setenv("APP_SESSION_SECRET", "test-session-secret")
 	t.Setenv("APP_ENV", "production")
 	t.Setenv("APP_SESSION_SECURE", "true")
+	t.Setenv("DATABASE_DRIVER", "postgres")
+	t.Setenv("DATABASE_POSTGRES_DSN", "postgres://linuxdospace:secret@db:5432/linuxdospace?sslmode=disable")
 	t.Setenv("APP_ADMIN_USERNAMES", "")
 	t.Setenv("APP_ADMIN_PASSWORD", "")
 
@@ -95,6 +97,8 @@ func TestLoadAcceptsExplicitAdminConfigInProduction(t *testing.T) {
 	t.Setenv("APP_SESSION_SECRET", "test-session-secret")
 	t.Setenv("APP_ENV", "production")
 	t.Setenv("APP_SESSION_SECURE", "true")
+	t.Setenv("DATABASE_DRIVER", "postgres")
+	t.Setenv("DATABASE_POSTGRES_DSN", "postgres://linuxdospace:secret@db:5432/linuxdospace?sslmode=disable")
 	t.Setenv("APP_ADMIN_USERNAMES", "MoYeRanQianZhi,user2996")
 	t.Setenv("APP_ADMIN_PASSWORD", "strong-password")
 
@@ -125,6 +129,8 @@ func TestLoadAcceptsPerAdminPasswordHashes(t *testing.T) {
 	t.Setenv("APP_SESSION_SECRET", "test-session-secret")
 	t.Setenv("APP_ENV", "production")
 	t.Setenv("APP_SESSION_SECURE", "true")
+	t.Setenv("DATABASE_DRIVER", "postgres")
+	t.Setenv("DATABASE_POSTGRES_DSN", "postgres://linuxdospace:secret@db:5432/linuxdospace?sslmode=disable")
 	t.Setenv("APP_ADMIN_USERNAMES", "MoYeRanQianZhi,user2996")
 	t.Setenv("APP_ADMIN_PASSWORD", "")
 	t.Setenv("APP_ADMIN_PASSWORD_HASHES", `{"MoYeRanQianZhi":"`+string(adminHash)+`","user2996":"`+string(secondHash)+`"}`)
@@ -147,6 +153,8 @@ func TestLoadRejectsInsecureProductionCookies(t *testing.T) {
 	t.Setenv("APP_SESSION_SECRET", "test-session-secret")
 	t.Setenv("APP_ENV", "production")
 	t.Setenv("APP_SESSION_SECURE", "false")
+	t.Setenv("DATABASE_DRIVER", "postgres")
+	t.Setenv("DATABASE_POSTGRES_DSN", "postgres://linuxdospace:secret@db:5432/linuxdospace?sslmode=disable")
 	t.Setenv("APP_ADMIN_USERNAMES", "MoYeRanQianZhi,user2996")
 	t.Setenv("APP_ADMIN_PASSWORD", "strong-password")
 
@@ -224,6 +232,27 @@ func TestLoadRequiresPostgresDSN(t *testing.T) {
 		t.Fatalf("expected postgres config without DSN to fail")
 	}
 	if !strings.Contains(err.Error(), "DATABASE_POSTGRES_DSN or DATABASE_URL is required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestLoadRejectsSQLiteInProduction verifies that production deployments cannot
+// silently fall back to SQLite after a misconfigured container or environment
+// rollout.
+func TestLoadRejectsSQLiteInProduction(t *testing.T) {
+	t.Setenv("APP_SESSION_SECRET", "test-session-secret")
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("APP_SESSION_SECURE", "true")
+	t.Setenv("APP_ADMIN_USERNAMES", "MoYeRanQianZhi,user2996")
+	t.Setenv("APP_ADMIN_PASSWORD", "strong-password")
+	t.Setenv("DATABASE_DRIVER", "sqlite")
+	t.Setenv("SQLITE_PATH", "./data/test.sqlite")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatalf("expected production sqlite configuration to fail")
+	}
+	if !strings.Contains(err.Error(), "DATABASE_DRIVER must be postgres when APP_ENV=production") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
