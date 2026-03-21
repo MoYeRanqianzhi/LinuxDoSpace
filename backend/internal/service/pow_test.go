@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -210,6 +211,74 @@ func TestPOWServiceStopsAfterFiveDailyClaims(t *testing.T) {
 		t.Fatalf("expected a sixth pow challenge creation to be rejected")
 	} else if NormalizeError(err).Code != "too_many_requests" {
 		t.Fatalf("expected too_many_requests after 5 claims, got %v", err)
+	}
+}
+
+// TestPOWServiceConcurrentClaimOnlyGrantsOnce verifies that concurrent submits
+// for the same challenge cannot both receive the reward.
+func TestPOWServiceConcurrentClaimOnlyGrantsOnce(t *testing.T) {
+	ctx := context.Background()
+	store := newAuthTestStore(t)
+	user := seedPermissionEmailTestUserWithLinuxDOID(t, ctx, store, 984, "alice")
+
+	service := NewPOWService(newPermissionEmailTestConfig(), store)
+	challenge, err := service.CreateChallenge(ctx, user, GeneratePOWChallengeRequest{
+		BenefitKey: model.POWBenefitEmailCatchAllRemainingCount,
+		Difficulty: 3,
+	})
+	if err != nil {
+		t.Fatalf("create pow challenge: %v", err)
+	}
+	nonce := solvePOWChallenge(t, challenge)
+
+	type claimResult struct {
+		result SubmitPOWChallengeResult
+		err    error
+	}
+
+	results := make(chan claimResult, 2)
+	var waitGroup sync.WaitGroup
+	for attempt := 0; attempt < 2; attempt++ {
+		waitGroup.Add(1)
+		go func() {
+			defer waitGroup.Done()
+			result, submitErr := service.SubmitChallenge(ctx, user, SubmitPOWChallengeRequest{
+				ChallengeID: challenge.ID,
+				Nonce:       nonce,
+			})
+			results <- claimResult{result: result, err: submitErr}
+		}()
+	}
+	waitGroup.Wait()
+	close(results)
+
+	successCount := 0
+	conflictCount := 0
+	for item := range results {
+		if item.err == nil {
+			successCount++
+			continue
+		}
+		if NormalizeError(item.err).Code == "conflict" {
+			conflictCount++
+			continue
+		}
+		t.Fatalf("expected concurrent loser to receive conflict, got %v", item.err)
+	}
+
+	if successCount != 1 {
+		t.Fatalf("expected exactly one successful concurrent claim, got %d", successCount)
+	}
+	if conflictCount != 1 {
+		t.Fatalf("expected exactly one conflicting concurrent claim, got %d", conflictCount)
+	}
+
+	status, err := service.GetMyStatus(ctx, user)
+	if err != nil {
+		t.Fatalf("get pow status after concurrent claim: %v", err)
+	}
+	if status.CompletedToday != 1 {
+		t.Fatalf("expected completed_today=1 after concurrent claim, got %d", status.CompletedToday)
 	}
 }
 

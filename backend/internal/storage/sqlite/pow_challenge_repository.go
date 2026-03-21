@@ -10,6 +10,7 @@ import (
 
 	"linuxdospace/backend/internal/model"
 	"linuxdospace/backend/internal/storage"
+	"linuxdospace/backend/internal/timeutil"
 )
 
 type CreateOrReplacePOWChallengeInput = storage.CreateOrReplacePOWChallengeInput
@@ -210,12 +211,49 @@ func (s *Store) ClaimPOWChallengeReward(ctx context.Context, input ClaimPOWChall
 		return model.POWChallenge{}, model.EmailCatchAllAccess{}, storage.ErrPOWChallengeNotActive
 	}
 
-	claimCount, err := countClaimedPOWChallengesByUserTx(ctx, tx, input.UserID, input.DailyWindowStart.UTC(), input.DailyWindowEnd.UTC())
+	if err := reservePOWDailyClaimTx(ctx, tx, input.UserID, timeutil.ShanghaiDayKey(now), input.MaxDailyCompletions, now); err != nil {
+		return model.POWChallenge{}, model.EmailCatchAllAccess{}, err
+	}
+
+	updateResult, err := tx.ExecContext(ctx, `
+UPDATE pow_challenges
+SET
+    status = ?,
+    base_reward = ?,
+    reward_quantity = ?,
+    solution_nonce = ?,
+    solution_hash_hex = ?,
+    claimed_at = ?,
+    updated_at = ?
+WHERE id = ? AND user_id = ? AND status = ?
+`,
+		model.POWChallengeStatusClaimed,
+		input.BaseReward,
+		input.RewardQuantity,
+		strings.TrimSpace(input.SolutionNonce),
+		strings.TrimSpace(input.SolutionHashHex),
+		formatTime(now),
+		formatTime(now),
+		input.ChallengeID,
+		input.UserID,
+		model.POWChallengeStatusActive,
+	)
 	if err != nil {
 		return model.POWChallenge{}, model.EmailCatchAllAccess{}, err
 	}
-	if claimCount >= input.MaxDailyCompletions {
-		return model.POWChallenge{}, model.EmailCatchAllAccess{}, storage.ErrPOWChallengeDailyLimitExceeded
+	affectedRows, err := updateResult.RowsAffected()
+	if err != nil {
+		return model.POWChallenge{}, model.EmailCatchAllAccess{}, err
+	}
+	if affectedRows == 0 {
+		return model.POWChallenge{}, model.EmailCatchAllAccess{}, storage.ErrPOWChallengeNotActive
+	}
+	finalChallenge, err := getPOWChallengeByIDForUserTx(ctx, tx, input.ChallengeID, input.UserID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return model.POWChallenge{}, model.EmailCatchAllAccess{}, storage.ErrPOWChallengeNotActive
+		}
+		return model.POWChallenge{}, model.EmailCatchAllAccess{}, err
 	}
 
 	access, found, err := getEmailCatchAllAccessTx(ctx, tx, input.UserID)
@@ -272,57 +310,6 @@ INSERT INTO quantity_records (
 		return model.POWChallenge{}, model.EmailCatchAllAccess{}, err
 	}
 
-	row := tx.QueryRowContext(ctx, `
-UPDATE pow_challenges
-SET
-    status = ?,
-    base_reward = ?,
-    reward_quantity = ?,
-    solution_nonce = ?,
-    solution_hash_hex = ?,
-    claimed_at = ?,
-    updated_at = ?
-WHERE id = ?
-RETURNING
-    id,
-    user_id,
-    benefit_key,
-    resource_key,
-    scope,
-    difficulty,
-    base_reward,
-    reward_quantity,
-    reward_unit,
-    challenge_token,
-    salt_hex,
-    argon2_variant,
-    argon2_memory_kib,
-    argon2_iterations,
-    argon2_parallelism,
-    argon2_hash_length,
-    status,
-    solution_nonce,
-    solution_hash_hex,
-    claimed_at,
-    superseded_at,
-    created_at,
-    updated_at
-`,
-		model.POWChallengeStatusClaimed,
-		input.BaseReward,
-		input.RewardQuantity,
-		strings.TrimSpace(input.SolutionNonce),
-		strings.TrimSpace(input.SolutionHashHex),
-		formatTime(now),
-		formatTime(now),
-		input.ChallengeID,
-	)
-
-	finalChallenge, err := scanPOWChallenge(row)
-	if err != nil {
-		return model.POWChallenge{}, model.EmailCatchAllAccess{}, err
-	}
-
 	if err := tx.Commit(); err != nil {
 		return model.POWChallenge{}, model.EmailCatchAllAccess{}, err
 	}
@@ -363,24 +350,44 @@ WHERE id = ? AND user_id = ?
 	return scanPOWChallenge(row)
 }
 
-// countClaimedPOWChallengesByUserTx counts already claimed rewards inside the
-// same transaction used to claim the next challenge.
-func countClaimedPOWChallengesByUserTx(ctx context.Context, tx *sql.Tx, userID int64, start time.Time, end time.Time) (int, error) {
-	row := tx.QueryRowContext(ctx, `
-SELECT COUNT(*)
-FROM pow_challenges
-WHERE user_id = ?
-  AND status = ?
-  AND claimed_at IS NOT NULL
-  AND claimed_at >= ?
-  AND claimed_at < ?
-`, userID, model.POWChallengeStatusClaimed, formatTime(start.UTC()), formatTime(end.UTC()))
-
-	var count int
-	if err := row.Scan(&count); err != nil {
-		return 0, err
+// reservePOWDailyClaimTx atomically consumes one claim slot in the Shanghai
+// day-scoped usage table. This closes the race where two concurrent challenge
+// submissions both saw the same historical count and both succeeded.
+func reservePOWDailyClaimTx(ctx context.Context, tx *sql.Tx, userID int64, usageDate string, maxDailyCompletions int, now time.Time) error {
+	if maxDailyCompletions <= 0 {
+		return storage.ErrPOWChallengeDailyLimitExceeded
 	}
-	return count, nil
+
+	result, err := tx.ExecContext(ctx, `
+INSERT INTO pow_challenge_daily_usage (
+    user_id,
+    usage_date,
+    used_count,
+    created_at,
+    updated_at
+) VALUES (?, ?, 1, ?, ?)
+ON CONFLICT(user_id, usage_date) DO UPDATE SET
+    used_count = pow_challenge_daily_usage.used_count + 1,
+    updated_at = excluded.updated_at
+WHERE pow_challenge_daily_usage.used_count + 1 <= ?
+`,
+		userID,
+		usageDate,
+		formatTime(now),
+		formatTime(now),
+		maxDailyCompletions,
+	)
+	if err != nil {
+		return err
+	}
+	affectedRows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affectedRows == 0 {
+		return storage.ErrPOWChallengeDailyLimitExceeded
+	}
+	return nil
 }
 
 // scanPOWChallenge maps one persisted challenge row into the shared model.
