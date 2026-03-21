@@ -73,5 +73,5 @@
 - Python SDK 是独立 Git 子仓库
 - 其余语言 SDK 现在也都是独立 Git 仓库
 - 当前 PyPI 安装命令明确为 `pip install linuxdospace`
-- 当前仓库内置的 repo-local skill 只有 Python SDK 一份，位于 `sdk/python/.agents/skills/linuxdo-space-python-sdk`
+- 每个 SDK 子仓库都应内置自己的 repo-local skill，当前已覆盖 Python、Rust、Go、Node.js、C、C++、Kotlin、Java、C#、Swift、Dart、Lua、Zig
 - 父仓库只跟踪 submodule 指针，不直接承载 Python SDK 的提交历史
