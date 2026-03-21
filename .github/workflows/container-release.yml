@@ -20,8 +20,58 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
+  verify:
+    name: Verify Repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            admin-frontend/package-lock.json
+
+      - name: Verify submodule checkout state
+        shell: bash
+        run: |
+          git submodule sync --recursive
+          git submodule update --init --recursive
+          git submodule status --recursive
+
+      - name: Run backend tests
+        working-directory: backend
+        run: go test ./...
+
+      - name: Build public frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build admin frontend
+        working-directory: admin-frontend
+        run: |
+          npm ci
+          npm run build
+
   build-and-push:
     name: Build And Push Image
+    needs: verify
     runs-on: ubuntu-latest
     # Only the default branch refreshes the shared `latest` image. Tag pushes
     # deploy the already-published latest image instead of rebuilding it again.
@@ -71,7 +121,7 @@ jobs:
 
   deploy-to-debian:
     name: Deploy To Debian
-    needs: build-and-push
+    needs: [verify, build-and-push]
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:
@@ -90,8 +140,11 @@ jobs:
           (github.event_name == 'workflow_dispatch' && inputs.deploy_to_debian)
         ) &&
         (
+          needs.verify.result == 'success' &&
+          (
           needs.build-and-push.result == 'success' ||
           needs.build-and-push.result == 'skipped'
+          )
         )
       }}
     env:

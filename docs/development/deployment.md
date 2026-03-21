@@ -93,6 +93,11 @@ Workflow file:
 
 The workflow is designed to:
 
+- run one verification stage before any release or deploy action:
+  - `go test ./...` in `backend/`
+  - `npm ci && npm run build` in `frontend/`
+  - `npm ci && npm run build` in `admin-frontend/`
+  - submodule sync/update/status validation
 - build and publish the shared `ghcr.io/moyeranqianzhi/linuxdospace:latest` image on `main`
 - deploy the already-published `latest` image on tag pushes after verifying the image revision matches the tag commit
 - allow the same deploy path to be triggered manually through `workflow_dispatch`
@@ -134,6 +139,28 @@ When the service is behind Nginx or another reverse proxy, also verify:
 - the admin frontend can call `GET /v1/admin/me` and receive JSON
 - the Linux Do OAuth callback URL matches the production API domain exactly
 - CORS allows both configured frontend origins
+
+Recommended release order:
+
+1. Run local validation before pushing:
+   - `go test ./...` in `backend/`
+   - `npm run build` in `frontend/`
+   - `npm run build` in `admin-frontend/`
+2. Push any SDK child-repository changes first when the release includes SDK work.
+3. Update the parent repository submodule pointers and push `main`.
+4. Create and push the release tag.
+5. Wait for `.github/workflows/container-release.yml` to finish verification, image publish, and remote deploy.
+6. Run the smoke checks below against the live public URLs.
+
+Recommended live smoke checks after tag deployment:
+
+- `GET /healthz`
+- `GET /v1/public/domains`
+- public frontend login redirect
+- admin frontend `/v1/admin/me`
+- one order creation + callback/refresh
+- one email target create + resend + verify
+- one token stream connection receiving `ready`
 
 ## Cloudflare DNS and mail relay
 

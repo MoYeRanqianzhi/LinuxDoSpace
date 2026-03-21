@@ -32,6 +32,10 @@ SDK 说明：
 - Cloudflare DNS 记录实时 CRUD
 - 管理员域名配置与用户配额接口
 - 可切换的 SQLite / PostgreSQL 持久化层
+- Linux Do Credit 支付、订单查询、回调和权益发放
+- 服务端 SMTP 中转、目标邮箱验证与 API Token 邮件流
+- Proof-of-Work 福利与原子化奖励发放
+- 独立管理员后端 API 与 `admin-frontend/`
 
 当前前端已实现：
 
@@ -40,6 +44,8 @@ SDK 说明：
 - 命名空间申请
 - 命名空间内 DNS 记录管理
 - URL 与当前页面状态同步
+- 邮箱目标验证、邮箱转发、订单列表与支付回调
+- PoW 福利与数量/订阅额度展示
 
 当前部署能力已实现：
 
@@ -47,17 +53,18 @@ SDK 说明：
 - 前端静态资源嵌入 Go 二进制
 - GitHub Actions 自动构建并发布到 GHCR
 - 可选通过 SSH 自动部署到 Debian 服务器
+- tag 触发的验证、镜像发布与远端部署
 
 数据库说明：
 
 - 当前生产部署使用 PostgreSQL。
 - 仓库仍保留 SQLite 兼容实现，但它只用于本地开发、测试和回滚兜底场景，不是当前线上主数据库。
 
-当前未完成：
+当前仍在持续完善：
 
-- 前端 API 联调
-- 兑换码 / L 站积分兑换流程
-- 管理后台页面
+- SMTP 生产投递质量运维能力（rDNS / DKIM / DMARC / 信誉）
+- 多语言 SDK 的持续回归验证与发布
+- 更完整的退款、对账与运营报表能力
 
 部署参考见 [deployment.md](/G:/ClaudeProjects/LinuxDoSpace/LinuxDoSpace/docs/development/deployment.md)。
 

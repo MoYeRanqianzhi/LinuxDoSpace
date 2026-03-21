@@ -52,6 +52,23 @@
 - 已落代码但未本机验证：Kotlin、C#、Swift、Dart、Lua、Zig
 - C/C++ 当前为传输无关核心实现，其余语言为完整 SDK 工程
 
+## 发布顺序
+
+当一次变更同时触及主仓库和 SDK 时，统一按以下顺序发布：
+
+1. 先推送 SDK 子仓库。
+2. 等各 SDK 仓库自己的 `ci.yml` / `release.yml` 通过。
+3. 再回到父仓库更新 submodule 指针并提交。
+4. 最后发布父仓库 tag，触发主服务镜像与 Debian 部署。
+
+这样可以避免父仓库已经引用了一个尚未发布或尚未通过 CI 的 SDK 提交。
+
+## 当前协议说明
+
+当前主仓库最近一轮安全/一致性修复没有修改 `/v1/token/email/stream`
+的 wire format。本轮 SDK 工作重点仍然是保持各语言对现有协议的实现
+一致，而不是引入新的协议版本。
+
 ## Python SDK 特殊说明
 
 - Python SDK 是独立 Git 子仓库

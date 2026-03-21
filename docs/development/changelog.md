@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- Hardened user allocation creation so effective quota is now enforced inside
+  the storage transaction as a final guard, closing the concurrent read-then-
+  create window that could previously oversubscribe one user's namespace quota.
+- Changed payment-order reads to fail closed for foreign users: public order
+  fetches now return not-found semantics instead of exposing that another
+  user's `out_trade_no` exists.
+- Added persistent email-target verification attempt tracking plus atomic
+  verification-token consumption, so resend throttling survives restarts and
+  concurrent verification-link opens can no longer both succeed.
+- Added durable owner/target resend throttles for verification mail, alongside
+  atomic storage preparation of the next token before the outbound email is sent.
+- Hardened email-route upserts so conflicting writes can no longer silently
+  transfer ownership of an existing route to another user.
+- Expanded admin second-factor brute-force protection from session/IP buckets
+  to session/IP/user buckets, so rotating both session id and client IP no
+  longer bypasses the password limiter.
+- Added workflow preflight verification for backend tests, public frontend
+  build, admin frontend build, and recursive submodule checkout before image
+  release or deploy.
 - Refactored mailbox forwarding to default to full server-side relay: default mailboxes and catch-all routes now both use database-stored routing plus the built-in SMTP relay, while Cloudflare is reduced to DNS management only.
 - Hardened database-relay startup so the known Cloudflare default-root `MX`
   conflict (“managed by Email Routing”) is downgraded to an operator-visible

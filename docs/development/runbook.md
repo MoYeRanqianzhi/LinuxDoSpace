@@ -132,11 +132,42 @@ After local startup, verify:
 - Linux Do OAuth redirects back to the configured backend callback
 - saving a mailbox forward returns JSON, not an HTML error page
 
+## Release sequence
+
+1. Confirm the working tree is clean and all intended commits are present.
+2. Run:
+   - `go test ./...` in `backend/`
+   - `npm run build` in `frontend/`
+   - `npm run build` in `admin-frontend/`
+3. If SDK submodules changed, push each child repository first and confirm their CI/release workflows.
+4. Push the parent repository.
+5. Create and push the release tag.
+6. Watch `.github/workflows/container-release.yml` until:
+   - `verify` passes
+   - image publish finishes when applicable
+   - remote deploy reports success
+
+## Rollback checklist
+
+If the release is unhealthy:
+
+1. Identify the previous healthy image revision or tag.
+2. On the server, restore the previous image tag/digest in `.env`.
+3. Run `docker compose up -d --force-recreate --remove-orphans`.
+4. Re-check:
+   - `/healthz`
+   - `/v1/public/domains`
+   - OAuth login
+   - admin `/v1/admin/me`
+   - one order read
+5. If the failure involves a new database migration, restore the PostgreSQL backup before re-enabling writes.
+
 ## Troubleshooting notes
 
 - When OAuth is not configured, authentication endpoints should fail closed instead of pretending to work.
 - If `CLOUDFLARE_DEFAULT_ZONE_ID` is empty, the backend will resolve the zone through the Cloudflare API.
 - If the frontend reports a non-JSON API response, check `VITE_API_BASE_URL` and reverse-proxy routing first.
 - If mailbox forwarding save fails, verify that the target mailbox has already completed LinuxDoSpace's own verification email flow.
+- If mailbox verification sends suddenly start returning `429`, check the new persistent owner/target anti-spam limits before retrying manually.
 - If `database_relay` mode is enabled and inbound mail never arrives, verify LinuxDoSpace created the managed MX/TXT records you expect, the MX target resolves correctly, and host port `25` reaches the container's SMTP listener on `2525`.
 - If `database_relay` mode is enabled and mail is accepted but not forwarded, verify outbound TCP `25` egress, remote MX reachability, `PTR/rDNS`, `MAIL_RELAY_HELO_DOMAIN`, and recipient-domain SMTP replies.
