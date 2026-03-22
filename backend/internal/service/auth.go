@@ -59,10 +59,7 @@ func (s *AuthService) BeginLogin(ctx context.Context, nextPath string) (LoginSta
 	codeVerifier := ""
 	codeChallenge := ""
 	if s.cfg.LinuxDO.EnablePKCE {
-		codeVerifier, err = security.RandomToken(48)
-		if err != nil {
-			return LoginStartResult{}, InternalError("failed to generate pkce verifier", err)
-		}
+		codeVerifier = security.DerivePKCEVerifier(stateID)
 		codeChallenge = security.CodeChallengeS256(codeVerifier)
 	}
 
@@ -107,7 +104,11 @@ func (s *AuthService) CompleteLogin(ctx context.Context, stateFromQuery string, 
 		return LoginCompleteResult{}, UnauthorizedError("oauth state has expired")
 	}
 
-	token, err := s.oauth.ExchangeCode(ctx, code, state.CodeVerifier)
+	codeVerifier := state.CodeVerifier
+	if s.cfg.LinuxDO.EnablePKCE {
+		codeVerifier = security.DerivePKCEVerifier(stateFromQuery)
+	}
+	token, err := s.oauth.ExchangeCode(ctx, code, codeVerifier)
 	if err != nil {
 		return LoginCompleteResult{}, UnavailableError("failed to exchange linux.do oauth code", err)
 	}
@@ -142,10 +143,7 @@ func (s *AuthService) CompleteLogin(ctx context.Context, stateFromQuery string, 
 	if err != nil {
 		return LoginCompleteResult{}, InternalError("failed to generate session id", err)
 	}
-	csrfToken, err := security.RandomToken(32)
-	if err != nil {
-		return LoginCompleteResult{}, InternalError("failed to generate csrf token", err)
-	}
+	csrfToken := security.DeriveSessionCSRFToken(sessionID)
 
 	session, err := s.store.CreateSessionFromOAuthState(ctx, stateFromQuery, storage.CreateSessionInput{
 		ID:                   sessionID,
@@ -165,7 +163,7 @@ func (s *AuthService) CompleteLogin(ctx context.Context, stateFromQuery string, 
 		ActorUserID:  &user.ID,
 		Action:       "auth.login",
 		ResourceType: "session",
-		ResourceID:   session.ID,
+		ResourceID:   security.AuditResourceID(session.ID),
 		MetadataJSON: `{"provider":"linuxdo"}`,
 	}))
 
@@ -219,6 +217,9 @@ func (s *AuthService) AuthenticateSession(ctx context.Context, sessionID string,
 // Logout deletes the current session and records an audit event.
 func (s *AuthService) Logout(ctx context.Context, sessionID string, actorUserID int64) error {
 	if err := s.store.DeleteSession(ctx, sessionID); err != nil {
+		if storage.IsNotFound(err) {
+			return nil
+		}
 		return InternalError("failed to delete session", err)
 	}
 
@@ -226,7 +227,7 @@ func (s *AuthService) Logout(ctx context.Context, sessionID string, actorUserID 
 		ActorUserID:  &actorUserID,
 		Action:       "auth.logout",
 		ResourceType: "session",
-		ResourceID:   sessionID,
+		ResourceID:   security.AuditResourceID(sessionID),
 		MetadataJSON: `{}`,
 	}))
 	return nil
@@ -251,7 +252,7 @@ func (s *AuthService) VerifyAdminPassword(ctx context.Context, session model.Ses
 			ActorUserID:  &actor.ID,
 			Action:       "admin.session.verify_password_failed",
 			ResourceType: "session",
-			ResourceID:   session.ID,
+			ResourceID:   security.AuditResourceID(session.ID),
 			MetadataJSON: `{"second_factor":"password","result":"rejected"}`,
 		}))
 		return model.Session{}, UnauthorizedError("invalid admin password")
@@ -262,10 +263,7 @@ func (s *AuthService) VerifyAdminPassword(ctx context.Context, session model.Ses
 	if err != nil {
 		return model.Session{}, InternalError("failed to generate rotated admin session id", err)
 	}
-	newCSRFToken, err := security.RandomToken(32)
-	if err != nil {
-		return model.Session{}, InternalError("failed to generate rotated admin csrf token", err)
-	}
+	newCSRFToken := security.DeriveSessionCSRFToken(newSessionID)
 
 	rotatedSession, err := s.store.CreateSession(ctx, storage.CreateSessionInput{
 		ID:                   newSessionID,
@@ -280,6 +278,9 @@ func (s *AuthService) VerifyAdminPassword(ctx context.Context, session model.Ses
 	}
 	if err := s.store.DeleteSession(ctx, session.ID); err != nil {
 		_ = s.store.DeleteSession(ctx, rotatedSession.ID)
+		if storage.IsNotFound(err) {
+			return model.Session{}, UnauthorizedError("admin session is invalid or already rotated")
+		}
 		return model.Session{}, InternalError("failed to retire pre-verification session", err)
 	}
 
@@ -287,8 +288,8 @@ func (s *AuthService) VerifyAdminPassword(ctx context.Context, session model.Ses
 		ActorUserID:  &actor.ID,
 		Action:       "admin.session.verify_password",
 		ResourceType: "session",
-		ResourceID:   rotatedSession.ID,
-		MetadataJSON: fmt.Sprintf(`{"second_factor":"password","result":"verified","previous_session_id":"%s"}`, session.ID),
+		ResourceID:   security.AuditResourceID(rotatedSession.ID),
+		MetadataJSON: fmt.Sprintf(`{"second_factor":"password","result":"verified","previous_session_id":"%s"}`, security.AuditResourceID(session.ID)),
 	}))
 
 	return rotatedSession, nil

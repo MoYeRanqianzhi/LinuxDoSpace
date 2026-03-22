@@ -161,18 +161,18 @@ type UpdateEmailTargetInput struct {
 // step that reserves a verification-send slot, persists the next token, and
 // refreshes the target row before the application sends the actual email.
 type PrepareEmailTargetVerificationSendInput struct {
-	ID                       int64
-	OwnerUserID              int64
-	Email                    string
-	VerificationTokenHash    string
-	VerificationExpiresAt    *time.Time
-	PreparedAt               time.Time
-	ShortWindowStart         time.Time
-	DailyWindowStart         time.Time
-	OwnerShortLimit          int
-	OwnerDailyLimit          int
-	TargetShortLimit         int
-	TargetDailyLimit         int
+	ID                    int64
+	OwnerUserID           int64
+	Email                 string
+	VerificationTokenHash string
+	VerificationExpiresAt *time.Time
+	PreparedAt            time.Time
+	ShortWindowStart      time.Time
+	DailyWindowStart      time.Time
+	OwnerShortLimit       int
+	OwnerDailyLimit       int
+	TargetShortLimit      int
+	TargetDailyLimit      int
 }
 
 // UpsertAdminApplicationInput describes one user-side permission application.
@@ -377,6 +377,16 @@ type UpdatePaymentOrderGatewayStateInput struct {
 	NotifyPayloadRaw string
 	PaidAt           *time.Time
 	LastCheckedAt    *time.Time
+}
+
+// UpdatePaymentOrderFulfillmentStateInput describes the mutable local
+// entitlement-application state written after payment has already been
+// confirmed.
+type UpdatePaymentOrderFulfillmentStateInput struct {
+	OutTradeNo          string
+	FulfillmentStatus   string
+	FulfillmentError    string
+	FulfillmentFailedAt *time.Time
 }
 
 // ApplyPaymentOrderEntitlementInput describes one idempotent request to turn a

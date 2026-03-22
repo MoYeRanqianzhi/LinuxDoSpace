@@ -90,6 +90,8 @@ func (a *API) handleAdminVerifyPassword(w http.ResponseWriter, r *http.Request) 
 	}
 
 	clientIP := requestClientIP(r, a.config.App.TrustedProxyCIDRs)
+	unlockUser := a.adminPasswordLimiter.lockUser(user.ID)
+	defer unlockUser()
 	if retryAfter, blocked := a.adminPasswordLimiter.Check(r.Context(), session.ID, clientIP, user.ID, time.Now().UTC()); blocked {
 		w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
 		writeError(w, service.TooManyRequestsError("too many invalid admin password attempts, please retry later"))

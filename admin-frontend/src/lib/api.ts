@@ -83,14 +83,13 @@ export class APIError extends Error {
   }
 }
 
-// notifyAdminAuthInvalidated broadcasts only real session invalidation and
-// second-factor expiry. Plain authorization failures should not force a global
-// logout in the admin shell.
+// notifyAdminAuthInvalidated broadcasts every backend response that proves the
+// admin shell must reconcile its global session/authorization state again.
 function notifyAdminAuthInvalidated(path: string, code: string, status: number, message: string): void {
 	if (typeof window === 'undefined') {
 		return;
 	}
-	if (!['unauthorized', 'admin_password_required'].includes(code) && status !== 401) {
+	if (!['unauthorized', 'admin_password_required', 'forbidden'].includes(code) && status !== 401 && status !== 403) {
 		return;
 	}
   if (path === '/v1/admin/verify-password' && code === 'unauthorized') {

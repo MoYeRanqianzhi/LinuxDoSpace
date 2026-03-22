@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -48,6 +49,7 @@ type adminPasswordLimiter struct {
 	blockDuration time.Duration
 	stateTTL      time.Duration
 	lastCleanupAt atomic.Int64
+	userLocks     sync.Map
 }
 
 // newAdminPasswordLimiter constructs one in-memory limiter tuned for the admin
@@ -186,4 +188,19 @@ func (l *adminPasswordLimiter) deleteAttempt(ctx context.Context, bucketType str
 		return nil
 	}
 	return l.store.DeleteAdminPasswordAttempt(ctx, bucketType, bucketKey)
+}
+
+// lockUser serializes password-verification attempts for one administrator
+// account so attackers cannot bypass the persisted limiter by racing several
+// concurrent guesses before the first failure is written.
+func (l *adminPasswordLimiter) lockUser(userID int64) func() {
+	if l == nil || userID <= 0 {
+		return func() {}
+	}
+
+	lockKey := adminPasswordUserBucketKey(userID)
+	lockValue, _ := l.userLocks.LoadOrStore(lockKey, &sync.Mutex{})
+	locker := lockValue.(*sync.Mutex)
+	locker.Lock()
+	return locker.Unlock
 }

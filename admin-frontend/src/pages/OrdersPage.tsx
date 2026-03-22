@@ -33,6 +33,9 @@ function readableStatus(order: AdminPaymentOrder): { label: string; className: s
   if (order.status === 'paid' && order.applied_at) {
     return { label: '已支付并发放', className: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' };
   }
+  if (order.status === 'paid' && order.fulfillment_status === 'failed') {
+    return { label: '已支付，发放失败', className: 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300' };
+  }
   switch (order.status) {
     case 'paid':
       return { label: '已支付，待发放', className: 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300' };
@@ -206,7 +209,13 @@ export function OrdersPage({ csrfToken }: OrdersPageProps) {
                         <td className="px-5 py-4 align-top text-slate-600 dark:text-slate-300">
                           <div>创建：{formatDate(order.created_at)}</div>
                           <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">支付：{formatDate(order.paid_at)}</div>
-                          <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">发放：{formatDate(order.applied_at)}</div>
+                          <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                            {order.applied_at
+                              ? `发放：${formatDate(order.applied_at)}`
+                              : order.fulfillment_status === 'failed' && order.fulfillment_failed_at
+                                ? `失败：${formatDate(order.fulfillment_failed_at)}`
+                                : '发放：暂无'}
+                          </div>
                           <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">检查：{formatDate(order.last_checked_at)}</div>
                         </td>
                         <td className="px-5 py-4 align-top">

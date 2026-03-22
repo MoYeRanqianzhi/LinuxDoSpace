@@ -17,6 +17,7 @@ import (
 type UpsertPaymentProductInput = storage.UpsertPaymentProductInput
 type CreatePaymentOrderInput = storage.CreatePaymentOrderInput
 type UpdatePaymentOrderGatewayStateInput = storage.UpdatePaymentOrderGatewayStateInput
+type UpdatePaymentOrderFulfillmentStateInput = storage.UpdatePaymentOrderFulfillmentStateInput
 type ApplyPaymentOrderEntitlementInput = storage.ApplyPaymentOrderEntitlementInput
 
 const (
@@ -195,12 +196,15 @@ INSERT INTO payment_orders (
     purchase_reservation_expires_at,
     payment_url,
     notify_payload_raw,
+    fulfillment_status,
+    fulfillment_error,
+    fulfillment_failed_at,
     paid_at,
     applied_at,
     last_checked_at,
     created_at,
     updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', '', NULL, ?, ?, ?, ?, ?)
 RETURNING id
 `,
 		input.UserID,
@@ -282,6 +286,9 @@ SELECT
     po.purchase_assigned_fqdn,
     po.payment_url,
     po.notify_payload_raw,
+    po.fulfillment_status,
+    po.fulfillment_error,
+    po.fulfillment_failed_at,
     po.paid_at,
     po.applied_at,
     po.last_checked_at,
@@ -346,6 +353,9 @@ SELECT
     po.purchase_assigned_fqdn,
     po.payment_url,
     po.notify_payload_raw,
+    po.fulfillment_status,
+    po.fulfillment_error,
+    po.fulfillment_failed_at,
     po.paid_at,
     po.applied_at,
     po.last_checked_at,
@@ -408,6 +418,9 @@ SELECT
     po.purchase_assigned_fqdn,
     po.payment_url,
     po.notify_payload_raw,
+    po.fulfillment_status,
+    po.fulfillment_error,
+    po.fulfillment_failed_at,
     po.paid_at,
     po.applied_at,
     po.last_checked_at,
@@ -453,6 +466,37 @@ RETURNING id
 		strings.TrimSpace(input.NotifyPayloadRaw),
 		formatNullableTime(input.PaidAt),
 		formatNullableTime(input.LastCheckedAt),
+		formatTime(time.Now().UTC()),
+		strings.TrimSpace(input.OutTradeNo),
+	)
+
+	var id int64
+	if err := row.Scan(&id); err != nil {
+		return model.PaymentOrder{}, err
+	}
+	return s.getPaymentOrderByID(ctx, id)
+}
+
+// UpdatePaymentOrderFulfillmentState persists the local entitlement-application
+// outcome after payment has already been confirmed by the upstream gateway.
+func (s *Store) UpdatePaymentOrderFulfillmentState(ctx context.Context, input UpdatePaymentOrderFulfillmentStateInput) (model.PaymentOrder, error) {
+	row := s.db.QueryRowContext(ctx, `
+UPDATE payment_orders
+SET
+    fulfillment_status = CASE
+        WHEN ? IN ('pending', 'applied', 'failed') THEN ?
+        ELSE fulfillment_status
+    END,
+    fulfillment_error = ?,
+    fulfillment_failed_at = ?,
+    updated_at = ?
+WHERE out_trade_no = ?
+RETURNING id
+`,
+		strings.TrimSpace(input.FulfillmentStatus),
+		strings.TrimSpace(input.FulfillmentStatus),
+		strings.TrimSpace(input.FulfillmentError),
+		formatNullableTime(input.FulfillmentFailedAt),
 		formatTime(time.Now().UTC()),
 		strings.TrimSpace(input.OutTradeNo),
 	)
@@ -517,6 +561,22 @@ func (s *Store) ApplyPaymentOrderEntitlement(ctx context.Context, input ApplyPay
 		}
 	default:
 		return model.PaymentOrder{}, false, fmt.Errorf("unsupported payment effect type %q", order.EffectType)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+UPDATE payment_orders
+SET
+    fulfillment_status = ?,
+    fulfillment_error = '',
+    fulfillment_failed_at = NULL,
+    updated_at = ?
+WHERE out_trade_no = ?
+`,
+		model.PaymentOrderFulfillmentApplied,
+		formatTime(appliedAt),
+		order.OutTradeNo,
+	); err != nil {
+		return model.PaymentOrder{}, false, err
 	}
 
 	finalOrder, err := getPaymentOrderByOutTradeNoTx(ctx, tx, order.OutTradeNo)
@@ -594,6 +654,9 @@ SELECT
     po.purchase_assigned_fqdn,
     po.payment_url,
     po.notify_payload_raw,
+    po.fulfillment_status,
+    po.fulfillment_error,
+    po.fulfillment_failed_at,
     po.paid_at,
     po.applied_at,
     po.last_checked_at,
@@ -638,6 +701,9 @@ SELECT
     po.purchase_assigned_fqdn,
     po.payment_url,
     po.notify_payload_raw,
+    po.fulfillment_status,
+    po.fulfillment_error,
+    po.fulfillment_failed_at,
     po.paid_at,
     po.applied_at,
     po.last_checked_at,
@@ -979,6 +1045,7 @@ func generateRandomAllocationPrefixTx(ctx context.Context, tx *queryTx, managedD
 // scanPaymentOrder maps one joined payment-order row into the shared model.
 func scanPaymentOrder(scanner interface{ Scan(dest ...any) error }) (model.PaymentOrder, error) {
 	var item model.PaymentOrder
+	var fulfillmentFailedAt sql.NullString
 	var paidAt sql.NullString
 	var appliedAt sql.NullString
 	var lastCheckedAt sql.NullString
@@ -1013,6 +1080,9 @@ func scanPaymentOrder(scanner interface{ Scan(dest ...any) error }) (model.Payme
 		&item.PurchaseAssignedFQDN,
 		&item.PaymentURL,
 		&item.NotifyPayloadRaw,
+		&item.FulfillmentStatus,
+		&item.FulfillmentError,
+		&fulfillmentFailedAt,
 		&paidAt,
 		&appliedAt,
 		&lastCheckedAt,
@@ -1023,6 +1093,9 @@ func scanPaymentOrder(scanner interface{ Scan(dest ...any) error }) (model.Payme
 	}
 
 	var err error
+	if item.FulfillmentFailedAt, err = parseNullableTime(fulfillmentFailedAt); err != nil {
+		return model.PaymentOrder{}, err
+	}
 	if item.PaidAt, err = parseNullableTime(paidAt); err != nil {
 		return model.PaymentOrder{}, err
 	}

@@ -86,21 +86,31 @@ func TestLoadRequiresExplicitAdminConfigInProduction(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected production admin misconfiguration to fail")
 	}
-	if !strings.Contains(err.Error(), "APP_ADMIN_USERNAMES and either APP_ADMIN_PASSWORD or APP_ADMIN_PASSWORD_HASHES are required") {
+	if !strings.Contains(err.Error(), "APP_ADMIN_USERNAMES and APP_ADMIN_PASSWORD_HASHES are required") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
 // TestLoadAcceptsExplicitAdminConfigInProduction verifies that production still
-// starts normally once both administrator settings are provided explicitly.
+// starts normally once the explicit per-admin password hashes are provided.
 func TestLoadAcceptsExplicitAdminConfigInProduction(t *testing.T) {
+	adminHash, err := bcrypt.GenerateFromPassword([]byte("mo-secret"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("generate admin hash: %v", err)
+	}
+	secondHash, err := bcrypt.GenerateFromPassword([]byte("u2996-secret"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("generate second admin hash: %v", err)
+	}
+
 	t.Setenv("APP_SESSION_SECRET", "test-session-secret")
 	t.Setenv("APP_ENV", "production")
 	t.Setenv("APP_SESSION_SECURE", "true")
 	t.Setenv("DATABASE_DRIVER", "postgres")
 	t.Setenv("DATABASE_POSTGRES_DSN", "postgres://linuxdospace:secret@db:5432/linuxdospace?sslmode=disable")
 	t.Setenv("APP_ADMIN_USERNAMES", "MoYeRanQianZhi,user2996")
-	t.Setenv("APP_ADMIN_PASSWORD", "strong-password")
+	t.Setenv("APP_ADMIN_PASSWORD", "")
+	t.Setenv("APP_ADMIN_PASSWORD_HASHES", `{"MoYeRanQianZhi":"`+string(adminHash)+`","user2996":"`+string(secondHash)+`"}`)
 
 	cfg, err := Load()
 	if err != nil {
@@ -109,8 +119,8 @@ func TestLoadAcceptsExplicitAdminConfigInProduction(t *testing.T) {
 	if len(cfg.App.AdminUsernames) != 2 {
 		t.Fatalf("expected 2 admin usernames, got %+v", cfg.App.AdminUsernames)
 	}
-	if cfg.App.AdminPassword != "strong-password" {
-		t.Fatalf("expected configured admin password to survive load, got %q", cfg.App.AdminPassword)
+	if len(cfg.App.AdminPasswordHashes) != 2 {
+		t.Fatalf("expected 2 admin password hashes, got %+v", cfg.App.AdminPasswordHashes)
 	}
 }
 
@@ -156,7 +166,7 @@ func TestLoadRejectsInsecureProductionCookies(t *testing.T) {
 	t.Setenv("DATABASE_DRIVER", "postgres")
 	t.Setenv("DATABASE_POSTGRES_DSN", "postgres://linuxdospace:secret@db:5432/linuxdospace?sslmode=disable")
 	t.Setenv("APP_ADMIN_USERNAMES", "MoYeRanQianZhi,user2996")
-	t.Setenv("APP_ADMIN_PASSWORD", "strong-password")
+	t.Setenv("APP_ADMIN_PASSWORD_HASHES", `{"MoYeRanQianZhi":"hash","user2996":"hash"}`)
 
 	_, err := Load()
 	if err == nil {

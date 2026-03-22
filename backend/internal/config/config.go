@@ -135,10 +135,15 @@ type MailConfig struct {
 
 // Load reads configuration from environment variables and applies defaults.
 func Load() (Config, error) {
+	appEnv, err := normalizeAppEnv(getEnv("APP_ENV", "development"))
+	if err != nil {
+		return Config{}, err
+	}
+
 	cfg := Config{
 		App: AppConfig{
 			Name:                  getEnv("APP_NAME", "LinuxDoSpace"),
-			Env:                   getEnv("APP_ENV", "development"),
+			Env:                   appEnv,
 			Addr:                  getEnv("APP_ADDR", ":8080"),
 			BaseURL:               getEnv("APP_BASE_URL", "http://localhost:8080"),
 			FrontendURL:           getEnv("APP_FRONTEND_URL", "http://localhost:3000"),
@@ -171,7 +176,7 @@ func Load() (Config, error) {
 			TokenURL:     getEnv("LINUXDO_OAUTH_TOKEN_URL", "https://connect.linux.do/oauth2/token"),
 			UserInfoURL:  getEnv("LINUXDO_OAUTH_USERINFO_URL", "https://connect.linux.do/api/user"),
 			Scope:        getEnv("LINUXDO_OAUTH_SCOPE", "user"),
-			EnablePKCE:   mustParseBool(getEnv("LINUXDO_OAUTH_ENABLE_PKCE", "false")),
+			EnablePKCE:   mustParseBool(getEnv("LINUXDO_OAUTH_ENABLE_PKCE", "true")),
 		},
 		LinuxDOCredit: LinuxDOCreditConfig{
 			PID:       strings.TrimSpace(os.Getenv("LINUXDO_CREDIT_PID")),
@@ -398,8 +403,12 @@ func validateAdminConfig(app AppConfig) error {
 	hasPassword := strings.TrimSpace(app.AdminPassword) != ""
 	hasPasswordHashes := len(app.AdminPasswordHashes) > 0
 
-	if app.Env == "production" && (!hasAdmins || (!hasPassword && !hasPasswordHashes)) {
-		return fmt.Errorf("APP_ADMIN_USERNAMES and either APP_ADMIN_PASSWORD or APP_ADMIN_PASSWORD_HASHES are required when APP_ENV=production")
+	if app.Env == "production" && (!hasAdmins || !hasPasswordHashes) {
+		return fmt.Errorf("APP_ADMIN_USERNAMES and APP_ADMIN_PASSWORD_HASHES are required when APP_ENV=production")
+	}
+
+	if app.Env == "production" && hasPassword {
+		return fmt.Errorf("APP_ADMIN_PASSWORD is not allowed when APP_ENV=production; use APP_ADMIN_PASSWORD_HASHES instead")
 	}
 
 	if hasAdmins && !hasPassword && !hasPasswordHashes {
@@ -419,6 +428,16 @@ func validateAdminConfig(app AppConfig) error {
 	}
 
 	return nil
+}
+
+func normalizeAppEnv(raw string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(raw))
+	switch normalized {
+	case "development", "production", "test":
+		return normalized, nil
+	default:
+		return "", fmt.Errorf("APP_ENV must be one of development, production, test")
+	}
 }
 
 // mustParseAdminPasswordHashes loads one optional JSON object mapping admin

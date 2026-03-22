@@ -20,7 +20,6 @@ export interface User {
 export interface ManagedDomain {
   id: number;
   root_domain: string;
-  cloudflare_zone_id: string;
   default_quota: number;
   auto_provision: boolean;
   is_default: boolean;
@@ -99,6 +98,7 @@ export type EmailRouteTargetType = 'email' | 'api_token';
 
 // PaymentOrderStatus mirrors the lifecycle of one Linux Do Credit checkout.
 export type PaymentOrderStatus = 'created' | 'pending' | 'paid' | 'failed' | 'refunded';
+export type PaymentOrderFulfillmentStatus = 'pending' | 'applied' | 'failed';
 
 // PermissionApplicationSummary mirrors the latest application snapshot returned
 // to the public frontend for one permission card.
@@ -190,6 +190,9 @@ export interface PaymentOrder {
   purchase_assigned_prefix?: string;
   purchase_assigned_fqdn?: string;
   payment_url: string;
+  fulfillment_status: PaymentOrderFulfillmentStatus;
+  fulfillment_error?: string;
+  fulfillment_failed_at?: string;
   paid_at?: string;
   applied_at?: string;
   last_checked_at?: string;

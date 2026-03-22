@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"linuxdospace/backend/internal/model"
+	"linuxdospace/backend/internal/security"
 	"linuxdospace/backend/internal/storage"
 )
 
@@ -124,6 +125,8 @@ WHERE username = ?
 // CreateSession 创建一条新的服务端会话记录。
 func (s *Store) CreateSession(ctx context.Context, input CreateSessionInput) (model.Session, error) {
 	now := time.Now().UTC()
+	sessionIDHash := security.HashOpaqueToken(input.ID)
+	csrfTokenHash := security.HashOpaqueToken(input.CSRFToken)
 
 	row := s.db.QueryRowContext(ctx, `
 INSERT INTO sessions (
@@ -146,9 +149,9 @@ RETURNING
     created_at,
     last_seen_at
 `,
-		input.ID,
+		sessionIDHash,
 		input.UserID,
-		input.CSRFToken,
+		csrfTokenHash,
 		input.UserAgentFingerprint,
 		formatNullableTime(input.AdminVerifiedAt),
 		formatTime(input.ExpiresAt.UTC()),
@@ -156,7 +159,13 @@ RETURNING
 		formatTime(now),
 	)
 
-	return scanSession(row)
+	session, err := scanSession(row)
+	if err != nil {
+		return model.Session{}, err
+	}
+	session.ID = strings.TrimSpace(input.ID)
+	session.CSRFToken = security.DeriveSessionCSRFToken(input.ID)
+	return session, nil
 }
 
 // CreateSessionFromOAuthState atomically consumes one OAuth state and creates
@@ -171,7 +180,10 @@ func (s *Store) CreateSessionFromOAuthState(ctx context.Context, stateID string,
 	}
 	defer tx.Rollback()
 
-	deleteResult, err := tx.ExecContext(ctx, `DELETE FROM oauth_states WHERE id = ?`, stateID)
+	deleteResult, err := tx.ExecContext(ctx, `
+DELETE FROM oauth_states
+WHERE id = ? AND expires_at >= ?
+`, security.HashOpaqueToken(stateID), formatTime(time.Now().UTC()))
 	if err != nil {
 		return model.Session{}, err
 	}
@@ -185,6 +197,8 @@ func (s *Store) CreateSessionFromOAuthState(ctx context.Context, stateID string,
 	}
 
 	now := time.Now().UTC()
+	sessionIDHash := security.HashOpaqueToken(input.ID)
+	csrfTokenHash := security.HashOpaqueToken(input.CSRFToken)
 	row := tx.QueryRowContext(ctx, `
 INSERT INTO sessions (
     id,
@@ -206,9 +220,9 @@ RETURNING
     created_at,
     last_seen_at
 `,
-		input.ID,
+		sessionIDHash,
 		input.UserID,
-		input.CSRFToken,
+		csrfTokenHash,
 		input.UserAgentFingerprint,
 		formatNullableTime(input.AdminVerifiedAt),
 		formatTime(input.ExpiresAt.UTC()),
@@ -220,6 +234,8 @@ RETURNING
 	if err != nil {
 		return model.Session{}, err
 	}
+	session.ID = strings.TrimSpace(input.ID)
+	session.CSRFToken = security.DeriveSessionCSRFToken(input.ID)
 
 	if err := tx.Commit(); err != nil {
 		return model.Session{}, err
@@ -254,9 +270,15 @@ SELECT
 FROM sessions s
 JOIN users u ON u.id = s.user_id
 WHERE s.id = ?
-`, sessionID)
+`, security.HashOpaqueToken(sessionID))
 
-	return scanSessionWithUser(row)
+	session, user, err := scanSessionWithUser(row)
+	if err != nil {
+		return model.Session{}, model.User{}, err
+	}
+	session.ID = strings.TrimSpace(sessionID)
+	session.CSRFToken = security.DeriveSessionCSRFToken(sessionID)
+	return session, user, nil
 }
 
 // MarkSessionAdminVerified writes the timestamp that marks one administrator
@@ -266,7 +288,7 @@ func (s *Store) MarkSessionAdminVerified(ctx context.Context, sessionID string, 
 UPDATE sessions
 SET admin_verified_at = ?, last_seen_at = ?
 WHERE id = ?
-`, formatTime(verifiedAt.UTC()), formatTime(time.Now().UTC()), sessionID)
+`, formatTime(verifiedAt.UTC()), formatTime(time.Now().UTC()), security.HashOpaqueToken(sessionID))
 	return err
 }
 
@@ -276,14 +298,24 @@ func (s *Store) TouchSession(ctx context.Context, sessionID string) error {
 UPDATE sessions
 SET last_seen_at = ?
 WHERE id = ?
-`, formatTime(time.Now().UTC()), sessionID)
+`, formatTime(time.Now().UTC()), security.HashOpaqueToken(sessionID))
 	return err
 }
 
 // DeleteSession 删除一条会话记录。
 func (s *Store) DeleteSession(ctx context.Context, sessionID string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, sessionID)
-	return err
+	result, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, security.HashOpaqueToken(sessionID))
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // SaveOAuthState 保存一次 OAuth 登录态。
@@ -297,8 +329,8 @@ INSERT INTO oauth_states (
     created_at
 ) VALUES (?, ?, ?, ?, ?)
 `,
-		state.ID,
-		state.CodeVerifier,
+		security.HashOpaqueToken(state.ID),
+		security.HashOpaqueToken(state.CodeVerifier),
 		state.NextPath,
 		formatTime(state.ExpiresAt.UTC()),
 		formatTime(state.CreatedAt.UTC()),
@@ -317,8 +349,16 @@ SELECT
     created_at
 FROM oauth_states
 WHERE id = ?
-`, stateID)
-	return scanOAuthState(row)
+`, security.HashOpaqueToken(stateID))
+	state, err := scanOAuthState(row)
+	if err != nil {
+		return model.OAuthState{}, err
+	}
+	state.ID = strings.TrimSpace(stateID)
+	if strings.TrimSpace(stateID) != "" {
+		state.CodeVerifier = security.DerivePKCEVerifier(stateID)
+	}
+	return state, nil
 }
 
 // ConsumeOAuthState 原子地读取并删除一次性 OAuth state。
@@ -334,14 +374,22 @@ RETURNING
     next_path,
     expires_at,
     created_at
-`, stateID)
+`, security.HashOpaqueToken(stateID))
 
-	return scanOAuthState(row)
+	state, err := scanOAuthState(row)
+	if err != nil {
+		return model.OAuthState{}, err
+	}
+	state.ID = strings.TrimSpace(stateID)
+	if strings.TrimSpace(stateID) != "" {
+		state.CodeVerifier = security.DerivePKCEVerifier(stateID)
+	}
+	return state, nil
 }
 
 // DeleteOAuthState 删除一条已完成或已废弃的 OAuth state。
 func (s *Store) DeleteOAuthState(ctx context.Context, stateID string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM oauth_states WHERE id = ?`, stateID)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM oauth_states WHERE id = ?`, security.HashOpaqueToken(stateID))
 	return err
 }
 

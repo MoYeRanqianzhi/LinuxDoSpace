@@ -387,11 +387,13 @@ func (s *PaymentService) HandleGatewayNotification(ctx context.Context, values u
 
 	applyInput, err := s.buildApplyPaymentOrderEntitlementInput(ctx, order, now)
 	if err != nil {
-		return model.PaymentOrder{}, false, err
+		failedOrder := s.persistOrderFulfillmentFailure(ctx, order, now, err)
+		return failedOrder, false, err
 	}
 	appliedOrder, applied, err := s.db.ApplyPaymentOrderEntitlement(ctx, applyInput)
 	if err != nil {
-		return model.PaymentOrder{}, false, InternalError("failed to apply payment order entitlement", err)
+		failedOrder := s.persistOrderFulfillmentFailure(ctx, order, now, err)
+		return failedOrder, false, InternalError("failed to apply payment order entitlement", err)
 	}
 
 	if applied {
@@ -495,16 +497,52 @@ func (s *PaymentService) syncAndApplyOrder(ctx context.Context, order model.Paym
 		now := time.Now().UTC()
 		applyInput, buildErr := s.buildApplyPaymentOrderEntitlementInput(ctx, current, now)
 		if buildErr != nil {
-			return model.PaymentOrder{}, buildErr
+			return s.persistOrderFulfillmentFailure(ctx, current, now, buildErr), nil
 		}
 		appliedOrder, _, err := s.db.ApplyPaymentOrderEntitlement(ctx, applyInput)
 		if err != nil {
-			return model.PaymentOrder{}, InternalError("failed to apply payment order entitlement", err)
+			return s.persistOrderFulfillmentFailure(ctx, current, now, err), nil
 		}
 		current = appliedOrder
 	}
 
 	return current, nil
+}
+
+// persistOrderFulfillmentFailure records that payment succeeded but the local
+// entitlement application failed. Refresh endpoints can then return a readable
+// terminal order state instead of leaving the row stuck in a misleading
+// paid-but-pending state forever.
+func (s *PaymentService) persistOrderFulfillmentFailure(ctx context.Context, order model.PaymentOrder, failedAt time.Time, cause error) model.PaymentOrder {
+	if strings.TrimSpace(order.OutTradeNo) == "" {
+		return order
+	}
+
+	failedOrder, err := s.db.UpdatePaymentOrderFulfillmentState(ctx, storage.UpdatePaymentOrderFulfillmentStateInput{
+		OutTradeNo:          order.OutTradeNo,
+		FulfillmentStatus:   model.PaymentOrderFulfillmentFailed,
+		FulfillmentError:    trimPaymentFulfillmentError(cause),
+		FulfillmentFailedAt: &failedAt,
+	})
+	if err != nil {
+		logPostMutationFailure("payment.order.fulfillment_failed", err)
+		return order
+	}
+	return failedOrder
+}
+
+// trimPaymentFulfillmentError keeps persisted failure messages human-readable
+// while preventing unbounded database growth if a nested dependency returns an
+// unusually large error string.
+func trimPaymentFulfillmentError(err error) string {
+	if err == nil {
+		return ""
+	}
+	message := strings.TrimSpace(err.Error())
+	if len(message) <= 500 {
+		return message
+	}
+	return strings.TrimSpace(message[:500])
 }
 
 // buildApplyPaymentOrderEntitlementInput enriches domain-purchase grants with

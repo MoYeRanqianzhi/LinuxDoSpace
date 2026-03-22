@@ -174,8 +174,11 @@ func TestDispatcherMarksFailedAtMaxAttempts(t *testing.T) {
 func TestDispatcherPublishesTokenJobs(t *testing.T) {
 	store := &dispatcherStoreStub{}
 	hub := NewTokenStreamHub()
-	channel, unsubscribe := hub.Subscribe("ldt_token")
-	defer unsubscribe()
+	subscription, err := hub.Subscribe("ldt_token")
+	if err != nil {
+		t.Fatalf("subscribe token stream: %v", err)
+	}
+	defer subscription.Cancel()
 
 	dispatcher := &Dispatcher{
 		store:          store,
@@ -205,7 +208,7 @@ func TestDispatcherPublishesTokenJobs(t *testing.T) {
 	}
 
 	select {
-	case event := <-channel:
+	case event := <-subscription.Events():
 		if event.TokenPublicID != "ldt_token" {
 			t.Fatalf("expected token public id ldt_token, got %q", event.TokenPublicID)
 		}
@@ -254,8 +257,11 @@ func TestDispatcherDropsTokenJobsWithoutSubscribers(t *testing.T) {
 func TestDispatcherRetriesBackpressuredTokenJobs(t *testing.T) {
 	store := &dispatcherStoreStub{}
 	hub := NewTokenStreamHub()
-	_, unsubscribe := hub.Subscribe("ldt_token")
-	defer unsubscribe()
+	subscription, err := hub.Subscribe("ldt_token")
+	if err != nil {
+		t.Fatalf("subscribe token stream: %v", err)
+	}
+	defer subscription.Cancel()
 	for index := 0; index < tokenStreamBufferSize; index++ {
 		hub.Publish(TokenMailEvent{TokenPublicID: "ldt_token"})
 	}

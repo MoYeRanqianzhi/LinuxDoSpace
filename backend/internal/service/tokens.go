@@ -163,6 +163,9 @@ func (s *TokenService) RevokeMyAPIToken(ctx context.Context, user model.User, pu
 		ResourceID:   item.PublicID,
 		MetadataJSON: string(metadata),
 	}))
+	if s.hub != nil {
+		s.hub.DisconnectToken(item.PublicID)
+	}
 
 	return userAPITokenFromModel(item), nil
 }

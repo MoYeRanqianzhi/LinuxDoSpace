@@ -384,6 +384,19 @@ func (s *PermissionService) issueEmailTargetVerification(ctx context.Context, it
 		ForwardFrom:      strings.TrimSpace(s.cfg.Mail.ForwardFrom),
 		FrontendEmailURL: strings.TrimRight(strings.TrimSpace(s.cfg.App.FrontendURL), "/") + "/emails",
 	}); err != nil {
+		// Restore the previous verification material so a transient SMTP outage
+		// does not invalidate an older still-working verification link or strand
+		// the target in a permanently pending state.
+		if _, rollbackErr := s.db.UpdateEmailTarget(ctx, storage.UpdateEmailTargetInput{
+			ID:                     item.ID,
+			CloudflareAddressID:    item.CloudflareAddressID,
+			VerificationTokenHash:  item.VerificationTokenHash,
+			VerificationExpiresAt:  item.VerificationExpiresAt,
+			VerifiedAt:             item.VerifiedAt,
+			LastVerificationSentAt: item.LastVerificationSentAt,
+		}); rollbackErr != nil {
+			logPostMutationFailure("email_target.verification_prepare_rollback", rollbackErr)
+		}
 		return model.EmailTarget{}, UnavailableError("目标邮箱已保存，但平台暂时无法发出验证邮件，请稍后点击“重新发送验证”重试", err)
 	}
 	return prepared, nil

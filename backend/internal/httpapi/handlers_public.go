@@ -5,6 +5,19 @@ import (
 	"time"
 )
 
+type publicManagedDomainView struct {
+	ID                 int64     `json:"id"`
+	RootDomain         string    `json:"root_domain"`
+	DefaultQuota       int       `json:"default_quota"`
+	AutoProvision      bool      `json:"auto_provision"`
+	IsDefault          bool      `json:"is_default"`
+	Enabled            bool      `json:"enabled"`
+	SaleEnabled        bool      `json:"sale_enabled"`
+	SaleBasePriceCents int64     `json:"sale_base_price_cents"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+}
+
 // handleHealth 返回服务健康状态。
 func (a *API) handleHealth(w http.ResponseWriter, r *http.Request) {
 	payload := map[string]any{
@@ -26,7 +39,22 @@ func (a *API) handlePublicDomains(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, items)
+	views := make([]publicManagedDomainView, 0, len(items))
+	for _, item := range items {
+		views = append(views, publicManagedDomainView{
+			ID:                 item.ID,
+			RootDomain:         item.RootDomain,
+			DefaultQuota:       item.DefaultQuota,
+			AutoProvision:      item.AutoProvision,
+			IsDefault:          item.IsDefault,
+			Enabled:            item.Enabled,
+			SaleEnabled:        item.SaleEnabled,
+			SaleBasePriceCents: item.SaleBasePriceCents,
+			CreatedAt:          item.CreatedAt,
+			UpdatedAt:          item.UpdatedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, views)
 }
 
 // handlePublicSupervision 返回公开监督页使用的脱敏子域归属列表。

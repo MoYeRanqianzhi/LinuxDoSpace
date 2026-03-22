@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -169,6 +170,87 @@ func TestHandleAdminVerifyPasswordRateLimitsByUserIdentity(t *testing.T) {
 	}
 	if blocked.Header().Get("Retry-After") == "" {
 		t.Fatalf("expected blocked attempt to include Retry-After header")
+	}
+}
+
+// TestHandleAdminVerifyPasswordSerializesConcurrentFailures verifies that a
+// burst of parallel incorrect guesses for the same administrator account cannot
+// all pass the pre-check window before failure counters are persisted.
+func TestHandleAdminVerifyPasswordSerializesConcurrentFailures(t *testing.T) {
+	ctx := context.Background()
+	store := newAdminPasswordTestStore(t)
+
+	user, err := store.UpsertUser(ctx, sqlite.UpsertUserInput{
+		LinuxDOUserID:  1002,
+		Username:       "user2996",
+		DisplayName:    "User 2996",
+		AvatarURL:      "https://example.com/avatar.png",
+		TrustLevel:     4,
+		IsLinuxDOAdmin: false,
+		IsAppAdmin:     true,
+	})
+	if err != nil {
+		t.Fatalf("upsert admin user: %v", err)
+	}
+
+	session, err := store.CreateSession(ctx, sqlite.CreateSessionInput{
+		ID:        "session-admin-concurrent-rate-limit",
+		UserID:    user.ID,
+		CSRFToken: "csrf-admin-concurrent-rate-limit",
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("create admin session: %v", err)
+	}
+
+	cfg := config.Config{
+		App: config.AppConfig{
+			SessionCookieName:    "linuxdospace_session",
+			SessionBindUserAgent: false,
+			SessionTTL:           time.Hour,
+			AdminPassword:        "correct-horse-battery-staple",
+			AdminUsernames:       []string{"user2996"},
+		},
+	}
+
+	api := &API{
+		config:               cfg,
+		authService:          service.NewAuthService(cfg, store, nil),
+		adminPasswordLimiter: newAdminPasswordLimiter(store, 5, 15*time.Minute, time.Hour),
+	}
+
+	const concurrentAttempts = 10
+	results := make(chan int, concurrentAttempts)
+	var waitGroup sync.WaitGroup
+	for attempt := 0; attempt < concurrentAttempts; attempt++ {
+		waitGroup.Add(1)
+		go func() {
+			defer waitGroup.Done()
+			recorder := performAdminPasswordRequestFromIP(t, api, session.ID, session.CSRFToken, "wrong-password", "203.0.113.42")
+			results <- recorder.Code
+		}()
+	}
+	waitGroup.Wait()
+	close(results)
+
+	var unauthorizedCount int
+	var blockedCount int
+	for code := range results {
+		switch code {
+		case http.StatusUnauthorized:
+			unauthorizedCount++
+		case http.StatusTooManyRequests:
+			blockedCount++
+		default:
+			t.Fatalf("expected only 401 or 429 responses, got %d", code)
+		}
+	}
+
+	if unauthorizedCount != 5 {
+		t.Fatalf("expected exactly 5 unauthorized attempts before lockout, got unauthorized=%d blocked=%d", unauthorizedCount, blockedCount)
+	}
+	if blockedCount != concurrentAttempts-unauthorizedCount {
+		t.Fatalf("expected remaining concurrent attempts to be blocked, got unauthorized=%d blocked=%d", unauthorizedCount, blockedCount)
 	}
 }
 

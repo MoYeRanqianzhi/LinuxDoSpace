@@ -26,6 +26,19 @@ const (
 	// PaymentOrderStatusRefunded marks an order that has been fully refunded.
 	PaymentOrderStatusRefunded = "refunded"
 
+	// PaymentOrderFulfillmentPending marks a paid-or-payable order whose local
+	// entitlement application has not yet completed.
+	PaymentOrderFulfillmentPending = "pending"
+
+	// PaymentOrderFulfillmentApplied marks an order whose local entitlement
+	// application completed successfully.
+	PaymentOrderFulfillmentApplied = "applied"
+
+	// PaymentOrderFulfillmentFailed marks an order whose payment succeeded but
+	// whose local entitlement application failed and now needs retry or manual
+	// operator inspection.
+	PaymentOrderFulfillmentFailed = "failed"
+
 	// PaymentEffectEmailCatchAllSubscriptionDays extends the paid catch-all
 	// subscription expiry by a configured number of UTC-based days.
 	PaymentEffectEmailCatchAllSubscriptionDays = "email_catch_all_subscription_days"
@@ -90,6 +103,9 @@ type PaymentOrder struct {
 	PurchaseAssignedFQDN     string     `json:"purchase_assigned_fqdn,omitempty"`
 	PaymentURL               string     `json:"payment_url"`
 	NotifyPayloadRaw         string     `json:"-"`
+	FulfillmentStatus        string     `json:"fulfillment_status"`
+	FulfillmentError         string     `json:"fulfillment_error,omitempty"`
+	FulfillmentFailedAt      *time.Time `json:"fulfillment_failed_at,omitempty"`
 	PaidAt                   *time.Time `json:"paid_at,omitempty"`
 	AppliedAt                *time.Time `json:"applied_at,omitempty"`
 	LastCheckedAt            *time.Time `json:"last_checked_at,omitempty"`

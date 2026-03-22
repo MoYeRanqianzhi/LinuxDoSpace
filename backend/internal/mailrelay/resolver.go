@@ -176,8 +176,7 @@ func (r *DBResolver) resolveStoredRoute(ctx context.Context, originalRecipient s
 				return ResolvedRecipient{}, fmt.Errorf("%w: %s", ErrTargetNotVerified, targetEmail)
 			}
 		case storage.IsNotFound(err):
-			// Legacy administrator-managed routes may legitimately point at a target
-			// address that predates the email_targets ownership table.
+			return ResolvedRecipient{}, fmt.Errorf("%w: %s", ErrTargetNotVerified, targetEmail)
 		default:
 			return ResolvedRecipient{}, fmt.Errorf("load target email binding for %s: %w", targetEmail, err)
 		}

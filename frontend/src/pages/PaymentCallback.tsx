@@ -27,9 +27,8 @@ const maxRefreshAttempts = 20;
 const refreshIntervalMilliseconds = 3000;
 
 // PaymentCallback is the dedicated browser return route for Linux Do Credit.
-// It recovers the expected order number, refreshes the order explicitly, and
-// then shows a focused payment-state notification instead of dropping users
-// back into the crowded permissions screen immediately.
+// It refreshes one explicitly remembered order instead of guessing across the
+// whole account history when the payment provider returns without parameters.
 export function PaymentCallback({
   authenticated,
   sessionLoading,
@@ -176,12 +175,12 @@ export function PaymentCallback({
               </div>
               <h1 className="mt-4 text-3xl font-extrabold text-gray-900 dark:text-white md:text-4xl">正在确认你的支付结果</h1>
               <p className="mt-3 max-w-2xl text-sm leading-7 text-gray-600 dark:text-gray-300">
-                这是专门的支付回调页。当前支付平台不会回传订单参数，所以页面会优先匹配当前浏览器最近创建过的订单，再回退到你账号下的最新订单，随后主动向后端刷新状态并等待异步通知与权益发放完成。
+                这是专门的支付回调页。当前支付平台不会回传订单参数，所以页面只会核对当前浏览器最近记住的订单；如果当前浏览器里没有明确订单号，就不会冒险猜测你账号下的其他订单。
               </p>
             </div>
             <div className="rounded-[1.5rem] border border-white/20 bg-white/45 px-5 py-4 text-sm leading-7 text-gray-700 dark:border-white/10 dark:bg-black/20 dark:text-gray-200">
               <div>当前账号：{authenticated ? user?.username ?? '已登录' : '未登录'}</div>
-              <div>当前策略：优先最近订单，回退最新订单</div>
+              <div>当前策略：只核对本地记住的订单</div>
               <div>回调路由：/payments/callback</div>
             </div>
           </div>
@@ -232,7 +231,7 @@ export function PaymentCallback({
                 </div>
               ) : (
                 <div className="mt-4 text-sm leading-7 text-gray-600 dark:text-gray-300">
-                  当前还没有拿到订单详情。系统会优先从当前浏览器记住的最近订单开始核对，找不到时才回退到账号下最新订单。
+                  当前还没有拿到订单详情。系统只会从当前浏览器记住的最近订单开始核对；如果当前浏览器没有记住订单号，请返回权限页打开“查看全部订单”后手动刷新。
                 </div>
               )}
 
@@ -273,6 +272,14 @@ function buildCallbackNotice(order: PaymentOrder, attempt: number): CallbackNoti
     };
   }
 
+  if (order.status === 'paid' && order.fulfillment_status === 'failed') {
+    return {
+      tone: 'error',
+      title: '支付已确认，但权益发放失败',
+      message: order.fulfillment_error || `订单 ${order.out_trade_no} 已经支付成功，但后端发放权益时失败。你可以返回权限页手动重试，或联系管理员处理。`,
+    };
+  }
+
   if (order.status === 'paid') {
     return {
       tone: 'info',
@@ -305,12 +312,15 @@ function buildCallbackNotice(order: PaymentOrder, attempt: number): CallbackNoti
 }
 
 function isTerminalPaymentState(order: PaymentOrder): boolean {
-  return (order.status === 'paid' && Boolean(order.applied_at)) || order.status === 'failed' || order.status === 'refunded';
+  return (order.status === 'paid' && Boolean(order.applied_at)) || (order.status === 'paid' && order.fulfillment_status === 'failed') || order.status === 'failed' || order.status === 'refunded';
 }
 
 function readablePaymentStatus(order: PaymentOrder): string {
   if (order.status === 'paid' && order.applied_at) {
     return '已支付并发放';
+  }
+  if (order.status === 'paid' && order.fulfillment_status === 'failed') {
+    return '已支付，发放失败';
   }
   switch (order.status) {
     case 'paid':
@@ -389,5 +399,5 @@ function findBestMatchingOrder(orders: PaymentOrder[], preferredOutTradeNo = '',
     }
   }
 
-  return orders[0] ?? null;
+  return null;
 }

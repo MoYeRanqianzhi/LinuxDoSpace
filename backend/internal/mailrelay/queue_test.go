@@ -44,8 +44,11 @@ func (s *queueStoreStub) CleanupMailDeliveryJobs(ctx context.Context, input stor
 func TestPersistentQueueEnqueuesConnectedAPITokenTargets(t *testing.T) {
 	store := &queueStoreStub{}
 	hub := NewTokenStreamHub()
-	_, unsubscribe := hub.Subscribe("ldt_token")
-	defer unsubscribe()
+	subscription, err := hub.Subscribe("ldt_token")
+	if err != nil {
+		t.Fatalf("subscribe token stream: %v", err)
+	}
+	defer subscription.Cancel()
 
 	queue := &PersistentQueue{
 		store:       store,
@@ -56,7 +59,7 @@ func TestPersistentQueueEnqueuesConnectedAPITokenTargets(t *testing.T) {
 		},
 	}
 
-	err := queue.Enqueue(context.Background(), EnqueueRequest{
+	err = queue.Enqueue(context.Background(), EnqueueRequest{
 		OriginalEnvelopeFrom: "sender@example.com",
 		RawMessage:           []byte("Subject: test\r\n\r\nbody"),
 		Groups: []groupedRecipients{

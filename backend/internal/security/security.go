@@ -45,3 +45,53 @@ func CodeChallengeS256(verifier string) string {
 	sum := sha256.Sum256([]byte(verifier))
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
+
+// HashOpaqueToken returns one irreversible digest for a high-entropy bearer
+// token. LinuxDoSpace uses this when persisting session IDs and OAuth state IDs
+// so database or backup readers cannot directly replay live browser secrets.
+func HashOpaqueToken(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(trimmed))
+	return hex.EncodeToString(sum[:])
+}
+
+// DeriveSessionCSRFToken deterministically derives the browser-visible CSRF
+// token from the raw session bearer. The raw CSRF token is never stored in the
+// database, but the HTTP layer can still reconstruct and verify it on demand.
+func DeriveSessionCSRFToken(sessionID string) string {
+	trimmed := strings.TrimSpace(sessionID)
+	if trimmed == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte("linuxdospace:csrf:" + trimmed))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// DerivePKCEVerifier deterministically derives the PKCE verifier from the raw
+// OAuth state token. The verifier therefore never needs to be persisted in raw
+// form, and old pending OAuth logins become invalid automatically when the
+// state token itself is lost.
+func DerivePKCEVerifier(stateID string) string {
+	trimmed := strings.TrimSpace(stateID)
+	if trimmed == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte("linuxdospace:pkce:" + trimmed))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// AuditResourceID returns one non-replayable identifier safe to persist in
+// audit logs for bearer-backed resources such as sessions and OAuth states.
+func AuditResourceID(raw string) string {
+	hashed := HashOpaqueToken(raw)
+	if hashed == "" {
+		return ""
+	}
+	if len(hashed) > 16 {
+		return "sha256:" + hashed[:16]
+	}
+	return "sha256:" + hashed
+}

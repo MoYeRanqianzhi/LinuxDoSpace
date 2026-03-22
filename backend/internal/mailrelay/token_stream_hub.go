@@ -2,12 +2,17 @@ package mailrelay
 
 import (
 	"encoding/base64"
+	"errors"
 	"strings"
 	"sync"
 	"time"
 )
 
 const tokenStreamBufferSize = 128
+
+// ErrTokenStreamAlreadyConnected reports that the same API token already owns
+// one active NDJSON stream connection.
+var ErrTokenStreamAlreadyConnected = errors.New("api token stream is already connected")
 
 // TokenStreamEvent is the NDJSON payload delivered to one connected API token.
 type TokenStreamEvent struct {
@@ -47,49 +52,175 @@ func (e TokenMailEvent) ToStreamEvent() TokenStreamEvent {
 type TokenStreamHub struct {
 	mu          sync.RWMutex
 	nextID      uint64
-	subscribers map[string]map[uint64]chan TokenMailEvent
+	subscribers map[string]map[uint64]*tokenStreamSubscriber
+}
+
+type tokenStreamSubscriber struct {
+	events chan TokenMailEvent
+	done   chan struct{}
+
+	mu     sync.RWMutex
+	closed bool
+}
+
+func newTokenStreamSubscriber() *tokenStreamSubscriber {
+	return &tokenStreamSubscriber{
+		events: make(chan TokenMailEvent, tokenStreamBufferSize),
+		done:   make(chan struct{}),
+	}
+}
+
+func (s *tokenStreamSubscriber) Events() <-chan TokenMailEvent {
+	return s.events
+}
+
+func (s *tokenStreamSubscriber) Done() <-chan struct{} {
+	return s.done
+}
+
+func (s *tokenStreamSubscriber) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	s.closed = true
+	close(s.done)
+}
+
+func (s *tokenStreamSubscriber) TrySend(event TokenMailEvent) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return false
+	}
+	select {
+	case s.events <- event:
+		return true
+	default:
+		return false
+	}
+}
+
+// TokenStreamSubscription is the lifecycle handle returned to one active API
+// token mail stream client.
+type TokenStreamSubscription struct {
+	hub            *TokenStreamHub
+	tokenPublicID  string
+	subscriptionID uint64
+	subscriber     *tokenStreamSubscriber
+}
+
+func (s *TokenStreamSubscription) Events() <-chan TokenMailEvent {
+	if s == nil || s.subscriber == nil {
+		return nil
+	}
+	return s.subscriber.Events()
+}
+
+func (s *TokenStreamSubscription) Done() <-chan struct{} {
+	if s == nil || s.subscriber == nil {
+		return nil
+	}
+	return s.subscriber.Done()
+}
+
+func (s *TokenStreamSubscription) Cancel() {
+	if s == nil || s.hub == nil {
+		return
+	}
+	s.hub.removeSubscription(s.tokenPublicID, s.subscriptionID)
 }
 
 // NewTokenStreamHub constructs the in-memory broker used by the HTTP stream
 // endpoint and the SMTP relay.
 func NewTokenStreamHub() *TokenStreamHub {
 	return &TokenStreamHub{
-		subscribers: make(map[string]map[uint64]chan TokenMailEvent),
+		subscribers: make(map[string]map[uint64]*tokenStreamSubscriber),
 	}
 }
 
 // Subscribe registers one live stream consumer for the given token public id.
-func (h *TokenStreamHub) Subscribe(tokenPublicID string) (<-chan TokenMailEvent, func()) {
+func (h *TokenStreamHub) Subscribe(tokenPublicID string) (*TokenStreamSubscription, error) {
 	normalizedID := strings.TrimSpace(tokenPublicID)
-	channel := make(chan TokenMailEvent, tokenStreamBufferSize)
+	if normalizedID == "" {
+		return nil, ErrTokenStreamAlreadyConnected
+	}
+	subscriber := newTokenStreamSubscriber()
 
 	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.subscribers[normalizedID]) > 0 {
+		return nil, ErrTokenStreamAlreadyConnected
+	}
 	h.nextID++
 	subscriptionID := h.nextID
 	if h.subscribers[normalizedID] == nil {
-		h.subscribers[normalizedID] = make(map[uint64]chan TokenMailEvent)
+		h.subscribers[normalizedID] = make(map[uint64]*tokenStreamSubscriber)
 	}
-	h.subscribers[normalizedID][subscriptionID] = channel
+	h.subscribers[normalizedID][subscriptionID] = subscriber
+
+	return &TokenStreamSubscription{
+		hub:            h,
+		tokenPublicID:  normalizedID,
+		subscriptionID: subscriptionID,
+		subscriber:     subscriber,
+	}, nil
+}
+
+func (h *TokenStreamHub) removeSubscription(tokenPublicID string, subscriptionID uint64) {
+	normalizedID := strings.TrimSpace(tokenPublicID)
+	if normalizedID == "" {
+		return
+	}
+
+	h.mu.Lock()
+	tokenSubscribers := h.subscribers[normalizedID]
+	if tokenSubscribers == nil {
+		h.mu.Unlock()
+		return
+	}
+	existing := tokenSubscribers[subscriptionID]
+	delete(tokenSubscribers, subscriptionID)
+	if len(tokenSubscribers) == 0 {
+		delete(h.subscribers, normalizedID)
+	}
 	h.mu.Unlock()
 
-	cancel := func() {
-		h.mu.Lock()
-		defer h.mu.Unlock()
+	if existing != nil {
+		existing.Close()
+	}
+}
 
-		tokenSubscribers := h.subscribers[normalizedID]
-		if tokenSubscribers == nil {
-			return
-		}
-		if existing, ok := tokenSubscribers[subscriptionID]; ok {
-			delete(tokenSubscribers, subscriptionID)
-			close(existing)
-		}
-		if len(tokenSubscribers) == 0 {
-			delete(h.subscribers, normalizedID)
-		}
+// DisconnectToken closes every active stream subscriber for one API token.
+func (h *TokenStreamHub) DisconnectToken(tokenPublicID string) int {
+	if h == nil {
+		return 0
 	}
 
-	return channel, cancel
+	normalizedID := strings.TrimSpace(tokenPublicID)
+	if normalizedID == "" {
+		return 0
+	}
+
+	h.mu.Lock()
+	tokenSubscribers := h.subscribers[normalizedID]
+	if len(tokenSubscribers) == 0 {
+		h.mu.Unlock()
+		return 0
+	}
+	snapshot := make([]*tokenStreamSubscriber, 0, len(tokenSubscribers))
+	for subscriptionID, subscriber := range tokenSubscribers {
+		snapshot = append(snapshot, subscriber)
+		delete(tokenSubscribers, subscriptionID)
+	}
+	delete(h.subscribers, normalizedID)
+	h.mu.Unlock()
+
+	for _, subscriber := range snapshot {
+		subscriber.Close()
+	}
+	return len(snapshot)
 }
 
 // SubscriberCount reports how many live consumers are currently attached to
@@ -129,18 +260,16 @@ func (h *TokenStreamHub) Publish(event TokenMailEvent) (int, int) {
 
 	h.mu.RLock()
 	tokenSubscribers := h.subscribers[normalizedID]
-	listeners := make([]chan TokenMailEvent, 0, len(tokenSubscribers))
-	for _, channel := range tokenSubscribers {
-		listeners = append(listeners, channel)
+	listeners := make([]*tokenStreamSubscriber, 0, len(tokenSubscribers))
+	for _, subscriber := range tokenSubscribers {
+		listeners = append(listeners, subscriber)
 	}
 	h.mu.RUnlock()
 
 	delivered := 0
-	for _, channel := range listeners {
-		select {
-		case channel <- event:
+	for _, subscriber := range listeners {
+		if subscriber.TrySend(event) {
 			delivered++
-		default:
 		}
 	}
 	return delivered, len(listeners)

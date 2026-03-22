@@ -4,10 +4,12 @@ import (
 	"context"
 	"net/url"
 	"testing"
+	"time"
 
 	"linuxdospace/backend/internal/cloudflare"
 	"linuxdospace/backend/internal/config"
 	"linuxdospace/backend/internal/linuxdocredit"
+	"linuxdospace/backend/internal/model"
 	"linuxdospace/backend/internal/storage"
 	"linuxdospace/backend/internal/storage/sqlite"
 )
@@ -284,5 +286,76 @@ func TestGetMyOrderHidesOtherUsersOrders(t *testing.T) {
 	}
 	if normalized := NormalizeError(err); normalized.Code != "not_found" {
 		t.Fatalf("expected not_found for foreign order lookup, got %+v", normalized)
+	}
+}
+
+// TestRefreshOrderMarksFulfillmentFailure verifies that a paid order whose
+// local entitlement application cannot be completed is persisted as a distinct
+// fulfillment failure instead of remaining forever in the misleading
+// "已支付，待发放" state.
+func TestRefreshOrderMarksFulfillmentFailure(t *testing.T) {
+	ctx := context.Background()
+	store := newAuthTestStore(t)
+
+	user, err := store.UpsertUser(ctx, storage.UpsertUserInput{
+		LinuxDOUserID: 3003,
+		Username:      "buyer",
+		DisplayName:   "Buyer",
+		AvatarURL:     "https://example.com/buyer.png",
+		TrustLevel:    2,
+	})
+	if err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+
+	order, err := store.CreatePaymentOrder(ctx, sqlite.CreatePaymentOrderInput{
+		UserID:                   user.ID,
+		ProductKey:               PaymentProductDomainAllocationPurchase,
+		ProductName:              "域名购买",
+		Title:                    "购买 missing.example.com",
+		GatewayType:              model.PaymentGatewayLinuxDOCredit,
+		OutTradeNo:               "LDCMANUALFULFILLFAIL",
+		Status:                   model.PaymentOrderStatusCreated,
+		Units:                    1,
+		GrantQuantity:            1,
+		GrantedTotal:             1,
+		GrantUnit:                "allocation",
+		UnitPriceCents:           1000,
+		TotalPriceCents:          1000,
+		EffectType:               model.PaymentEffectDomainAllocationPurchase,
+		PurchaseRootDomain:       "missing.example.com",
+		PurchaseMode:             DomainPurchaseModeExact,
+		PurchasePrefix:           "alice",
+		PurchaseNormalizedPrefix: "alice",
+		PurchaseRequestedLength:  5,
+	})
+	if err != nil {
+		t.Fatalf("create payment order: %v", err)
+	}
+
+	if _, err := store.UpdatePaymentOrderGatewayState(ctx, sqlite.UpdatePaymentOrderGatewayStateInput{
+		OutTradeNo: order.OutTradeNo,
+		Status:     model.PaymentOrderStatusPaid,
+	}); err != nil {
+		t.Fatalf("mark order paid: %v", err)
+	}
+
+	service := NewPaymentService(config.Config{}, store, nil, nil)
+	refreshedOrder, err := service.RefreshOrderForAdmin(ctx, order.OutTradeNo)
+	if err != nil {
+		t.Fatalf("refresh order for admin: %v", err)
+	}
+
+	if refreshedOrder.FulfillmentStatus != model.PaymentOrderFulfillmentFailed {
+		t.Fatalf("expected fulfillment_status failed, got %+v", refreshedOrder)
+	}
+	if refreshedOrder.FulfillmentFailedAt == nil {
+		t.Fatalf("expected fulfillment_failed_at to be recorded, got %+v", refreshedOrder)
+	}
+	if refreshedOrder.AppliedAt != nil {
+		t.Fatalf("expected unapplied order, got applied_at=%s", refreshedOrder.AppliedAt.Format(time.RFC3339))
+	}
+	if refreshedOrder.FulfillmentError == "" {
+		t.Fatalf("expected fulfillment error to be persisted, got %+v", refreshedOrder)
 	}
 }

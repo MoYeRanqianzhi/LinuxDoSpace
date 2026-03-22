@@ -119,13 +119,21 @@ func (a *API) handleTokenEmailStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	subscription, err := a.tokenService.Hub().Subscribe(token.PublicID)
+	if err != nil {
+		if err == mailrelay.ErrTokenStreamAlreadyConnected {
+			writeError(w, service.ConflictError("this api token already has one active email stream connection"))
+			return
+		}
+		writeError(w, service.InternalError("failed to open api token stream", err))
+		return
+	}
+	defer subscription.Cancel()
+
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
-
-	streamChannel, unsubscribe := a.tokenService.Hub().Subscribe(token.PublicID)
-	defer unsubscribe()
 	log.Printf(
 		"linuxdospace api token stream connected: token=%s remote_addr=%s user_agent=%q",
 		token.PublicID,
@@ -155,6 +163,8 @@ func (a *API) handleTokenEmailStream(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-subscription.Done():
+			return
 		case <-heartbeatTicker.C:
 			if err := encoder.Encode(mailrelay.TokenStreamEvent{
 				Type:          "heartbeat",
@@ -163,10 +173,7 @@ func (a *API) handleTokenEmailStream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			flusher.Flush()
-		case event, ok := <-streamChannel:
-			if !ok {
-				return
-			}
+		case event := <-subscription.Events():
 			if err := encoder.Encode(event.ToStreamEvent()); err != nil {
 				return
 			}

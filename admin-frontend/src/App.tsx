@@ -136,8 +136,14 @@ export default function App() {
       setManagedDomains(data.managed_domains ?? []);
       if (reasonCode === 'admin_password_required' && data.authenticated && data.authorized && !data.password_verified) {
         setSessionError(text.passwordRefreshRequired);
-      } else if (reasonCode === 'forbidden' && !data.authenticated) {
-        setSessionError(text.forbidden);
+      } else if (reasonCode === 'forbidden') {
+        if (!data.authenticated) {
+          setSessionError(text.forbidden);
+        } else if (!data.authorized) {
+          setSessionError(text.loggedInButNotAdmin);
+        } else {
+          setSessionError(text.forbidden);
+        }
       } else if (reasonCode === 'unauthorized' && !data.authenticated) {
         setSessionError(text.sessionExpired);
       } else if (!data.authorized && data.authenticated) {

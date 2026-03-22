@@ -257,6 +257,11 @@ export function Permissions({ authenticated, sessionLoading, user, csrfToken, on
         if (!silent) {
           setPaymentNotice({ tone: 'success', message: `订单 ${order.out_trade_no} 已支付成功，权益已经发放。` });
         }
+      } else if (order.status === 'paid' && order.fulfillment_status === 'failed') {
+        clearRememberedPaymentOrder(order.out_trade_no);
+        if (!silent) {
+          setPaymentNotice({ tone: 'error', message: order.fulfillment_error || `订单 ${order.out_trade_no} 已支付，但权益发放失败，请稍后重试或联系管理员处理。` });
+        }
       } else if (order.status === 'failed' || order.status === 'refunded') {
         clearRememberedPaymentOrder(order.out_trade_no);
       }
@@ -765,7 +770,7 @@ function PaymentExchangeSection({
                   </thead>
                   <tbody>
                     {orders.map((order) => {
-                      const waiting = isOrderWaitingForRefresh(order);
+                      const waiting = canRefreshPaymentOrder(order);
                       const status = describePaymentOrderStatus(order);
                       return (
                         <tr key={order.out_trade_no} className="border-b border-white/10 text-sm hover:bg-white/30 dark:border-white/5 dark:hover:bg-white/5">
@@ -779,7 +784,15 @@ function PaymentExchangeSection({
                           </td>
                           <td className="px-5 py-4 text-gray-600 dark:text-gray-300">
                             <div>{formatDate(order.created_at)}</div>
-                            <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">{order.applied_at ? `发放 ${formatDate(order.applied_at)}` : order.paid_at ? `支付 ${formatDate(order.paid_at)}` : '尚未完成支付'}</div>
+                            <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                              {order.applied_at
+                                ? `发放 ${formatDate(order.applied_at)}`
+                                : order.fulfillment_status === 'failed' && order.fulfillment_failed_at
+                                  ? `失败 ${formatDate(order.fulfillment_failed_at)}`
+                                  : order.paid_at
+                                    ? `支付 ${formatDate(order.paid_at)}`
+                                    : '尚未完成支付'}
+                            </div>
                           </td>
                           <td className="px-5 py-4">
                             <div className="flex justify-end gap-2">
@@ -988,6 +1001,9 @@ function describePaymentOrderStatus(order: PaymentOrder) {
   if (order.status === 'paid' && order.applied_at) {
     return { label: '已支付并发放', className: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-300' };
   }
+  if (order.status === 'paid' && order.fulfillment_status === 'failed') {
+    return { label: '已支付，发放失败', className: 'bg-rose-100 text-rose-700 dark:bg-rose-900/25 dark:text-rose-300' };
+  }
   switch (order.status) {
     case 'paid':
       return { label: '已支付，待发放', className: 'bg-sky-100 text-sky-700 dark:bg-sky-900/25 dark:text-sky-300' };
@@ -1094,6 +1110,10 @@ function openTrustedPaymentWindow(rawURL: string): Window | null {
 }
 
 function isOrderWaitingForRefresh(order: PaymentOrder): boolean {
+  return order.status === 'created' || order.status === 'pending' || (order.status === 'paid' && !order.applied_at && order.fulfillment_status !== 'failed');
+}
+
+function canRefreshPaymentOrder(order: PaymentOrder): boolean {
   return order.status === 'created' || order.status === 'pending' || (order.status === 'paid' && !order.applied_at);
 }
 

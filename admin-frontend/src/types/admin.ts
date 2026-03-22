@@ -420,6 +420,7 @@ export interface UpdatePaymentProductInput {
 
 // PaymentOrderStatus mirrors the backend payment-order lifecycle.
 export type PaymentOrderStatus = 'created' | 'pending' | 'paid' | 'failed' | 'refunded';
+export type PaymentOrderFulfillmentStatus = 'pending' | 'applied' | 'failed';
 
 // AdminPaymentOrder mirrors one LDC order row visible to the administrator
 // console.
@@ -450,6 +451,9 @@ export interface AdminPaymentOrder {
   purchase_assigned_prefix?: string;
   purchase_assigned_fqdn?: string;
   payment_url: string;
+  fulfillment_status: PaymentOrderFulfillmentStatus;
+  fulfillment_error?: string;
+  fulfillment_failed_at?: string;
   paid_at?: string;
   applied_at?: string;
   last_checked_at?: string;
