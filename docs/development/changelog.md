@@ -62,7 +62,7 @@
 - Added Linux Do Credit purchase products, local payment orders, EasyPay-compatible signature verification, asynchronous notify handling, and idempotent entitlement application for catch-all subscription days, catch-all quota, and payment-test purchases.
 - Added administrator Linux Do Credit order APIs plus a dedicated admin order-management page for cross-user purchase inspection and manual status refresh.
 - Added dual runtime billing modes for `email_catch_all`: subscription time and prepaid remaining count, with subscription taking priority and all catch-all mail still capped by a configurable per-user UTC-day limit.
-- Added mutable catch-all access tables plus SMTP relay enforcement so `*@<username>.linuxdo.space` now checks real subscription/count state instead of relying only on permission approval.
+- Added mutable catch-all access tables plus SMTP relay enforcement so `*@<username>-mail.linuxdo.space` now checks real subscription/count state instead of relying only on permission approval.
 - Added administrator policy support for `default_daily_limit` and a dedicated admin endpoint for per-user catch-all access adjustments.
 - Added an append-only quantity ledger plus user/admin quantity APIs so future billing, redeem-code, and subscription work can track auditable resource deltas instead of mutating balances in place.
 - Added a built-in SMTP relay mode controlled by `EMAIL_FORWARDING_BACKEND=database_relay`, allowing LinuxDoSpace to receive mail itself and forward it according to database-stored routes instead of relying on Cloudflare catch-all delivery.
@@ -87,7 +87,7 @@
 - Improved admin console resilience by splitting application-list and policy loading, surfacing email-route modal validation errors, and refusing to fake a successful logout when the backend did not confirm it.
 - Added real Cloudflare Email Routing synchronization for user-managed and administrator-managed mailbox forwards, including verified destination-address checks and exact-address rule sync.
 - Documented the new `CLOUDFLARE_ACCOUNT_ID` requirement plus the Email Routing token scopes needed for production deployments.
-- Added the first real user-facing permission flow for `*@<username>.linuxdo.space`, including policy-backed auto-approval, administrator policy controls, and end-to-end frontend integration for the email and permission pages.
+- Added the first real user-facing permission flow for `*@<username>-mail.linuxdo.space`, including policy-backed auto-approval, administrator policy controls, and end-to-end frontend integration for the email and permission pages.
 - Added persistent permission-policy storage plus user-side email-route APIs so catch-all forwarding now has a real backend instead of preview-only UI.
 - Added direct administrator permission controls inside the user management flow so admins can inspect and override `email_catch_all` status per user, with review notes kept alongside the application record.
 - Added administrator allocation lifecycle controls so the admin console can now create namespaces, transfer ownership, disable allocations, and reassign the primary namespace without editing SQLite manually.

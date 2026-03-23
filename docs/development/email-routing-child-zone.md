@@ -2,9 +2,9 @@
 
 ## 背景
 
-LinuxDoSpace 当前需要的邮箱能力不是字面邮箱 `catch-all@<username>.linuxdo.space`，而是**真实 catch-all**：
+LinuxDoSpace 当前需要的邮箱能力不是字面邮箱 `catch-all@<username>-mail.linuxdo.space`，而是**真实 catch-all**：
 
-- `*@<username>.linuxdo.space`
+- `*@<username>-mail.linuxdo.space`
 
 这意味着 Cloudflare 必须能够把某个用户命名空间视为独立的邮件接收边界，再把所有未命中的地址统一转发到用户配置的目标邮箱。
 
@@ -107,7 +107,7 @@ Cloudflare 返回明确错误：
 - 父级托管根域：
   - 例如 `linuxdo.space`
 - 邮件 child zone：
-  - 例如 `alice.linuxdo.space`
+  - 例如 `alice-mail.linuxdo.space`
 - 父域委托记录：
   - 父 zone 内的 NS 记录集合
 - child zone 生命周期：

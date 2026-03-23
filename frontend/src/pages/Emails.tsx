@@ -152,7 +152,7 @@ export function Emails({ authenticated, sessionLoading, user, publicDomains, csr
   const catchAllAddress = useMemo(() => {
     if (catchAllRoute?.address) return catchAllRoute.address;
     if (permission?.target?.trim()) return permission.target.trim();
-    return normalizedUsername ? `*@${normalizedUsername}.${configuredRootDomain}` : `*@<用户名>.${configuredRootDomain}`;
+    return normalizedUsername ? `*@${normalizedUsername}-mail.${configuredRootDomain}` : `*@<用户名>-mail.${configuredRootDomain}`;
   }, [catchAllRoute?.address, configuredRootDomain, normalizedUsername, permission?.target]);
   const searchRootDomain = defaultRoute?.root_domain ?? searchResult?.root_domain ?? configuredRootDomain;
   const pledgeText = permission?.pledge_text?.trim() ?? '';

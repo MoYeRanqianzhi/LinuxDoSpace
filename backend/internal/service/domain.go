@@ -193,6 +193,11 @@ func (s *DomainService) CheckAvailability(ctx context.Context, rootDomain string
 		Available:        true,
 	}
 
+	if isSystemReservedMailNamespacePrefix(managedDomain.RootDomain, normalizedPrefix, s.cfg.Cloudflare.DefaultRootDomain) {
+		result.Available = false
+		result.Reasons = append(result.Reasons, "reserved_mail_namespace")
+	}
+
 	existing, err := s.db.FindAllocationByNormalizedPrefix(ctx, managedDomain.ID, normalizedPrefix)
 	if err == nil && existing.ID > 0 {
 		result.Available = false
@@ -773,19 +778,12 @@ func (s *DomainService) disableCatchAllSyntheticDNSRecord(ctx context.Context, u
 	return nil
 }
 
-// allocationCanToggleCatchAll keeps the DNS-panel shortcut narrow: it only
-// applies to the user's default same-name namespace where the current public
-// catch-all permission model already exists.
+// allocationCanToggleCatchAll is intentionally disabled. Catch-all mail now
+// lives under the dedicated `<username>-mail.<root>` namespace instead of the
+// ordinary allocation root, so the DNS panel for `alice.<root>` must no longer
+// expose a misleading synthetic switch.
 func (s *DomainService) allocationCanToggleCatchAll(user model.User, allocation model.Allocation) bool {
-	defaultRoot := normalizeDNSName(s.cfg.Cloudflare.DefaultRootDomain)
-	if defaultRoot == "" || normalizeDNSName(allocation.RootDomain) != defaultRoot {
-		return false
-	}
-	allowedPrefix, err := normalizedUserPrefix(user.Username)
-	if err != nil {
-		return false
-	}
-	return normalizeDNSName(allocation.FQDN) == normalizeDNSName(allowedPrefix+"."+defaultRoot)
+	return false
 }
 
 // isCatchAllPermissionApprovedForAllocation resolves whether the current user
@@ -1046,8 +1044,21 @@ func (s *DomainService) prepareAllocation(ctx context.Context, rootDomain string
 	if err != nil {
 		return model.ManagedDomain{}, "", "", ValidationError(err.Error())
 	}
+	if isSystemReservedMailNamespacePrefix(managedDomain.RootDomain, normalizedPrefix, s.cfg.Cloudflare.DefaultRootDomain) {
+		return model.ManagedDomain{}, "", "", ForbiddenError("prefixes ending with -mail are reserved for the platform-managed mail namespace")
+	}
 
 	return managedDomain, normalizedPrefix, normalizedPrefix + "." + managedDomain.RootDomain, nil
+}
+
+// isSystemReservedMailNamespacePrefix blocks `<anything>-mail` under the
+// default root because LinuxDoSpace now derives dedicated catch-all namespaces
+// such as `alice-mail.linuxdo.space` from every username.
+func isSystemReservedMailNamespacePrefix(rootDomain string, normalizedPrefix string, defaultRootDomain string) bool {
+	if !strings.EqualFold(strings.TrimSpace(rootDomain), strings.TrimSpace(defaultRootDomain)) {
+		return false
+	}
+	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(normalizedPrefix)), catchAllNamespaceSuffix)
 }
 
 // hasLiveConflict 检查 Cloudflare 上是否已经存在与该命名空间冲突的记录。

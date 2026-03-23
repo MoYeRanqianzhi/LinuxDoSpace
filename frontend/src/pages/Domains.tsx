@@ -536,6 +536,9 @@ export function Domains({
 
 // readableAvailabilityMessage 把后端返回的占用原因翻译成更直观的文案。
 function readableAvailabilityMessage(reasons: string[]): string {
+  if (reasons.includes('reserved_mail_namespace')) {
+    return '所有以 -mail 结尾的前缀都被系统保留给邮箱命名空间，当前不可申请。';
+  }
   if (reasons.includes('reserved_in_database')) {
     return '该前缀已经被平台分配给其他用户。';
   }

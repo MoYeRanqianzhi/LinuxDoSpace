@@ -65,7 +65,6 @@ const dnsTypeOptions: GlassSelectOption[] = [
   { value: 'AAAA', label: 'AAAA' },
   { value: 'CNAME', label: 'CNAME' },
   { value: 'TXT', label: 'TXT' },
-  { value: 'EMAIL_CATCH_ALL', label: '邮箱泛解析' },
 ];
 
 // dnsTypeOptionsWithoutSpecial 用于编辑既有真实 DNS 记录时的下拉选项。

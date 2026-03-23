@@ -467,17 +467,17 @@ func TestUpsertMyCatchAllEmailRouteUsesCatchAllRuleAndEnsuresEmailRoutingDNS(t *
 
 	priorityTen := 10
 	cf := newFakeEmailRoutingCloudflare()
-	cf.requiredDNSByZoneSubdomain["zone-default"]["alice.linuxdo.space"] = []cloudflare.EmailRoutingDNSRecord{
+	cf.requiredDNSByZoneSubdomain["zone-default"]["alice-mail.linuxdo.space"] = []cloudflare.EmailRoutingDNSRecord{
 		{
 			Type:     "MX",
-			Name:     "alice.linuxdo.space",
+			Name:     "alice-mail.linuxdo.space",
 			Content:  "route1.mx.cloudflare.net",
 			TTL:      1,
 			Priority: &priorityTen,
 		},
 		{
 			Type:    "TXT",
-			Name:    "alice.linuxdo.space",
+			Name:    "alice-mail.linuxdo.space",
 			Content: "v=spf1 include:_spf.mx.cloudflare.net ~all",
 			TTL:     1,
 		},
@@ -506,7 +506,7 @@ func TestUpsertMyCatchAllEmailRouteUsesCatchAllRuleAndEnsuresEmailRoutingDNS(t *
 		t.Fatalf("save catch-all email route: %v", err)
 	}
 
-	if view.Address != "*@alice.linuxdo.space" {
+	if view.Address != "*@alice-mail.linuxdo.space" {
 		t.Fatalf("expected canonical catch-all address, got %q", view.Address)
 	}
 	if !view.Configured || !view.Enabled {
@@ -524,14 +524,14 @@ func TestUpsertMyCatchAllEmailRouteUsesCatchAllRuleAndEnsuresEmailRoutingDNS(t *
 	if len(zoneDNSRecords) != 2 {
 		t.Fatalf("expected two DNS records required for namespace routing, got %d", len(zoneDNSRecords))
 	}
-	if !hasDNSRecord(zoneDNSRecords, "MX", "alice.linuxdo.space", "route1.mx.cloudflare.net") {
+	if !hasDNSRecord(zoneDNSRecords, "MX", "alice-mail.linuxdo.space", "route1.mx.cloudflare.net") {
 		t.Fatalf("expected namespace MX record to be created, got %+v", zoneDNSRecords)
 	}
-	if !hasDNSRecord(zoneDNSRecords, "TXT", "alice.linuxdo.space", "v=spf1 include:_spf.mx.cloudflare.net ~all") {
+	if !hasDNSRecord(zoneDNSRecords, "TXT", "alice-mail.linuxdo.space", "v=spf1 include:_spf.mx.cloudflare.net ~all") {
 		t.Fatalf("expected namespace SPF record to be created, got %+v", zoneDNSRecords)
 	}
 
-	catchAllRule := cf.catchAllRuleByZone["zone-default"]["alice.linuxdo.space"]
+	catchAllRule := cf.catchAllRuleByZone["zone-default"]["alice-mail.linuxdo.space"]
 	if !catchAllRule.Enabled {
 		t.Fatalf("expected catch-all rule to stay enabled")
 	}
@@ -545,12 +545,106 @@ func TestUpsertMyCatchAllEmailRouteUsesCatchAllRuleAndEnsuresEmailRoutingDNS(t *
 		t.Fatalf("expected no literal email routing rule to be created for catch-all, got %+v", cf.rulesByZone["zone-default"])
 	}
 
-	storedRoute, err := store.GetEmailRouteByAddress(ctx, "alice.linuxdo.space", emailCatchAllPrefix)
+	storedRoute, err := store.GetEmailRouteByAddress(ctx, "alice-mail.linuxdo.space", emailCatchAllPrefix)
 	if err != nil {
 		t.Fatalf("load stored catch-all email route: %v", err)
 	}
 	if storedRoute.TargetEmail != "owner@example.com" {
 		t.Fatalf("expected stored catch-all target owner@example.com, got %q", storedRoute.TargetEmail)
+	}
+}
+
+// TestLoadEmailCatchAllPermissionMigratesLegacyNamespace verifies that older
+// catch-all routes stored under `<username>.<root>` are transparently upgraded
+// to the dedicated `<username>-mail.<root>` namespace on first load.
+func TestLoadEmailCatchAllPermissionMigratesLegacyNamespace(t *testing.T) {
+	ctx := context.Background()
+	store := newAuthTestStore(t)
+	user := seedPermissionEmailTestUserWithLinuxDOID(t, ctx, store, 1501, "alice")
+	seedPermissionEmailManagedDomain(t, ctx, store)
+	seedPermissionEmailAllocation(t, ctx, store, user, "linuxdo.space", "alice")
+
+	if _, err := store.UpsertAdminApplication(ctx, storage.UpsertAdminApplicationInput{
+		ApplicantUserID: user.ID,
+		Type:            PermissionKeyEmailCatchAll,
+		Target:          "*@alice.linuxdo.space",
+		Reason:          "legacy approved catch-all namespace",
+		Status:          "approved",
+	}); err != nil {
+		t.Fatalf("seed legacy catch-all application: %v", err)
+	}
+	if _, err := store.CreateEmailRoute(ctx, storage.CreateEmailRouteInput{
+		OwnerUserID: user.ID,
+		RootDomain:  "alice.linuxdo.space",
+		Prefix:      emailCatchAllPrefix,
+		TargetEmail: "owner@example.com",
+		Enabled:     true,
+	}); err != nil {
+		t.Fatalf("create legacy catch-all email route: %v", err)
+	}
+
+	cf := newFakeEmailRoutingCloudflare()
+	priorityTen := 10
+	cf.dnsRecordsByZone["zone-default"] = []cloudflare.DNSRecord{
+		{
+			ID:       "legacy-mx",
+			Type:     "MX",
+			Name:     "alice.linuxdo.space",
+			Content:  "mail.linuxdo.space",
+			TTL:      1,
+			Comment:  databaseRelayManagedDNSComment,
+			Priority: &priorityTen,
+		},
+		{
+			ID:      "legacy-spf",
+			Type:    "TXT",
+			Name:    "alice.linuxdo.space",
+			Content: "v=spf1 -all",
+			TTL:     1,
+			Comment: databaseRelayManagedDNSComment,
+		},
+	}
+
+	cfg := newPermissionEmailTestConfig()
+	cfg.Mail.ForwardingBackend = "database_relay"
+	cfg.Mail.EnsureDNS = true
+	cfg.Mail.Domain = "mail.linuxdo.space"
+	cfg.Mail.MXTarget = "mail.linuxdo.space"
+	cfg.Mail.MXPriority = 10
+	cfg.Mail.SPFValue = "v=spf1 -all"
+	service := NewPermissionService(cfg, store, cf)
+
+	permission, err := service.loadEmailCatchAllPermission(ctx, user)
+	if err != nil {
+		t.Fatalf("load catch-all permission after namespace migration: %v", err)
+	}
+	if permission.Target != "*@alice-mail.linuxdo.space" {
+		t.Fatalf("expected canonical migrated target, got %q", permission.Target)
+	}
+
+	if _, err := store.GetEmailRouteByAddress(ctx, "alice.linuxdo.space", emailCatchAllPrefix); !storage.IsNotFound(err) {
+		t.Fatalf("expected legacy catch-all route to be removed, got %v", err)
+	}
+	migratedRoute, err := store.GetEmailRouteByAddress(ctx, "alice-mail.linuxdo.space", emailCatchAllPrefix)
+	if err != nil {
+		t.Fatalf("load migrated catch-all route: %v", err)
+	}
+	if migratedRoute.TargetEmail != "owner@example.com" || !migratedRoute.Enabled {
+		t.Fatalf("unexpected migrated route: %+v", migratedRoute)
+	}
+
+	zoneDNSRecords := cf.dnsRecordsByZone["zone-default"]
+	if hasDNSRecord(zoneDNSRecords, "MX", "alice.linuxdo.space", "mail.linuxdo.space") {
+		t.Fatalf("expected legacy relay MX record to be removed, got %+v", zoneDNSRecords)
+	}
+	if hasDNSRecord(zoneDNSRecords, "TXT", "alice.linuxdo.space", "v=spf1 -all") {
+		t.Fatalf("expected legacy relay SPF record to be removed, got %+v", zoneDNSRecords)
+	}
+	if !hasDNSRecord(zoneDNSRecords, "MX", "alice-mail.linuxdo.space", "mail.linuxdo.space") {
+		t.Fatalf("expected migrated relay MX record, got %+v", zoneDNSRecords)
+	}
+	if !hasDNSRecord(zoneDNSRecords, "TXT", "alice-mail.linuxdo.space", "v=spf1 -all") {
+		t.Fatalf("expected migrated relay SPF record, got %+v", zoneDNSRecords)
 	}
 }
 
@@ -567,15 +661,15 @@ func TestParseCatchAllTargetAddressAcceptsLegacyAndCanonical(t *testing.T) {
 	}{
 		{
 			name:           "canonical namespace target",
-			target:         "*@alice.linuxdo.space",
+			target:         "*@alice-mail.linuxdo.space",
 			wantLocalPart:  "*",
-			wantRootDomain: "alice.linuxdo.space",
+			wantRootDomain: "alice-mail.linuxdo.space",
 		},
 		{
 			name:           "legacy stored target",
-			target:         "catch-all@alice.linuxdo.space",
+			target:         "catch-all@alice-mail.linuxdo.space",
 			wantLocalPart:  "catch-all",
-			wantRootDomain: "alice.linuxdo.space",
+			wantRootDomain: "alice-mail.linuxdo.space",
 		},
 		{
 			name:        "invalid literal target",

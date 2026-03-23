@@ -44,6 +44,12 @@ const (
 	// QuantityResourceEmailCatchAllRemainingCount records administrator grants or
 	// deductions applied to the mutable prepaid remaining-count pool.
 	QuantityResourceEmailCatchAllRemainingCount = "email_catch_all_remaining_count"
+
+	// catchAllNamespaceSuffix keeps the dedicated mail namespace distinct from
+	// the user's primary website namespace, so `alice.linuxdo.space` can stay
+	// available for ordinary DNS usage while catch-all mail moves to
+	// `alice-mail.linuxdo.space`.
+	catchAllNamespaceSuffix = "-mail"
 )
 
 // EmailCatchAllPledgeText is the canonical server-side pledge text recorded on
@@ -73,14 +79,14 @@ type PermissionService struct {
 
 const (
 	emailCatchAllPermissionDisplayName = "邮箱泛解析"
-	emailCatchAllPermissionDescription = "为与你用户名同名的默认二级域名开启整个邮件命名空间的泛解析转发。"
+	emailCatchAllPermissionDescription = "为你专用的邮件命名空间开启整段邮箱泛解析转发，不再占用同名网站子域。"
 	emailCatchAllPledgeTextClean       = "我承诺仅将此邮箱泛解析权限用于合法、正当且合理的用途，不实施违法违纪行为，不滥用平台资源；如因本人使用导致任何后果，均由本人自行承担，与开发者无关；若因此获得收益，我也愿意无私反馈 Linux Do 社区。"
 	defaultEmailRouteDisplayName       = "默认邮箱"
 	defaultEmailRouteDescription       = "每位用户默认拥有一个与 Linux Do 用户名同名的邮箱转发地址。"
 	customEmailRouteDisplayName        = "附加邮箱"
 	customEmailRouteDescription        = "这是已经分配到你名下的额外邮箱地址，当前页面先以只读方式展示。"
 	catchAllEmailRouteDisplayName      = "邮箱泛解析"
-	catchAllEmailRouteDescription      = "用于接收 *@<username>.linuxdo.space 的整段邮件泛解析转发。"
+	catchAllEmailRouteDescription      = "用于接收 *@<username>-mail.linuxdo.space 的整段邮件泛解析转发。"
 )
 
 // PermissionApplicationSummary is the normalized subset of one application row
@@ -226,7 +232,9 @@ type AdminUpdateEmailCatchAllAccessRequest struct {
 // user account and the configured default root domain.
 type catchAllNamespace struct {
 	RootDomain         string
+	LegacyRootDomain   string
 	Address            string
+	LegacyAddress      string
 	HasOwnedAllocation bool
 }
 
@@ -298,9 +306,6 @@ func (s *PermissionService) SubmitPermissionApplication(ctx context.Context, use
 	}
 
 	applicationTarget := permission.Target
-	if permission.Application != nil && strings.TrimSpace(permission.Application.Target) != "" {
-		applicationTarget = permission.Application.Target
-	}
 	item, err := s.db.UpsertAdminApplication(ctx, storage.UpsertAdminApplicationInput{
 		ApplicantUserID: user.ID,
 		Type:            PermissionKeyEmailCatchAll,
@@ -345,6 +350,9 @@ func (s *PermissionService) ListMyEmailRoutes(ctx context.Context, user model.Us
 
 	namespace, err := s.resolveCatchAllNamespace(ctx, user)
 	if err != nil {
+		return nil, err
+	}
+	if _, err := s.migrateLegacyCatchAllRouteIfNeeded(ctx, user, namespace); err != nil {
 		return nil, err
 	}
 
@@ -402,6 +410,10 @@ func (s *PermissionService) UpsertMyCatchAllEmailRoute(ctx context.Context, user
 	if err != nil {
 		return UserEmailRouteView{}, err
 	}
+	legacyRoute, err := s.migrateLegacyCatchAllRouteIfNeeded(ctx, user, namespace)
+	if err != nil {
+		return UserEmailRouteView{}, err
+	}
 	if target.Configured {
 		if err := ensureDatabaseRelayIngressDNSForRootDomain(ctx, s.cfg, s.cf, namespace.RootDomain); err != nil {
 			return UserEmailRouteView{}, err
@@ -419,12 +431,17 @@ func (s *PermissionService) UpsertMyCatchAllEmailRoute(ctx context.Context, user
 		beforeState = newCatchAllEmailRouteSyncState(storedRoute.RootDomain, storedRoute.TargetEmail, storedRoute.Enabled)
 		existingRoute = &storedRoute
 	case storage.IsNotFound(routeErr):
-		snapshot, snapshotErr := s.lookupCloudflareCatchAllSnapshot(ctx, namespace.RootDomain)
-		if snapshotErr != nil {
-			return UserEmailRouteView{}, snapshotErr
-		}
-		if snapshot.Found {
-			beforeState = newCatchAllEmailRouteSyncState(namespace.RootDomain, snapshot.TargetEmail, snapshot.Enabled)
+		if legacyRoute != nil {
+			beforeState = newCatchAllEmailRouteSyncState(legacyRoute.RootDomain, legacyRoute.TargetEmail, legacyRoute.Enabled)
+			existingRoute = legacyRoute
+		} else {
+			snapshot, snapshotErr := s.lookupCloudflareCatchAllSnapshot(ctx, namespace.RootDomain)
+			if snapshotErr != nil {
+				return UserEmailRouteView{}, snapshotErr
+			}
+			if snapshot.Found {
+				beforeState = newCatchAllEmailRouteSyncState(namespace.RootDomain, snapshot.TargetEmail, snapshot.Enabled)
+			}
 		}
 	default:
 		return UserEmailRouteView{}, InternalError("failed to load catch-all email route before update", routeErr)
@@ -467,6 +484,11 @@ func (s *PermissionService) UpsertMyCatchAllEmailRoute(ctx context.Context, user
 	var item model.EmailRoute
 	if err := routing.SyncForwardingState(ctx, beforeState, desiredState, func() error {
 		var persistErr error
+		if existingRoute != nil && !strings.EqualFold(existingRoute.RootDomain, namespace.RootDomain) {
+			if persistErr = s.db.DeleteEmailRoute(ctx, existingRoute.ID); persistErr != nil {
+				return InternalError("failed to remove the legacy catch-all email route", persistErr)
+			}
+		}
 		item, persistErr = s.db.UpsertEmailRouteByAddress(ctx, storage.UpsertEmailRouteByAddressInput{
 			OwnerUserID:         user.ID,
 			RootDomain:          namespace.RootDomain,
@@ -652,18 +674,12 @@ func (s *PermissionService) SetPermissionForUser(ctx context.Context, actor mode
 	}
 	if permission.Application != nil {
 		nextApplication.ID = permission.Application.ID
-		if strings.TrimSpace(permission.Application.Target) != "" {
-			nextApplication.Target = permission.Application.Target
-		}
 	}
 	if err := s.disableCatchAllEmailRouteForApplication(ctx, actor, nextApplication); err != nil {
 		return UserPermissionView{}, err
 	}
 
 	applicationTarget := permission.Target
-	if permission.Application != nil && strings.TrimSpace(permission.Application.Target) != "" {
-		applicationTarget = permission.Application.Target
-	}
 
 	item, err := s.db.UpsertAdminApplication(ctx, storage.UpsertAdminApplicationInput{
 		ApplicantUserID:  user.ID,
@@ -711,13 +727,23 @@ func (s *PermissionService) loadEmailCatchAllPermission(ctx context.Context, use
 	if err != nil {
 		return UserPermissionView{}, err
 	}
+	if _, err := s.migrateLegacyCatchAllRouteIfNeeded(ctx, user, namespace); err != nil {
+		return UserPermissionView{}, err
+	}
 
 	applications, err := s.db.ListAdminApplicationsByApplicant(ctx, user.ID)
 	if err != nil {
 		return UserPermissionView{}, InternalError("failed to load permission applications", err)
 	}
 
-	application := findPermissionApplication(applications, PermissionKeyEmailCatchAll, namespace.Address, buildLegacyCatchAllApplicationTarget(namespace.RootDomain))
+	applicationTargets := []string{
+		namespace.Address,
+		buildLegacyCatchAllApplicationTarget(namespace.RootDomain),
+	}
+	if namespace.LegacyAddress != "" {
+		applicationTargets = append(applicationTargets, namespace.LegacyAddress, buildLegacyCatchAllApplicationTarget(namespace.LegacyRootDomain))
+	}
+	application := findPermissionApplication(applications, PermissionKeyEmailCatchAll, applicationTargets...)
 	reasons := buildCatchAllEligibilityReasons(user, policy, namespace)
 	status := "not_requested"
 	var summary *PermissionApplicationSummary
@@ -823,6 +849,107 @@ func (s *PermissionService) buildCatchAllEmailRouteView(ctx context.Context, use
 	return normalizeUserEmailRouteCopy(item), nil
 }
 
+// buildCatchAllNamespaceRoot derives the dedicated mail namespace that keeps
+// catch-all email traffic separate from the user's ordinary website namespace.
+func buildCatchAllNamespaceRoot(normalizedPrefix string, defaultRootDomain string) string {
+	normalizedRoot := strings.ToLower(strings.TrimSpace(defaultRootDomain))
+	if normalizedPrefix == "" || normalizedRoot == "" {
+		return ""
+	}
+	return normalizedPrefix + catchAllNamespaceSuffix + "." + normalizedRoot
+}
+
+// buildLegacyCatchAllNamespaceRoot preserves compatibility with the earlier
+// routing layout where catch-all mail reused `<username>.<root>`.
+func buildLegacyCatchAllNamespaceRoot(normalizedPrefix string, defaultRootDomain string) string {
+	normalizedRoot := strings.ToLower(strings.TrimSpace(defaultRootDomain))
+	if normalizedPrefix == "" || normalizedRoot == "" {
+		return ""
+	}
+	return normalizedPrefix + "." + normalizedRoot
+}
+
+// migrateLegacyCatchAllRouteIfNeeded upgrades one older catch-all route from
+// `<username>.<root>` to `<username>-mail.<root>`. This keeps existing users
+// working after the namespace split without requiring a manual resave.
+func (s *PermissionService) migrateLegacyCatchAllRouteIfNeeded(ctx context.Context, user model.User, namespace catchAllNamespace) (*model.EmailRoute, error) {
+	if namespace.LegacyRootDomain == "" || strings.EqualFold(namespace.LegacyRootDomain, namespace.RootDomain) {
+		return nil, nil
+	}
+
+	currentRoute, err := s.db.GetEmailRouteByAddress(ctx, namespace.RootDomain, emailCatchAllPrefix)
+	if err == nil {
+		if currentRoute.OwnerUserID != user.ID {
+			return nil, UnavailableError("catch-all mailbox is assigned to another user", fmt.Errorf("route %d belongs to user %d", currentRoute.ID, currentRoute.OwnerUserID))
+		}
+		return &currentRoute, nil
+	}
+	if err != nil && !storage.IsNotFound(err) {
+		return nil, InternalError("failed to load catch-all email route", err)
+	}
+
+	legacyRoute, err := s.db.GetEmailRouteByAddress(ctx, namespace.LegacyRootDomain, emailCatchAllPrefix)
+	if err != nil {
+		if storage.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, InternalError("failed to load the legacy catch-all email route", err)
+	}
+	if legacyRoute.OwnerUserID != user.ID {
+		return nil, UnavailableError("catch-all mailbox is assigned to another user", fmt.Errorf("legacy route %d belongs to user %d", legacyRoute.ID, legacyRoute.OwnerUserID))
+	}
+
+	beforeState := newCatchAllEmailRouteSyncState(legacyRoute.RootDomain, legacyRoute.TargetEmail, legacyRoute.Enabled)
+	afterState := newCatchAllEmailRouteSyncState(namespace.RootDomain, legacyRoute.TargetEmail, legacyRoute.Enabled)
+	var migratedRoute model.EmailRoute
+	if err := newEmailRoutingProvisioner(s.cfg, s.cf).SyncForwardingState(ctx, beforeState, afterState, func() error {
+		var persistErr error
+		migratedRoute, persistErr = s.db.UpsertEmailRouteByAddress(ctx, storage.UpsertEmailRouteByAddressInput{
+			OwnerUserID:         user.ID,
+			RootDomain:          namespace.RootDomain,
+			Prefix:              emailCatchAllPrefix,
+			TargetEmail:         legacyRoute.TargetEmail,
+			TargetKind:          legacyRoute.TargetKind,
+			TargetTokenPublicID: legacyRoute.TargetTokenPublicID,
+			Enabled:             legacyRoute.Enabled,
+		})
+		if persistErr != nil {
+			if persistErr == storage.ErrEmailRouteOwnershipConflict {
+				return ConflictError("catch-all mailbox address is already owned by another user")
+			}
+			return InternalError("failed to migrate the catch-all email route", persistErr)
+		}
+		if persistErr = s.db.DeleteEmailRoute(ctx, legacyRoute.ID); persistErr != nil {
+			return InternalError("failed to delete the legacy catch-all email route", persistErr)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	if s.cfg.UsesDatabaseMailRelay() && legacyRoute.Enabled {
+		if err := deleteDatabaseRelayIngressDNSForRootDomain(ctx, s.cfg, s.cf, namespace.LegacyRootDomain); err != nil {
+			return nil, err
+		}
+	}
+
+	metadata, _ := json.Marshal(map[string]any{
+		"legacy_email_route_id": legacyRoute.ID,
+		"email_route_id":        migratedRoute.ID,
+		"legacy_address":        namespace.LegacyAddress,
+		"address":               namespace.Address,
+	})
+	logAuditWriteFailure("email_route.catch_all.migrate_namespace", s.db.WriteAuditLog(ctx, storage.AuditLogInput{
+		ActorUserID:  &user.ID,
+		Action:       "email_route.catch_all.migrate_namespace",
+		ResourceType: "email_route",
+		ResourceID:   strconv.FormatInt(migratedRoute.ID, 10),
+		MetadataJSON: string(metadata),
+	}))
+
+	return &migratedRoute, nil
+}
+
 // resolveCatchAllNamespace derives the fixed catch-all mailbox address from the
 // current username and the configured default root domain.
 func (s *PermissionService) resolveCatchAllNamespace(ctx context.Context, user model.User) (catchAllNamespace, error) {
@@ -841,16 +968,25 @@ func (s *PermissionService) resolveCatchAllNamespace(ctx context.Context, user m
 			if allocation.NormalizedPrefix != normalizedPrefix {
 				continue
 			}
+			rootDomain := strings.ToLower(strings.TrimSpace(allocation.RootDomain))
+			if rootDomain == "" {
+				rootDomain = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(allocation.FQDN)), normalizedPrefix+".")
+			}
+			namespaceRoot := buildCatchAllNamespaceRoot(normalizedPrefix, rootDomain)
+			legacyRoot := buildLegacyCatchAllNamespaceRoot(normalizedPrefix, rootDomain)
 			return catchAllNamespace{
-				RootDomain:         allocation.FQDN,
-				Address:            buildCatchAllEmailRouteAddress(allocation.FQDN),
+				RootDomain:         namespaceRoot,
+				LegacyRootDomain:   legacyRoot,
+				Address:            buildCatchAllEmailRouteAddress(namespaceRoot),
+				LegacyAddress:      buildCatchAllEmailRouteAddress(legacyRoot),
 				HasOwnedAllocation: true,
 			}, nil
 		}
 		return catchAllNamespace{}, UnavailableError("default root domain is not configured for catch-all email permission", fmt.Errorf("default root domain is empty"))
 	}
 
-	namespaceRoot := normalizedPrefix + "." + defaultRootDomain
+	namespaceRoot := buildCatchAllNamespaceRoot(normalizedPrefix, defaultRootDomain)
+	legacyRoot := buildLegacyCatchAllNamespaceRoot(normalizedPrefix, defaultRootDomain)
 	allocations, err := s.db.ListAllocationsByUser(ctx, user.ID)
 	if err != nil {
 		return catchAllNamespace{}, InternalError("failed to load user allocations", err)
@@ -866,7 +1002,9 @@ func (s *PermissionService) resolveCatchAllNamespace(ctx context.Context, user m
 
 	return catchAllNamespace{
 		RootDomain:         namespaceRoot,
+		LegacyRootDomain:   legacyRoot,
 		Address:            buildCatchAllEmailRouteAddress(namespaceRoot),
+		LegacyAddress:      buildCatchAllEmailRouteAddress(legacyRoot),
 		HasOwnedAllocation: hasOwnedAllocation,
 	}, nil
 }

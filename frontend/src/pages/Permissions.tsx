@@ -50,13 +50,13 @@ const emailCatchAllPermissionKey = 'email_catch_all';
 const builtinCatalog: CatalogItem[] = [
   {
     key: emailCatchAllPermissionKey,
-    displayName: '*@<用户名>.linuxdo.space',
+    displayName: '*@<用户名>-mail.linuxdo.space',
     selectLabel: '二级域名邮箱泛解析',
     typeLabel: '邮箱泛解析',
     stage: 'live',
-    description: '为与你用户名同名的默认二级域名开启整段邮件命名空间的泛解析转发。',
+    description: '为你专用的 `<用户名>-mail` 邮件命名空间开启整段泛解析转发，不再占用同名网站子域。',
     hint: '登录后可查看真实权限状态，并前往邮箱页面提交申请或管理转发目标。',
-    target: (user) => `*@${normalizeIdentity(user?.username ?? 'username')}.linuxdo.space`,
+    target: (user) => `*@${normalizeIdentity(user?.username ?? 'username')}-mail.linuxdo.space`,
   },
   {
     key: 'single_allocation',

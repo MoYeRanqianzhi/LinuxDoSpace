@@ -301,7 +301,7 @@ Returns the current user's visible email forwarding rows.
 The current release returns:
 - the always-owned default mailbox row for `<username>@linuxdo.space`
 - any extra mailbox aliases already assigned to the user in the database
-- the permission-gated `*@<username>.linuxdo.space` row
+- the permission-gated `*@<username>-mail.linuxdo.space` row
 
 When the returned row is the catch-all mailbox, the payload also includes
 `catch_all_access`. This runtime state is evaluated separately from the
@@ -314,9 +314,9 @@ append-only quantity ledger:
 Every email-route mutation now syncs the effective forwarding state into the
 currently selected backend.
 Important operational constraints:
-- the target mailbox must already be a verified Cloudflare Email Routing destination address, or Cloudflare will send a verification email and the save will be rejected until verification completes
+- the target mailbox must already be a LinuxDoSpace-owned verified target email, or an active EMAIL-capable API token owned by the current user
 - when `EMAIL_FORWARDING_BACKEND=cloudflare`, the backend syncs exact-address and catch-all rules directly into Cloudflare Email Routing
-- when `EMAIL_FORWARDING_BACKEND=database_relay`, parent-root exact mailboxes still sync to Cloudflare Email Routing, while subdomain relay namespaces and catch-all delivery execute through the built-in SMTP relay
+- when `EMAIL_FORWARDING_BACKEND=database_relay`, both default mailboxes and dedicated catch-all namespaces execute through the built-in SMTP relay, while Cloudflare is only used for DNS management
 
 ### `PUT /v1/my/email-routes/default`
 Creates, updates, or clears the current user's default mailbox forwarding target.

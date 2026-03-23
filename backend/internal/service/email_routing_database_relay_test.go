@@ -100,15 +100,15 @@ func TestDatabaseRelayCatchAllPermissionApprovalDefersRelayDNSUntilRouteSave(t *
 	}
 
 	zoneDNSRecords = cf.dnsRecordsByZone["zone-default"]
-	if !hasDNSRecord(zoneDNSRecords, "MX", "alice.linuxdo.space", "mail.linuxdo.space") {
+	if !hasDNSRecord(zoneDNSRecords, "MX", "alice-mail.linuxdo.space", "mail.linuxdo.space") {
 		t.Fatalf("expected catch-all save to allocate relay MX record, got %+v", zoneDNSRecords)
 	}
-	if !hasDNSRecord(zoneDNSRecords, "TXT", "alice.linuxdo.space", "v=spf1 -all") {
+	if !hasDNSRecord(zoneDNSRecords, "TXT", "alice-mail.linuxdo.space", "v=spf1 -all") {
 		t.Fatalf("expected catch-all save to allocate relay SPF record, got %+v", zoneDNSRecords)
 	}
 
 	for _, item := range zoneDNSRecords {
-		if item.Name != "alice.linuxdo.space" {
+		if item.Name != "alice-mail.linuxdo.space" {
 			continue
 		}
 		if item.Comment != databaseRelayManagedDNSComment {
@@ -232,7 +232,7 @@ func TestDatabaseRelayCatchAllSaveBackfillsMissingIngressDNS(t *testing.T) {
 	if _, err := store.UpsertAdminApplication(ctx, storage.UpsertAdminApplicationInput{
 		ApplicantUserID: user.ID,
 		Type:            PermissionKeyEmailCatchAll,
-		Target:          "*@alice.linuxdo.space",
+		Target:          "*@alice-mail.linuxdo.space",
 		Reason:          "approved before database relay mode was enabled",
 		Status:          "approved",
 	}); err != nil {
@@ -251,10 +251,10 @@ func TestDatabaseRelayCatchAllSaveBackfillsMissingIngressDNS(t *testing.T) {
 	}
 
 	zoneDNSRecords := cf.dnsRecordsByZone["zone-default"]
-	if !hasDNSRecord(zoneDNSRecords, "MX", "alice.linuxdo.space", "mail.linuxdo.space") {
+	if !hasDNSRecord(zoneDNSRecords, "MX", "alice-mail.linuxdo.space", "mail.linuxdo.space") {
 		t.Fatalf("expected catch-all save to backfill relay MX record, got %+v", zoneDNSRecords)
 	}
-	if !hasDNSRecord(zoneDNSRecords, "TXT", "alice.linuxdo.space", "v=spf1 -all") {
+	if !hasDNSRecord(zoneDNSRecords, "TXT", "alice-mail.linuxdo.space", "v=spf1 -all") {
 		t.Fatalf("expected catch-all save to backfill relay SPF record, got %+v", zoneDNSRecords)
 	}
 }

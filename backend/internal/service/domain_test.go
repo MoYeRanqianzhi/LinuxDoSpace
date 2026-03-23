@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"linuxdospace/backend/internal/cloudflare"
@@ -318,10 +319,11 @@ func TestListRecordsForAllocationReturnsNestedNamespaceRecords(t *testing.T) {
 	}
 }
 
-// TestListRecordsForAllocationIncludesSyntheticCatchAllRecord verifies that the
-// DNS panel exposes one privacy-safe synthetic row once the namespace-wide
-// catch-all route is already enabled in the email subsystem.
-func TestListRecordsForAllocationIncludesSyntheticCatchAllRecord(t *testing.T) {
+// TestListRecordsForAllocationOmitsSyntheticCatchAllRecord verifies that the
+// ordinary allocation DNS panel no longer exposes a synthetic catch-all row.
+// Catch-all mail now lives under the dedicated `<username>-mail.<root>`
+// namespace, so `alice.<root>` should only show real DNS records.
+func TestListRecordsForAllocationOmitsSyntheticCatchAllRecord(t *testing.T) {
 	ctx := context.Background()
 	store := newDomainTestStore(t)
 
@@ -364,7 +366,7 @@ func TestListRecordsForAllocationIncludesSyntheticCatchAllRecord(t *testing.T) {
 
 	if _, err := store.CreateEmailRoute(ctx, storage.CreateEmailRouteInput{
 		OwnerUserID: user.ID,
-		RootDomain:  allocation.FQDN,
+		RootDomain:  "alice-mail.linuxdo.space",
 		Prefix:      emailCatchAllPrefix,
 		TargetEmail: "owner@example.com",
 		Enabled:     true,
@@ -392,24 +394,18 @@ func TestListRecordsForAllocationIncludesSyntheticCatchAllRecord(t *testing.T) {
 		t.Fatalf("list records for allocation: %v", err)
 	}
 
-	if len(records) != 2 {
-		t.Fatalf("expected namespace record plus synthetic catch-all record, got %d", len(records))
+	if len(records) != 1 {
+		t.Fatalf("expected only real namespace records, got %d", len(records))
 	}
-	if records[0].Type != specialDNSRecordTypeEmailCatchAll {
-		t.Fatalf("expected synthetic catch-all record first, got %+v", records[0])
-	}
-	if records[0].RelativeName != "@" {
-		t.Fatalf("expected synthetic catch-all record at root, got %q", records[0].RelativeName)
-	}
-	if records[0].Content != "邮箱泛解析" {
-		t.Fatalf("expected privacy-safe catch-all marker, got %q", records[0].Content)
+	if records[0].Type == specialDNSRecordTypeEmailCatchAll {
+		t.Fatalf("expected synthetic catch-all record to stay hidden, got %+v", records[0])
 	}
 }
 
-// TestCreateRecordEmailCatchAllRequiresApprovedPermissionAndSavedRoute verifies
-// that the synthetic DNS toggle cannot be enabled before the user has both the
-// approved permission and a saved forwarding target in the mail settings page.
-func TestCreateRecordEmailCatchAllRequiresApprovedPermissionAndSavedRoute(t *testing.T) {
+// TestCreateRecordEmailCatchAllIsForbidden verifies that the legacy synthetic
+// DNS toggle is now disabled outright. Catch-all mail no longer piggybacks on
+// the ordinary allocation root, so the DNS panel must reject this record type.
+func TestCreateRecordEmailCatchAllIsForbidden(t *testing.T) {
 	ctx := context.Background()
 	store := newDomainTestStore(t)
 
@@ -472,19 +468,23 @@ func TestCreateRecordEmailCatchAllRequiresApprovedPermissionAndSavedRoute(t *tes
 		TTL:     1,
 	})
 	if err == nil {
-		t.Fatalf("expected permission gate to block catch-all toggle")
+		t.Fatalf("expected DNS-panel catch-all toggle to be rejected")
 	}
 
 	serviceErr := NormalizeError(err)
 	if serviceErr.StatusCode != 403 {
 		t.Fatalf("expected forbidden error, got %+v", serviceErr)
 	}
+	if !strings.Contains(serviceErr.Message, "DNS 面板") {
+		t.Fatalf("expected DNS panel rejection message, got %+v", serviceErr)
+	}
 }
 
-// TestCreateRecordEmailCatchAllRejectsRootWebsiteConflict verifies that the
-// namespace root cannot simultaneously host one website-style record and the
-// synthetic mailbox catch-all toggle.
-func TestCreateRecordEmailCatchAllRejectsRootWebsiteConflict(t *testing.T) {
+// TestCreateRecordEmailCatchAllStaysForbiddenEvenWhenPermissionExists verifies
+// that the old synthetic DNS-panel entry stays disabled even after the user has
+// already obtained the mail permission and saved a dedicated mail namespace
+// route. Users now manage catch-all mail from the email page only.
+func TestCreateRecordEmailCatchAllStaysForbiddenEvenWhenPermissionExists(t *testing.T) {
 	ctx := context.Background()
 	store := newDomainTestStore(t)
 
@@ -528,7 +528,7 @@ func TestCreateRecordEmailCatchAllRejectsRootWebsiteConflict(t *testing.T) {
 	if _, err := store.UpsertAdminApplication(ctx, storage.UpsertAdminApplicationInput{
 		ApplicantUserID: user.ID,
 		Type:            PermissionKeyEmailCatchAll,
-		Target:          buildCatchAllEmailRouteAddress(allocation.FQDN),
+		Target:          "*@alice-mail.linuxdo.space",
 		Reason:          "approved",
 		Status:          "approved",
 	}); err != nil {
@@ -537,10 +537,10 @@ func TestCreateRecordEmailCatchAllRejectsRootWebsiteConflict(t *testing.T) {
 
 	if _, err := store.CreateEmailRoute(ctx, storage.CreateEmailRouteInput{
 		OwnerUserID: user.ID,
-		RootDomain:  allocation.FQDN,
+		RootDomain:  "alice-mail.linuxdo.space",
 		Prefix:      emailCatchAllPrefix,
 		TargetEmail: "owner@example.com",
-		Enabled:     false,
+		Enabled:     true,
 	}); err != nil {
 		t.Fatalf("create catch-all email route: %v", err)
 	}
@@ -584,19 +584,20 @@ func TestCreateRecordEmailCatchAllRejectsRootWebsiteConflict(t *testing.T) {
 		TTL:     1,
 	})
 	if err == nil {
-		t.Fatalf("expected website root conflict to block catch-all enable")
+		t.Fatalf("expected DNS-panel catch-all toggle to stay forbidden")
 	}
 
 	serviceErr := NormalizeError(err)
-	if serviceErr.StatusCode != 409 {
-		t.Fatalf("expected conflict error, got %+v", serviceErr)
+	if serviceErr.StatusCode != 403 {
+		t.Fatalf("expected forbidden error, got %+v", serviceErr)
 	}
 }
 
-// TestDeleteRecordSyntheticCatchAllDisablesRouteAndRemovesHiddenRelayDNS verifies
-// that deleting the public synthetic row immediately frees the hidden relay
-// MX/TXT records so the namespace root can later be reused for website records.
-func TestDeleteRecordSyntheticCatchAllDisablesRouteAndRemovesHiddenRelayDNS(t *testing.T) {
+// TestDeleteRecordSyntheticCatchAllIsForbidden verifies that the DNS panel can
+// no longer disable catch-all mail through a synthetic record id. The real
+// route lives under `<username>-mail.<root>` and remains managed by the email
+// subsystem, not the ordinary allocation record table.
+func TestDeleteRecordSyntheticCatchAllIsForbidden(t *testing.T) {
 	ctx := context.Background()
 	store := newDomainTestStore(t)
 
@@ -639,7 +640,7 @@ func TestDeleteRecordSyntheticCatchAllDisablesRouteAndRemovesHiddenRelayDNS(t *t
 
 	if _, err := store.CreateEmailRoute(ctx, storage.CreateEmailRouteInput{
 		OwnerUserID: user.ID,
-		RootDomain:  allocation.FQDN,
+		RootDomain:  "alice-mail.linuxdo.space",
 		Prefix:      emailCatchAllPrefix,
 		TargetEmail: "owner@example.com",
 		Enabled:     true,
@@ -702,24 +703,29 @@ func TestDeleteRecordSyntheticCatchAllDisablesRouteAndRemovesHiddenRelayDNS(t *t
 		},
 	}, store, cf)
 
-	if err := domainService.DeleteRecord(ctx, user, allocation.ID, syntheticCatchAllDNSRecordIDPrefix+"123"); err != nil {
-		t.Fatalf("delete synthetic catch-all dns record: %v", err)
+	err = domainService.DeleteRecord(ctx, user, allocation.ID, syntheticCatchAllDNSRecordIDPrefix+"123")
+	if err == nil {
+		t.Fatalf("expected synthetic catch-all delete to be forbidden")
+	}
+	serviceErr := NormalizeError(err)
+	if serviceErr.StatusCode != 403 {
+		t.Fatalf("expected forbidden error, got %+v", serviceErr)
 	}
 
-	storedRoute, err := store.GetEmailRouteByAddress(ctx, allocation.FQDN, emailCatchAllPrefix)
+	storedRoute, err := store.GetEmailRouteByAddress(ctx, "alice-mail.linuxdo.space", emailCatchAllPrefix)
 	if err != nil {
 		t.Fatalf("load catch-all email route after delete: %v", err)
 	}
-	if storedRoute.Enabled {
-		t.Fatalf("expected catch-all route to be disabled after synthetic record deletion")
+	if !storedRoute.Enabled {
+		t.Fatalf("expected catch-all route to remain enabled after forbidden delete")
 	}
 
 	remainingRecords := cf.dnsRecordsByZone["zone-test"]
-	if hasDNSRecord(remainingRecords, "MX", "alice.linuxdo.space", "mail.linuxdo.space") {
-		t.Fatalf("expected hidden relay MX record to be removed, got %+v", remainingRecords)
+	if !hasDNSRecord(remainingRecords, "MX", "alice.linuxdo.space", "mail.linuxdo.space") {
+		t.Fatalf("expected existing namespace MX record to remain untouched, got %+v", remainingRecords)
 	}
-	if hasDNSRecord(remainingRecords, "TXT", "alice.linuxdo.space", "v=spf1 -all") {
-		t.Fatalf("expected hidden relay TXT record to be removed, got %+v", remainingRecords)
+	if !hasDNSRecord(remainingRecords, "TXT", "alice.linuxdo.space", "v=spf1 -all") {
+		t.Fatalf("expected existing namespace TXT record to remain untouched, got %+v", remainingRecords)
 	}
 	if !hasDNSRecord(remainingRecords, "TXT", "www.alice.linuxdo.space", "hello") {
 		t.Fatalf("expected unrelated user dns records to be preserved, got %+v", remainingRecords)

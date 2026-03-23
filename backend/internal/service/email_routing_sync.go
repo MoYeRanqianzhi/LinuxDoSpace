@@ -28,7 +28,7 @@ const (
 	emailRouteMatchKindExact = "exact"
 
 	// emailRouteMatchKindCatchAll represents a namespace catch-all such as
-	// `*@alice.linuxdo.space`.
+	// `*@alice-mail.linuxdo.space`.
 	emailRouteMatchKindCatchAll = "catch_all"
 )
 
@@ -824,7 +824,7 @@ func normalizeDNSRecordContent(recordType string, value string) string {
 // cloudflareEmailRoutingScopedDomain converts one routed namespace root into
 // the value expected by Cloudflare's Email Routing namespace-scoped APIs. The
 // root zone uses an empty query value, while subdomains use the full FQDN such
-// as `alice.linuxdo.space`.
+// as `alice-mail.linuxdo.space`.
 func cloudflareEmailRoutingScopedDomain(routedRoot string, zoneRoot string) (string, error) {
 	normalizedRoutedRoot := normalizeDNSName(routedRoot)
 	normalizedZoneRoot := normalizeDNSName(zoneRoot)
